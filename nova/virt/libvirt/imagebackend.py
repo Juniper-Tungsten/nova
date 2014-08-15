@@ -89,7 +89,7 @@ class Image(object):
 
     SUPPORTS_CLONE = False
 
-    def __init__(self, source_type, driver_format, is_block_dev=False):
+    def __init__(self, source_type, driver_format, instance, is_block_dev=False):
         """Image initialization.
 
         :source_type: block or file
@@ -116,7 +116,23 @@ class Image(object):
         # NOTE(mikal): We need a lock directory which is shared along with
         # instance files, to cover the scenario where multiple compute nodes
         # are trying to create a base file at the same time
-        self.lock_path = os.path.join(CONF.instances_path, 'locks')
+        if CONF.storage_scope.lower() == "global":
+            interpath = "global"
+        else:
+            interpath = None
+        if len(instance['metadata']) > 0:
+            ins_meta = utils.instance_meta(instance)
+            for key,value in ins_meta.items():
+                if key.lower() == 'storage_scope':
+                    if value.lower() == 'global':
+                        interpath = "global"
+                    else:
+                        interpath = None
+                    break
+        if interpath is None:
+            self.lock_path = os.path.join(CONF.instances_path, 'locks')
+        else:
+            self.lock_path = os.path.join(CONF.instances_path, interpath, 'locks')
 
     def _supports_encryption(self):
         """Used to test that the backend supports encryption.
@@ -201,7 +217,7 @@ class Image(object):
     def check_image_exists(self):
         return os.path.exists(self.path)
 
-    def cache(self, fetch_func, filename, size=None, *args, **kwargs):
+    def cache(self, fetch_func, filename, interpath, size=None, *args, **kwargs):
         """Creates image from template.
 
         Ensures that template and image not already exists.
@@ -379,7 +395,7 @@ class Image(object):
 class Raw(Image):
     def __init__(self, instance=None, disk_name=None, path=None):
         self.disk_name = disk_name
-        super(Raw, self).__init__("file", "raw", is_block_dev=False)
+        super(Raw, self).__init__("file", "raw", instance, is_block_dev=False)
 
         self.path = (path or
                      os.path.join(libvirt_utils.get_instance_path(instance),
@@ -452,7 +468,7 @@ class Raw(Image):
 
 class Qcow2(Image):
     def __init__(self, instance=None, disk_name=None, path=None):
-        super(Qcow2, self).__init__("file", "qcow2", is_block_dev=False)
+        super(Qcow2, self).__init__("file", "qcow2", instance, is_block_dev=False)
 
         self.path = (path or
                      os.path.join(libvirt_utils.get_instance_path(instance),
@@ -525,7 +541,7 @@ class Lvm(Image):
         return filename.replace('_', '__')
 
     def __init__(self, instance=None, disk_name=None, path=None):
-        super(Lvm, self).__init__("block", "raw", is_block_dev=True)
+        super(Lvm, self).__init__("block", "raw", instance, is_block_dev=True)
 
         self.ephemeral_key_uuid = instance.get('ephemeral_key_uuid')
 
@@ -643,7 +659,7 @@ class Rbd(Image):
     SUPPORTS_CLONE = True
 
     def __init__(self, instance=None, disk_name=None, path=None, **kwargs):
-        super(Rbd, self).__init__("block", "rbd", is_block_dev=False)
+        super(Rbd, self).__init__("block", "rbd", instance, is_block_dev=True)
         if path:
             try:
                 self.rbd_name = path.split('/')[1]

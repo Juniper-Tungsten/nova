@@ -476,12 +476,18 @@ class NetworkInfoAsyncWrapper(NetworkInfo):
         return self._sync_wrapper(fn, *args, **kwargs)
 
     def __str__(self, *args, **kwargs):
-        fn = super(NetworkInfoAsyncWrapper, self).__str__
-        return self._sync_wrapper(fn, *args, **kwargs)
+        if self._gt is not None:
+            return "<%s at 0x%s>" % (self.__class__.__name__, id(self))
+        else:
+            return super(NetworkInfoAsyncWrapper, self).__str__(
+                *args, **kwargs)
 
     def __repr__(self, *args, **kwargs):
-        fn = super(NetworkInfoAsyncWrapper, self).__repr__
-        return self._sync_wrapper(fn, *args, **kwargs)
+        if self._gt is not None:
+            return "<%s at 0x%s>" % (self.__class__.__name__, id(self))
+        else:
+            return super(NetworkInfoAsyncWrapper, self).__repr__(
+                *args, **kwargs)
 
     def wait(self, do_raise=True):
         """Wait for async call to finish."""

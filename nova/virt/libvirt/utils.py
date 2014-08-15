@@ -522,7 +522,24 @@ def get_instance_path(instance, forceold=False, relative=False):
 
     if relative:
         return instance.uuid
-    return os.path.join(CONF.instances_path, instance.uuid)
+    #return os.path.join(CONF.instances_path, instance.uuid)
+    if CONF.storage_scope.lower() == "global":
+        interpath = "global"
+    else:
+        interpath = None
+    if len(instance.metadata) > 0:
+        ins_meta = utils.instance_meta(instance)
+        for key,value in ins_meta.items():
+            if key.lower() == 'storage_scope':
+                if value.lower() == 'global':
+                    interpath = "global"
+                else:
+                    interpath = None
+                break
+    if interpath is None:
+        return os.path.join(CONF.instances_path, instance.uuid)
+    else:
+        return os.path.join(CONF.instances_path, interpath, instance.uuid)
 
 
 def get_instance_path_at_destination(instance, migrate_data=None):
