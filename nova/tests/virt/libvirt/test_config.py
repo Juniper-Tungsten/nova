@@ -1249,6 +1249,24 @@ class LibvirtConfigGuestInterfaceTest(LibvirtConfigBaseTest):
               </vlan>
             </interface>""")
 
+    def test_config_vhostuser(self):
+        obj = config.LibvirtConfigGuestInterface()
+        obj.net_type = "vhostuser"
+        obj.vhostuser_type = "unix"
+        obj.vhostuser_path = "/tmp/vhostuser.sock"
+        obj.vhostuser_mode = "server"
+        obj.mac_addr = "DE:AD:BE:EF:CA:FE"
+        obj.model = "virtio"
+
+        xml = obj.to_xml()
+        self.assertXmlEqual(xml, """
+            <interface type="vhostuser">
+              <mac address="DE:AD:BE:EF:CA:FE"/>
+              <model type="virtio"/>
+              <source type="unix" path="/tmp/vhostuser.sock" mode="server"/>
+            </interface>""")
+
+
 
 class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
 

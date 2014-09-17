@@ -1073,6 +1073,9 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
             **kwargs)
 
         self.net_type = None
+        self.vhostuser_type = None
+        self.vhostuser_path = None
+        self.vhostuser_mode = None
         self.target_dev = None
         self.model = None
         self.mac_addr = None
@@ -1122,6 +1125,10 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
             addr_elem.set("function", "0x%s" % (func))
             source_elem.append(addr_elem)
             dev.append(source_elem)
+        elif self.net_type == "vhostuser":
+            dev.append(etree.Element("source", type=self.vhostuser_type,
+                                     path=self.vhostuser_path,
+                                     mode=self.vhostuser_mode))
         else:
             dev.append(etree.Element("source", bridge=self.source_dev))
 

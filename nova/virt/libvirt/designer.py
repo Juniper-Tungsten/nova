@@ -57,6 +57,19 @@ def set_vif_host_backend_ethernet_config(conf, tapname):
     conf.target_dev = tapname
     conf.script = ""
 
+def set_vif_host_backend_vhostuser_config(conf, mode, path=None):
+    """Populate a LibvirtConfigGuestInterface instance
+    with vhostuser socket details
+    """
+
+    conf.net_type = "vhostuser"
+    # unix is the only supported type in libvirt
+    conf.vhostuser_type = "unix"
+    if path:
+        conf.vhostuser_path = path
+    else:
+        conf.vhostuser_path = "/var/lib/libvirt/qemu/vhostuser"
+    conf.vhostuser_mode = mode
 
 def set_vif_host_backend_ovs_config(conf, brname, interfaceid, tapname=None):
     """Populate a LibvirtConfigGuestInterface instance
