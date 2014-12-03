@@ -130,7 +130,7 @@ compute_opts = [
     cfg.IntOpt('block_device_allocate_retries',
                default=60,
                help='Number of times to retry block device'
-                    ' allocation on failures')
+                    ' allocation on failures'),
     cfg.StrOpt('storage_scope',
                default='local',
                help='whether instances are stored on shared or local storage'),

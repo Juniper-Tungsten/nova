@@ -1359,7 +1359,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 virt_dom.managedSave(0)
 
         snapshot_backend = self.image_backend.snapshot(
-                instance=instance,
+                instance,
                 disk_path,
                 image_type=source_format)
 
