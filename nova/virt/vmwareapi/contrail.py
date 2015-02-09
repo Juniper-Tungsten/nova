@@ -69,7 +69,7 @@ class ContrailVIFDriver(object):
 
     def __init__(self):
         super(ContrailVIFDriver, self).__init__()
-        self._vrouter_client = ContrailVRouterApi()
+        self._vrouter_client = ContrailVRouterApi(doconnect=True)
         timer = loopingcall.FixedIntervalLoopingCall(self._keep_alive)
         timer.start(interval=2)
     #end __init__
@@ -181,8 +181,6 @@ class ESXVlans(object):
 
 #end ESXVlans
 
-
-        
 class ContrailESXDriver(VMwareESXDriver):
     """Sub class of ESX"""
 
@@ -190,6 +188,7 @@ class ContrailESXDriver(VMwareESXDriver):
         super(ContrailESXDriver, self).__init__(virtapi)
         self.VifInfo = ContrailVIFDriver()
         self.Vlan = ESXVlans(self._session)
+        self._vm_info = { }
 
     def remove_port_group(self, name):
         session = self._session
@@ -205,84 +204,131 @@ class ContrailESXDriver(VMwareESXDriver):
                                  pgName=name) 
         except error_util.VimFaultException as exc:
             pass
-        
+
+    def get_portgroup_name(self, vif, instance):
+        return vif['network']['label'] + '-' + str(instance['hostname']) \
+            + '-' + str(vif['id'])
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
         session = self._session
+
+        vm_uuid = instance['uuid']
+
+        vm_info = self._vm_info.get(vm_uuid)
+        if vm_info is None:
+            self._vm_info[vm_uuid] = { }
+
         if network_info:
             for vif in network_info:
-                vlan_id = self.Vlan.alloc_vlan()
-                if vlan_id == INVALID_VLAN_ID:
-                    raise exception.NovaException("Vlan id space is full")
+                vif_uuid = vif['id']
+                if self._vm_info[vm_uuid].get(vif_uuid) is None:
+                    self._vm_info[vm_uuid] [vif_uuid] = { }
+                    vlan_id = self.Vlan.alloc_vlan()
+                    if vlan_id == INVALID_VLAN_ID:
+                        raise exception.NovaException("Vlan id space is full")
+                    portgroup = self.get_portgroup_name(vif, instance)
+                    vif['network'] ['bridge'] = portgroup
 
-                vif['network']['bridge'] = vif['network']['label'] + \
-                                            '-' + str(instance['hostname']) + \
-                                            '-' + str(vif['id'])
+                    # Store portgroup and vlan-id for VIF
+                    self._vm_info[vm_uuid][vif_uuid]['vlan_id'] = vlan_id
+                    self._vm_info[vm_uuid][vif_uuid]['portgroup'] = portgroup
+                else:
+                    portgroup = self._vm_info[vm_uuid][vif_uuid]['portgroup']
+                    vlan_id = self._vm_info[vm_uuid][vif_uuid]['vlan_id']
+                self._vm_info[vm_uuid][vif_uuid]['vif'] = vif
+
                 args = {'should_create_vlan':True, 'vlan':vlan_id}
                 vif['network']._set_meta(args)
-                network_util.create_port_group(session,
-                                                vif['network']['bridge'],
-                                                CONF.vmware.vmpg_vswitch,
-                                                vlan_id)
+                network_util.create_port_group(session, portgroup,
+                                               CONF.vmware.vmpg_vswitch,
+                                               vlan_id)
                 self.VifInfo.plug(instance, vif, vlan_id)
 
-        super(ContrailESXDriver, self).spawn(context, instance, image_meta,
-                                             injected_files, admin_password,
-                                             network_info, block_device_info)
+        try:
+            super(ContrailESXDriver, self).spawn(context, instance, image_meta,
+                                                 injected_files, admin_password,
+                                                 network_info, block_device_info)
+        except Exception as exc:
+            LOG.exception(exc, instance=instance)
+            pass
+        return
 
     def destroy(self, instance, network_info, block_device_info=None,
                 destroy_disks=True, context=None):
         session = self._session
-        vlan_id = None
-        vswitch = ""
-
-        if network_info:
-            for vif in network_info:
-                self.VifInfo.unplug(instance, vif)
-
-        super(ContrailESXDriver, self).destroy(instance, network_info,
-                block_device_info, destroy_disks, context)
-
-        if not network_info:
+        vm_uuid = instance['uuid']
+        vm_info = self._vm_info.get(vm_uuid)
+        if not vm_info:
             return
 
-        for vif in network_info:
-            port_group = vif['network']['label'] + \
-                          '-' + str(instance['hostname']) + \
-                          '-' + str(vif['id'])
+        # In case of exception during spawn, the network_info may be reset.
+        # Do unplug of VIF and portgroup/vlan delete based on values
+        # from _vm_info
+        try:
+            for vif in vm_info:
+                vif_info = self._vm_info[vm_uuid][vif]
+                self.VifInfo.unplug(instance, vif_info['vif'])
+        except Exception as exc:
+            LOG.exception(_LE("Error in vif unplug"),
+                          instance=instance)
 
-            try:
-                vlan_id, vswitch = \
-                    network_util.get_vlanid_and_vswitch_for_portgroup(session,
-                                                                      port_group)
-            except TypeError:
-                pass
-            if not vlan_id:
-                return
+        # Remove the VM
+        try:
+            super(ContrailESXDriver, self).destroy(instance, network_info,
+                  block_device_info, destroy_disks, context)
+        except Exception as exc:
+            LOG.exception(exc, instance=instance)
 
-            self.remove_port_group(port_group)
-            self.Vlan.free_vlan(vlan_id)
+        # Remove all port-groups and free the VLAN allocated for the vif
+        try:
+            for vif in vm_info:
+                vif_info = self._vm_info[vm_uuid][vif]
+                self.remove_port_group(vif_info['portgroup'])
+                self.Vlan.free_vlan(vif_info['vlan_id'])
+        except Exception as exc:
+            LOG.exception(_LE("Error removing portgroup / VLAN for vif"),
+                          instance=instance)
+        del self._vm_info[vm_uuid]
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
 
         session = self._session
+        vm_uuid = instance['uuid']
+        vm_info = self._vm_info.get(vm_uuid)
+        if vm_info is None:
+            self._vm_info[vm_uuid] = { }
+
+        # On nova-compute restart, vm_info is not populated.
+        # However, network_info is populated in all cases. So, pick
+        # configuration from network_info
         for vif in network_info:
             vlan_id = None
-            vswitch = ""
-            port_group = vif['network']['label'] + \
-                          '-' + str(instance['hostname']) + \
-                          '-' + str(vif['id'])
-            try:
-                vlan_id, vswitch = \
-                    network_util.get_vlanid_and_vswitch_for_portgroup(session,
-                                                                      port_group)
-            except TypeError:
-                pass
-            if not vlan_id:
-                continue
-            vif['network']['bridge'] = vif['network']['label'] + \
-                                            '-' + str(instance['hostname']) + \
-                                            '-' + str(vif['id'])
+            vswitch = ''
+            vif_uuid = vif['id']
+
+            vif_info = self._vm_info[vm_uuid].get(vif_uuid)
+            if vif_info is None:
+                # vm_info not found. Most likely a case on nova-compute restart
+                # In case of restart, plug_vifs is called without spawn
+                # Read the port-group, vlan and populate vm_info
+                portgroup = self.get_portgroup_name(vif, instance)
+                try:
+                    vlan_id, vswitch = \
+                        network_util.get_vlanid_and_vswitch_for_portgroup(session,
+                                                                      portgroup)
+                except TypeError:
+                    pass
+                if not vlan_id:
+                    continue
+
+                vif['network']['bridge'] = portgroup
+                # Copy vlan_id, portgroup and vif into vm_info
+                self._vm_info[vm_uuid][vif_uuid] = { }
+                self._vm_info[vm_uuid][vif_uuid]['vlan_id'] = vlan_id
+                self._vm_info[vm_uuid][vif_uuid]['portgroup'] = portgroup
+
+            self._vm_info[vm_uuid][vif_uuid]['vif'] = vif
+            # Plug the VIF
             self.VifInfo.plug(instance, vif, vlan_id)
