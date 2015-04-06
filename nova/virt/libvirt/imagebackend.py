@@ -236,8 +236,13 @@ class Image(object):
             if not os.path.exists(target):
                 fetch_func(target=target, *args, **kwargs)
 
-        base_dir = os.path.join(CONF.instances_path,
-                                CONF.image_cache_subdirectory_name)
+        if interpath is None:
+            base_dir = os.path.join(CONF.instances_path,
+                                    CONF.image_cache_subdirectory_name)
+        else:
+            base_dir = os.path.join(CONF.instances_path, interpath,
+                                    CONF.image_cache_subdirectory_name)
+
         if not os.path.exists(base_dir):
             fileutils.ensure_tree(base_dir)
         base = os.path.join(base_dir, filename)
