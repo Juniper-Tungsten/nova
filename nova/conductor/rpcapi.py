@@ -338,6 +338,9 @@ class ConductorAPI(object):
         else:
             cctxt = self.client.prepare()
 
+        return cctxt.call(context, 'service_update',
+                          service=service_p, values=values)
+
     def task_log_get(self, context, task_name, begin, end, host, state=None):
         cctxt = self.client.prepare()
         return cctxt.call(context, 'task_log_get',
