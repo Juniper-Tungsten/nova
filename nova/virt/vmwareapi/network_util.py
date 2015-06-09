@@ -32,13 +32,13 @@ def get_network_with_the_name(session, network_name="vmnet0", cluster=None):
     """Gets reference to the network whose name is passed as the
     argument.
     """
-    host = vm_util.get_host_ref(session, cluster)
     if cluster is not None:
         vm_networks_ret = session._call_method(vim_util,
                                                "get_dynamic_property", cluster,
                                                "ClusterComputeResource",
                                                "network")
     else:
+        host = vm_util.get_host_ref(session, cluster)
         vm_networks_ret = session._call_method(vim_util,
                                                "get_dynamic_property", host,
                                                "HostSystem", "network")
@@ -76,6 +76,7 @@ def get_network_with_the_name(session, network_name="vmnet0", cluster=None):
                 network_obj['type'] = 'Network'
                 network_obj['name'] = network_name
     if (len(network_obj) > 0):
+        LOG.debug(_("networks found: %s"), network_obj)
         return network_obj
     LOG.debug(_("Network %s not found on host!"), network_name)
 
@@ -160,6 +161,37 @@ def create_port_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
         session._call_method(session._get_vim(),
                 "AddPortGroup", network_system_mor,
                 portgrp=add_prt_grp_spec)
+    except error_util.AlreadyExistsException:
+        # There can be a race condition when two instances try
+        # adding port groups at the same time. One succeeds, then
+        # the other one will get an exception. Since we are
+        # concerned with the port group being created, which is done
+        # by the other call, we can ignore the exception.
+        LOG.debug(_("Port Group %s already exists."), pg_name)
+    LOG.debug(_("Created Port Group with name %s on "
+                "the ESX host") % pg_name)
+
+ 
+def create_dvsport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
+    """Creates a port group on the host system with the vlan tags
+    supplied. VLAN id 0 means no vlan id association.
+    """
+    #import pdb; pdb.set_trace()
+    client_factory = session._get_vim().client.factory
+    dvs_mor = vm_util.get_dvs_ref_from_name(session, vswitch_name);
+
+    add_prt_grp_spec = vm_util.get_add_dvswitch_port_group_spec(
+                    client_factory,
+                    vswitch_name,
+                    pg_name,
+                    vlan_id)
+    try:
+        pg_create_task = session._call_method(
+                                    session._get_vim(),
+                                    "CreateDVPortgroup_Task", dvs_mor,
+                                    spec=add_prt_grp_spec)
+        session._wait_for_task(pg_create_task)
+
     except error_util.AlreadyExistsException:
         # There can be a race condition when two instances try
         # adding port groups at the same time. One succeeds, then

@@ -70,6 +70,10 @@ def build_recursive_traversal_spec(client_factory):
     dc_to_vmf = build_traversal_spec(client_factory, "dc_to_vmf", "Datacenter",
                                      "vmFolder", False,
                                      [visit_folders_select_spec])
+    # For getting to networkFolder from datacenter
+    dc_to_nwf = build_traversal_spec(client_factory, "dc_to_nwf", "Datacenter",
+                                     "networkFolder", False,
+                                     [visit_folders_select_spec])
     # For getting Host System to virtual machine
     h_to_vm = build_traversal_spec(client_factory, "h_to_vm", "HostSystem",
                                    "vm", False,
@@ -105,7 +109,7 @@ def build_recursive_traversal_spec(client_factory):
     traversal_spec = build_traversal_spec(client_factory, "visitFolders",
                                   "Folder", "childEntity", False,
                                   [visit_folders_select_spec, dc_to_hf,
-                                   dc_to_vmf, cr_to_ds, cr_to_h, cr_to_rp,
+                                   dc_to_vmf, dc_to_nwf, cr_to_ds, cr_to_h, cr_to_rp,
                                    rp_to_rp, h_to_vm, rp_to_vm])
     return traversal_spec
 
