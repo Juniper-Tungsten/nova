@@ -64,7 +64,7 @@ CONF.register_opts(vmwareapi_contrail_opts, 'vmware')
 class ContrailVIFDriver(object):
     """to inform agent"""
 
-    PORT_TYPE = 'NovaVMPort'
+    PORT_TYPE = 'VMPort'
 
     def __init__(self):
         super(ContrailVIFDriver, self).__init__()
