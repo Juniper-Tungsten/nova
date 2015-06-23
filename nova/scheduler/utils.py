@@ -17,6 +17,7 @@
 import collections
 import functools
 import sys
+import functools
 
 from oslo_config import cfg
 from oslo_log import log as logging
