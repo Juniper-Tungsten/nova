@@ -18,6 +18,7 @@
 """VIF drivers for libvirt."""
 
 import copy
+import os.path as path
 
 from oslo.config import cfg
 
@@ -43,6 +44,16 @@ libvirt_vif_opts = [
 CONF = cfg.CONF
 CONF.register_opts(libvirt_vif_opts, 'libvirt')
 CONF.import_opt('use_ipv6', 'nova.netconf')
+
+contrail_vif_opts = [
+    cfg.BoolOpt('use_userspace_vhost',
+                default=False,
+                help='Use qemu userspace-vhost for backing guest interfaces'),
+    cfg.StrOpt('userspace_vhost_socket_dir',
+               default='/var/run/vrouter',
+               help='Directory for userspace vhost sockets'),
+]
+CONF.register_opts(contrail_vif_opts, 'contrail')
 
 DEV_PREFIX_ETH = 'eth'
 
@@ -337,7 +348,13 @@ class LibvirtGenericVIFDriver(object):
         conf = self.get_base_config(instance, vif, image_meta,
                                     inst_type, virt_type)
         dev = self.get_vif_devname(vif)
-        designer.set_vif_host_backend_ethernet_config(conf, dev)
+
+        if CONF.contrail.use_userspace_vhost:
+            dev = path.join(CONF.contrail.userspace_vhost_socket_dir,
+                            'uvh_vif_' + dev)
+            designer.set_vif_host_backend_vhostuser_config(conf, 'client', dev)
+        else:
+            designer.set_vif_host_backend_ethernet_config(conf, dev)
 
         designer.set_vif_bandwidth_config(conf, inst_type)
         return conf
@@ -571,7 +588,8 @@ class LibvirtGenericVIFDriver(object):
                     instance.display_name, vif['address'],
                     vif['devname'], ptype, -1, -1))
         try:
-            linux_net.create_tap_dev(dev)
+            if not CONF.contrail.use_userspace_vhost:
+                linux_net.create_tap_dev(dev)
             utils.execute('vrouter-port-control', cmd_args, run_as_root=True)
         except processutils.ProcessExecutionError:
             LOG.exception(_LE("Failed while plugging vif"), instance=instance)
@@ -738,7 +756,8 @@ class LibvirtGenericVIFDriver(object):
         cmd_args = ("--oper=delete --uuid=%s" % (vif['id']))
         try:
             utils.execute('vrouter-port-control', cmd_args, run_as_root=True)
-            linux_net.delete_net_dev(dev)
+            if not CONF.contrail.use_userspace_vhost:
+                linux_net.delete_net_dev(dev)
         except processutils.ProcessExecutionError:
             LOG.exception(
                 _LE("Failed while unplugging vif"), instance=instance)
