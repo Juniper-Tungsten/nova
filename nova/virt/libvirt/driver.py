@@ -33,7 +33,6 @@ import glob
 import mmap
 import operator
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -622,7 +621,7 @@ class LibvirtDriver(driver.ComputeDriver):
         rootfs_dev = instance.system_metadata.get('rootfs_device_name')
         disk.teardown_container(container_dir, rootfs_dev)
 
-    def _destroy(self, instance):
+    def _destroy(self, instance, attempt=1):
         try:
             virt_dom = self._host.get_domain(instance)
         except exception.InstanceNotFound:
@@ -665,6 +664,34 @@ class LibvirtDriver(driver.ComputeDriver):
                             instance=instance)
                     reason = _("operation time out")
                     raise exception.InstancePowerOffFailure(reason=reason)
+                elif errcode == libvirt.VIR_ERR_SYSTEM_ERROR:
+                    if e.get_int1() == errno.EBUSY:
+                        # NOTE(danpb): When libvirt kills a process it sends it
+                        # SIGTERM first and waits 10 seconds. If it hasn't gone
+                        # it sends SIGKILL and waits another 5 seconds. If it
+                        # still hasn't gone then you get this EBUSY error.
+                        # Usually when a QEMU process fails to go away upon
+                        # SIGKILL it is because it is stuck in an
+                        # uninterruptable kernel sleep waiting on I/O from
+                        # some non-responsive server.
+                        # Given the CPU load of the gate tests though, it is
+                        # conceivable that the 15 second timeout is too short,
+                        # particularly if the VM running tempest has a high
+                        # steal time from the cloud host. ie 15 wallclock
+                        # seconds may have passed, but the VM might have only
+                        # have a few seconds of scheduled run time.
+                        LOG.warn(_LW('Error from libvirt during destroy. '
+                                     'Code=%(errcode)s Error=%(e)s; '
+                                     'attempt %(attempt)d of 3'),
+                                 {'errcode': errcode, 'e': e,
+                                  'attempt': attempt},
+                                 instance=instance)
+                        with excutils.save_and_reraise_exception() as ctxt:
+                            # Try up to 3 times before giving up.
+                            if attempt < 3:
+                                ctxt.reraise = False
+                                self._destroy(instance, attempt + 1)
+                                return
 
                 if not is_okay:
                     with excutils.save_and_reraise_exception():
@@ -851,7 +878,11 @@ class LibvirtDriver(driver.ComputeDriver):
             instance.save()
 
         if CONF.serial_console.enabled:
-            serials = self._get_serial_ports_from_instance(instance)
+            try:
+                serials = self._get_serial_ports_from_instance(instance)
+            except exception.InstanceNotFound:
+                # Serial ports already gone. Nothing to release.
+                serials = ()
             for hostname, port in serials:
                 serial_console.release_port(host=hostname, port=port)
 
@@ -3424,7 +3455,7 @@ class LibvirtDriver(driver.ComputeDriver):
     def _has_cpu_policy_support(self):
         for ver in BAD_LIBVIRT_CPU_POLICY_VERSIONS:
             if self._host.has_version(ver):
-                ver_ = self._version_to_string(version)
+                ver_ = self._version_to_string(ver)
                 raise exception.CPUPinningNotSupported(reason=_(
                     'Invalid libvirt version %(version)s') % {'version': ver_})
         return True
@@ -3474,28 +3505,8 @@ class LibvirtDriver(driver.ComputeDriver):
                 instance_numa_topology)
 
         if not guest_cpu_numa_config:
-            # No NUMA topology defined for instance
-            vcpus = flavor.vcpus
-            memory = flavor.memory_mb
-            if topology:
-                # Host is NUMA capable so try to keep the instance in a cell
-                pci_cells = {pci.numa_node for pci in pci_devs}
-                if len(pci_cells) == 0:
-                    viable_cells_cpus = []
-                    for cell in topology.cells:
-                        if vcpus <= len(cell.cpuset) and memory <= cell.memory:
-                            viable_cells_cpus.append(cell.cpuset)
-
-                    if viable_cells_cpus:
-                        pin_cpuset = random.choice(viable_cells_cpus)
-                        return GuestNumaConfig(pin_cpuset, None, None, None)
-                elif len(pci_cells) == 1 and None not in pci_cells:
-                    cell = topology.cells[pci_cells.pop()]
-                    if vcpus <= len(cell.cpuset) and memory <= cell.memory:
-                        return GuestNumaConfig(cell.cpuset, None, None, None)
-
-            # We have no NUMA topology in the host either,
-            # or we can't find a single cell to acomodate the instance
+            # No NUMA topology defined for instance - let the host kernel deal
+            # with the NUMA effects.
             # TODO(ndipanov): Attempt to spread the instance
             # across NUMA nodes and expose the topology to the
             # instance as an optimisation
@@ -4330,7 +4341,8 @@ class LibvirtDriver(driver.ComputeDriver):
         err = None
         try:
             if xml:
-                err = _LE('Error defining a domain with XML: %s') % xml
+                err = (_LE('Error defining a domain with XML: %s') %
+                       encodeutils.safe_decode(xml, errors='ignore'))
                 domain = self._conn.defineXML(xml)
 
             if power_on:
@@ -5207,9 +5219,16 @@ class LibvirtDriver(driver.ComputeDriver):
         try:
             ret = self._conn.compareCPU(cpu.to_xml(), 0)
         except libvirt.libvirtError as e:
-            LOG.error(m, {'ret': e, 'u': u})
-            raise exception.MigrationPreCheckError(
-                reason=m % {'ret': e, 'u': u})
+            error_code = e.get_error_code()
+            if error_code == libvirt.VIR_ERR_NO_SUPPORT:
+                LOG.debug("URI %(uri)s does not support cpu comparison. "
+                          "It will be proceeded though. Error: %(error)s",
+                          {'uri': self.uri(), 'error': e})
+                return
+            else:
+                LOG.error(m, {'ret': e, 'u': u})
+                raise exception.MigrationPreCheckError(
+                    reason=m % {'ret': e, 'u': u})
 
         if ret <= 0:
             LOG.error(m, {'ret': ret, 'u': u})
@@ -5338,7 +5357,7 @@ class LibvirtDriver(driver.ComputeDriver):
         if not libvirt_utils.is_valid_hostname(dest):
             raise exception.InvalidHostname(hostname=dest)
 
-        greenthread.spawn(self._live_migration, context, instance, dest,
+        utils.spawn(self._live_migration, context, instance, dest,
                           post_method, recover_method, block_migration,
                           migrate_data)
 
@@ -5729,7 +5748,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         dom = self._host.get_domain(instance)
 
-        opthread = greenthread.spawn(self._live_migration_operation,
+        opthread = utils.spawn(self._live_migration_operation,
                                      context, instance, dest,
                                      block_migration,
                                      migrate_data, dom)
@@ -6538,7 +6557,8 @@ class LibvirtDriver(driver.ComputeDriver):
         self._create_domain_and_network(context, xml, instance, network_info,
                                         disk_info,
                                         block_device_info=block_device_info,
-                                        power_on=power_on)
+                                        power_on=power_on,
+                                        vifs_already_plugged=True)
 
         if power_on:
             timer = loopingcall.FixedIntervalLoopingCall(

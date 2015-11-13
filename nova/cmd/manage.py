@@ -958,9 +958,12 @@ class DbCommands(object):
             print(_('There were no records found where '
                     'instance_uuid was NULL.'))
 
-    @args('--max-number', metavar='<number>',
+    @args('--max-number', metavar='<number>', dest='max_number',
           help='Maximum number of instances to consider')
-    def migrate_flavor_data(self, max_number):
+    @args('--force', action='store_true', dest='force',
+          help='Force instances to migrate (even if they may be performing '
+               'another operation). Warning, this is potentially dangerous.')
+    def migrate_flavor_data(self, max_number=None, force=False):
         if max_number is not None:
             max_number = int(max_number)
             if max_number < 0:
@@ -969,8 +972,8 @@ class DbCommands(object):
         admin_context = context.get_admin_context()
         flavor_cache = {}
         match, done = db.migrate_flavor_data(admin_context, max_number,
-                                             flavor_cache)
-        print(_('%(total)i instances matched query, %(done)i completed'),
+                                             flavor_cache, force)
+        print(_('%(total)i instances matched query, %(done)i completed') %
               {'total': match, 'done': done})
 
 

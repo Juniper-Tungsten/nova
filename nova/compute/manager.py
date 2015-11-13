@@ -919,6 +919,18 @@ class ComputeManager(manager.Manager):
                         instance.uuid)
         self._delete_scheduler_instance_info(context, instance.uuid)
 
+    def _create_reservations(self, context, instance, project_id, user_id):
+        vcpus = instance.vcpus
+        mem_mb = instance.memory_mb
+
+        quotas = objects.Quotas(context=context)
+        quotas.reserve(project_id=project_id,
+                       user_id=user_id,
+                       instances=-1,
+                       cores=-vcpus,
+                       ram=-mem_mb)
+        return quotas
+
     def _init_instance(self, context, instance):
         '''Initialize this instance during service init.'''
 
@@ -1020,14 +1032,11 @@ class ComputeManager(manager.Manager):
                 instance.obj_load_attr('system_metadata')
                 bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                         context, instance.uuid)
-                # FIXME(comstud): This needs fixed. We should be creating
-                # reservations and updating quotas, because quotas
-                # wouldn't have been updated for this instance since it is
-                # still in DELETING.  See bug 1296414.
-                #
-                # Create a dummy quota object for now.
-                quotas = objects.Quotas.from_reservations(
-                        context, None, instance=instance)
+                project_id, user_id = objects.quotas.ids_from_instance(
+                    context, instance)
+                quotas = self._create_reservations(context, instance,
+                                                   project_id, user_id)
+
                 self._delete_instance(context, instance, bdms, quotas)
             except Exception:
                 # we don't want that an exception blocks the init_host
@@ -1383,15 +1392,18 @@ class ComputeManager(manager.Manager):
             volume = self.volume_api.get(context, vol_id)
             volume_status = volume['status']
             if volume_status not in ['creating', 'downloading']:
-                if volume_status != 'available':
-                    LOG.warning(_LW("Volume id: %s finished being created but "
-                                    "was not set as 'available'"), vol_id)
-                return attempt
+                if volume_status == 'available':
+                    return attempt
+                LOG.warning(_LW("Volume id: %(vol_id)s finished being "
+                                "created but its status is %(vol_status)s."),
+                            {'vol_id': vol_id,
+                             'vol_status': volume_status})
+                break
             greenthread.sleep(CONF.block_device_allocate_retries_interval)
-        # NOTE(harlowja): Should only happen if we ran out of attempts
         raise exception.VolumeNotCreated(volume_id=vol_id,
                                          seconds=int(time.time() - start),
-                                         attempts=attempts)
+                                         attempts=attempt,
+                                         volume_status=volume_status)
 
     def _decode_files(self, injected_files):
         """Base64 decode the list of files to inject."""
@@ -1773,10 +1785,11 @@ class ComputeManager(manager.Manager):
                         dhcp_options=dhcp_options)
                 LOG.debug('Instance network_info: |%s|', nwinfo,
                           instance=instance)
-                sys_meta = instance.system_metadata
-                sys_meta['network_allocated'] = 'True'
-                self._instance_update(context, instance.uuid,
-                        system_metadata=sys_meta)
+                instance.system_metadata['network_allocated'] = 'True'
+                # NOTE(JoshNang) do not save the instance here, as it can cause
+                # races. The caller shares a reference to instance and waits
+                # for this async greenthread to finish before calling
+                # instance.save().
                 return nwinfo
             except Exception:
                 exc_info = sys.exc_info()
@@ -2032,6 +2045,9 @@ class ComputeManager(manager.Manager):
 
         network_info.wait(do_raise=True)
         instance.info_cache.network_info = network_info
+        # NOTE(JoshNang) This also saves the changes to the instance from
+        # _allocate_network_async, as they aren't saved in that function
+        # to prevent races.
         instance.save(expected_task_state=task_states.SPAWNING)
         return instance
 
@@ -2307,6 +2323,9 @@ class ComputeManager(manager.Manager):
                     instance.vm_state = vm_states.BUILDING
                     instance.task_state = task_states.SPAWNING
                     instance.numa_topology = inst_claim.claimed_numa_topology
+                    # NOTE(JoshNang) This also saves the changes to the
+                    # instance from _allocate_network_async, as they aren't
+                    # saved in that function to prevent races.
                     instance.save(expected_task_state=
                             task_states.BLOCK_DEVICE_MAPPING)
                     block_device_info = resources['block_device_info']
@@ -2796,6 +2815,21 @@ class ComputeManager(manager.Manager):
                              network_info,
                              block_device_info)
 
+    def _delete_snapshot_of_shelved_instance(self, context, instance,
+                                             snapshot_id):
+        """Delete snapshot of shelved instance."""
+        try:
+            self.image_api.delete(context, snapshot_id)
+        except (exception.ImageNotFound,
+                exception.ImageNotAuthorized) as exc:
+            LOG.warning(_LW("Failed to delete snapshot "
+                            "from shelved instance (%s)."),
+                        exc.format_message(), instance=instance)
+        except Exception:
+            LOG.exception(_LE("Something wrong happened when trying to "
+                              "delete snapshot from shelved instance."),
+                          instance=instance)
+
     # NOTE(johannes): This is probably better named power_on_instance
     # so it matches the driver method, but because of other issues, we
     # can't use that name in grizzly.
@@ -2810,6 +2844,16 @@ class ComputeManager(manager.Manager):
         instance.power_state = self._get_power_state(context, instance)
         instance.vm_state = vm_states.ACTIVE
         instance.task_state = None
+
+        # Delete an image(VM snapshot) for a shelved instance
+        snapshot_id = instance.system_metadata.get('shelved_image_id')
+        if snapshot_id:
+            self._delete_snapshot_of_shelved_instance(context, instance,
+                                                      snapshot_id)
+
+        # Delete system_metadata for a shelved instance
+        compute_utils.remove_shelved_keys_from_system_metadata(instance)
+
         instance.save(expected_task_state=task_states.POWERING_ON)
         self._notify_about_instance_usage(context, instance, "power_on.end")
 
@@ -2999,7 +3043,14 @@ class ComputeManager(manager.Manager):
             instance.save(expected_task_state=[task_states.REBUILDING])
 
             if recreate:
+                # Needed for nova-network, does nothing for neutron
                 self.network_api.setup_networks_on_host(
+                        context, instance, self.host)
+                # For nova-network this is needed to move floating IPs
+                # For neutron this updates the host in the port binding
+                # TODO(cfriesen): this network_api call and the one above
+                # are so similar, we should really try to unify them.
+                self.network_api.setup_instance_network_on_host(
                         context, instance, self.host)
 
             network_info = compute_utils.get_nw_info_for_instance(instance)
@@ -4489,10 +4540,14 @@ class ComputeManager(manager.Manager):
 
         if image:
             instance.image_ref = shelved_image_ref
-            self.image_api.delete(context, image['id'])
+            self._delete_snapshot_of_shelved_instance(context, instance,
+                                                      image['id'])
 
         self._unshelve_instance_key_restore(instance, scrubbed_keys)
         self._update_instance_after_spawn(context, instance)
+        # Delete system_metadata for a shelved instance
+        compute_utils.remove_shelved_keys_from_system_metadata(instance)
+
         instance.save(expected_task_state=task_states.SPAWNING)
         self._update_scheduler_instance_info(context, instance)
         self._notify_about_instance_usage(context, instance, 'unshelve.end')
@@ -5357,9 +5412,6 @@ class ComputeManager(manager.Manager):
                                 migrate_data=migrate_data,
                                 destroy_vifs=destroy_vifs)
 
-        # NOTE(tr3buchet): tear down networks on source host
-        self.network_api.setup_networks_on_host(ctxt, instance,
-                                                self.host, teardown=True)
         self.instance_events.clear_events_for_instance(instance)
 
         # NOTE(timello): make sure we update available resources on source
@@ -5425,6 +5477,7 @@ class ComputeManager(manager.Manager):
         # Restore instance state
         current_power_state = self._get_power_state(context, instance)
         node_name = None
+        prev_host = instance.host
         try:
             compute_node = self._get_compute_info(context, self.host)
             node_name = compute_node.hypervisor_hostname
@@ -5437,6 +5490,9 @@ class ComputeManager(manager.Manager):
             instance.node = node_name
             instance.save(expected_task_state=task_states.MIGRATING)
 
+        # NOTE(tr3buchet): tear down networks on source host
+        self.network_api.setup_networks_on_host(context, instance,
+                                                prev_host, teardown=True)
         # NOTE(vish): this is necessary to update dhcp
         self.network_api.setup_networks_on_host(context, instance, self.host)
         self._notify_about_instance_usage(
@@ -6771,8 +6827,8 @@ class _ComputeV4Proxy(object):
         return self.manager.set_host_enabled(ctxt, enabled)
 
     def swap_volume(self, ctxt, instance, old_volume_id, new_volume_id):
-        return self.manager.swap_volume(ctxt, instance, old_volume_id,
-                                        new_volume_id)
+        return self.manager.swap_volume(ctxt, old_volume_id, new_volume_id,
+                                        instance)
 
     def get_host_uptime(self, ctxt):
         return self.manager.get_host_uptime(ctxt)

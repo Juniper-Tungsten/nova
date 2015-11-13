@@ -492,6 +492,17 @@ class ComputeVolumeTestCase(BaseTestCase):
                           self.compute._await_block_device_map_created,
                           self.context, '1')
 
+    def test_await_block_device_created_failed(self):
+        c = self.compute
+
+        fake_result = {'status': 'error', 'id': 'blah'}
+        with mock.patch.object(c.volume_api, 'get',
+                               return_value=fake_result) as fake_get:
+            self.assertRaises(exception.VolumeNotCreated,
+                c._await_block_device_map_created,
+                self.context, '1')
+            fake_get.assert_called_once_with(self.context, '1')
+
     def test_await_block_device_created_slow(self):
         c = self.compute
         self.flags(block_device_allocate_retries=4)
@@ -2028,6 +2039,48 @@ class ComputeTestCase(BaseTestCase):
         inst_obj.task_state = task_states.POWERING_ON
         inst_obj.save()
         self.compute.start_instance(self.context, instance=inst_obj)
+
+        self.compute.terminate_instance(self.context, instance, [], [])
+
+    def test_start_shelved_instance(self):
+        # Ensure shelved instance can be started.
+        self.deleted_image_id = None
+
+        def fake_delete(self_, ctxt, image_id):
+            self.deleted_image_id = image_id
+
+        fake_image.stub_out_image_service(self.stubs)
+        self.stubs.Set(fake_image._FakeImageService, 'delete', fake_delete)
+
+        instance = self._create_fake_instance_obj()
+        image = {'id': 'fake_id'}
+        # Adding shelved information to instance system metadata.
+        shelved_time = timeutils.strtime(at=timeutils.utcnow())
+        instance.system_metadata['shelved_at'] = shelved_time
+        instance.system_metadata['shelved_image_id'] = image['id']
+        instance.system_metadata['shelved_host'] = 'fake-mini'
+        instance.save()
+
+        self.compute.build_and_run_instance(self.context, instance, {}, {}, {},
+                                            block_device_mapping=[])
+        db.instance_update(self.context, instance['uuid'],
+                           {"task_state": task_states.POWERING_OFF,
+                            "vm_state": vm_states.SHELVED})
+        extra = ['system_metadata', 'metadata']
+        inst_uuid = instance['uuid']
+        inst_obj = objects.Instance.get_by_uuid(self.context,
+                                                inst_uuid,
+                                                expected_attrs=extra)
+        self.compute.stop_instance(self.context, instance=inst_obj,
+                                   clean_shutdown=True)
+        inst_obj.task_state = task_states.POWERING_ON
+        inst_obj.save()
+        self.compute.start_instance(self.context, instance=inst_obj)
+        self.assertEqual(image['id'], self.deleted_image_id)
+        self.assertNotIn('shelved_at', inst_obj.system_metadata)
+        self.assertNotIn('shelved_image_id', inst_obj.system_metadata)
+        self.assertNotIn('shelved_host', inst_obj.system_metadata)
+
         self.compute.terminate_instance(self.context, instance, [], [])
 
     def test_stop_start_no_image(self):
@@ -5563,9 +5616,6 @@ class ComputeTestCase(BaseTestCase):
 
         self.mox.StubOutWithMock(self.compute.network_api,
                                  'setup_networks_on_host')
-        self.compute.network_api.setup_networks_on_host(c, instance,
-                                                        instance['host'],
-                                                        teardown=True)
         self.mox.StubOutWithMock(self.compute.instance_events,
                                  'clear_events_for_instance')
         self.compute.instance_events.clear_events_for_instance(
@@ -5625,9 +5675,6 @@ class ComputeTestCase(BaseTestCase):
 
         self.mox.StubOutWithMock(self.compute.network_api,
                                  'setup_networks_on_host')
-        self.compute.network_api.setup_networks_on_host(c, instance,
-                                                        self.compute.host,
-                                                        teardown=True)
         self.mox.StubOutWithMock(self.compute.instance_events,
                                  'clear_events_for_instance')
         self.compute.instance_events.clear_events_for_instance(
@@ -5694,8 +5741,6 @@ class ComputeTestCase(BaseTestCase):
                 mock.call(c, instance, False, dest)])
             post_live_migration_at_source.assert_has_calls(
                 [mock.call(c, instance, [])])
-            setup_networks_on_host.assert_has_calls([
-                mock.call(c, instance, self.compute.host, teardown=True)])
             clear_events.assert_called_once_with(instance)
             update_available_resource.assert_has_calls([mock.call(c)])
 
@@ -5780,6 +5825,8 @@ class ComputeTestCase(BaseTestCase):
                                       self.instance).AndReturn(10001)
 
     def _finish_post_live_migration_at_destination(self):
+        self.compute.network_api.setup_networks_on_host(self.admin_ctxt,
+                mox.IgnoreArg(), mox.IgnoreArg(), teardown=True)
         self.compute.network_api.setup_networks_on_host(self.admin_ctxt,
                 mox.IgnoreArg(), self.compute.host)
 
@@ -11345,20 +11392,30 @@ class EvacuateHostTestCase(BaseTestCase):
         super(EvacuateHostTestCase, self).tearDown()
 
     def _rebuild(self, on_shared_storage=True):
-        def fake(cls, ctxt, instance, *args, **kwargs):
-            pass
+        network_api = self.compute.network_api
+        ctxt = context.get_admin_context()
+        mock_context = mock.Mock()
+        mock_context.elevated.return_value = ctxt
 
-        self.stubs.Set(network_api.API, 'setup_networks_on_host', fake)
-
-        orig_image_ref = None
-        image_ref = None
-        injected_files = None
-        bdms = db.block_device_mapping_get_all_by_instance(self.context,
+        @mock.patch.object(network_api, 'setup_networks_on_host')
+        @mock.patch.object(network_api, 'setup_instance_network_on_host')
+        def _test_rebuild(mock_setup_instance_network_on_host,
+                          mock_setup_networks_on_host):
+            orig_image_ref = None
+            image_ref = None
+            injected_files = None
+            bdms = db.block_device_mapping_get_all_by_instance(self.context,
                 self.inst.uuid)
-        self.compute.rebuild_instance(
-                self.context, self.inst, orig_image_ref,
+            self.compute.rebuild_instance(
+                mock_context, self.inst, orig_image_ref,
                 image_ref, injected_files, 'newpass', {}, bdms, recreate=True,
                 on_shared_storage=on_shared_storage)
+            mock_setup_networks_on_host.assert_called_once_with(
+                ctxt, self.inst, self.inst.host)
+            mock_setup_instance_network_on_host.assert_called_once_with(
+                ctxt, self.inst, self.inst.host)
+
+        _test_rebuild()
 
     def test_rebuild_on_host_updated_target(self):
         """Confirm evacuate scenario updates host and node."""
