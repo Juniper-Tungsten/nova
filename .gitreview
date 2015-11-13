@@ -1,4 +1,16 @@
+#
+# Copyright (c) 2015 Juniper Networks, Inc. All rights reserved.
+#
+# OpenContrail Code Review System
+#
+# Please visit opencontrail.org additional information.
+#
+# e.g. After changes are complete and commited to a local branch, do
+# 'git review' to submit changeset to review.opencontrail.org Code Review
+# (gerrit) System.
+#
 [gerrit]
-host=review.openstack.org
+host=review.opencontrail.org
 port=29418
-project=openstack/nova.git
+project=Juniper/nova.git
+defaultbranch=contrail/kilo
