@@ -272,7 +272,10 @@ def errors_out_migration(function):
             return function(self, context, *args, **kwargs)
         except Exception:
             with excutils.save_and_reraise_exception():
-                migration = kwargs['migration']
+                wrapped_func = utils.get_wrapped_function(function)
+                keyed_args = safe_utils.getcallargs(wrapped_func, context,
+                                                    *args, **kwargs)
+                migration = keyed_args['migration']
                 status = migration.status
                 if status not in ['migrating', 'post-migrating']:
                     return
@@ -1279,6 +1282,7 @@ class ComputeManager(manager.Manager):
             self._update_scheduler_instance_info(context, instances)
 
     def cleanup_host(self):
+        self.driver.register_event_listener(None)
         self.instance_events.cancel_all_events()
         self.driver.cleanup_host(host=self.host)
 
@@ -6583,12 +6587,13 @@ class _ComputeV4Proxy(object):
                                           bdm=bdm)
 
     def change_instance_metadata(self, ctxt, instance, diff):
-        return self.manager.change_instance_metadata(ctxt, instance, diff)
+        return self.manager.change_instance_metadata(
+            ctxt, diff=diff, instance=instance)
 
-    def check_can_live_migrate_destination(self, ctxt, instance, destination,
+    def check_can_live_migrate_destination(self, ctxt, instance,
                                            block_migration, disk_over_commit):
         return self.manager.check_can_live_migrate_destination(
-            ctxt, instance, destination, block_migration, disk_over_commit)
+            ctxt, instance, block_migration, disk_over_commit)
 
     def check_can_live_migrate_source(self, ctxt, instance, dest_check_data):
         return self.manager.check_can_live_migrate_source(ctxt, instance,
@@ -6659,9 +6664,9 @@ class _ComputeV4Proxy(object):
     def inject_network_info(self, ctxt, instance):
         return self.manager.inject_network_info(ctxt, instance)
 
-    def live_migration(self, ctxt, instance, dest, block_migration,
+    def live_migration(self, ctxt, dest, instance, block_migration,
                        migrate_data=None):
-        return self.manager.live_migration(ctxt, instance, dest,
+        return self.manager.live_migration(ctxt, dest, instance,
                                            block_migration,
                                            migrate_data=migrate_data)
 
@@ -6676,7 +6681,7 @@ class _ComputeV4Proxy(object):
     def pre_live_migration(self, ctxt, instance, block_migration, disk,
                            migrate_data=None):
         return self.manager.pre_live_migration(ctxt, instance, block_migration,
-                                               disk, migrate_data=None)
+                                               disk, migrate_data=migrate_data)
 
     def prep_resize(self, ctxt, image, instance, instance_type,
                     reservations=None, request_spec=None,
@@ -6701,6 +6706,17 @@ class _ComputeV4Proxy(object):
             injected_files, new_pass, orig_sys_metadata,
             bdms, recreate, on_shared_storage,
             preserve_ephemeral=preserve_ephemeral)
+
+    def refresh_security_group_rules(self, ctxt, security_group_id):
+        return self.manager.refresh_security_group_rules(ctxt,
+                                                         security_group_id)
+
+    def refresh_security_group_members(self, ctxt, security_group_id):
+        return self.manager.refresh_security_group_members(ctxt,
+                                                           security_group_id)
+
+    def refresh_instance_security_rules(self, ctxt, instance):
+        return self.manager.refresh_instance_security_rules(ctxt, instance)
 
     def refresh_provider_fw_rules(self, ctxt):
         return self.manager.refresh_provider_fw_rules(ctxt)
