@@ -447,7 +447,7 @@ class ComputeVolumeTestCase(BaseTestCase):
         instance = self._create_fake_instance_obj()
 
         with contextlib.nested(
-            mock.patch.object(self.compute, '_detach_volume'),
+            mock.patch.object(self.compute, '_driver_detach_volume'),
             mock.patch.object(self.compute.volume_api, 'detach'),
             mock.patch.object(objects.BlockDeviceMapping,
                               'get_by_volume_id'),
@@ -1359,6 +1359,24 @@ class ComputeTestCase(BaseTestCase):
         def test_fn(_self, context, instance):
             self.assertIsInstance(instance, objects.Instance)
             self.assertEqual(instance.uuid, db_inst['uuid'])
+            self.assertEqual(instance.metadata, db_inst['metadata'])
+            self.assertEqual(instance.system_metadata,
+                             db_inst['system_metadata'])
+        test_fn(None, self.context, instance=db_inst)
+
+    def test_object_compat_no_metas(self):
+        # Tests that we don't try to set metadata/system_metadata on the
+        # instance object using fields that aren't in the db object.
+        db_inst = fake_instance.fake_db_instance()
+        db_inst.pop('metadata', None)
+        db_inst.pop('system_metadata', None)
+
+        @compute_manager.object_compat
+        def test_fn(_self, context, instance):
+            self.assertIsInstance(instance, objects.Instance)
+            self.assertEqual(instance.uuid, db_inst['uuid'])
+            self.assertNotIn('metadata', instance)
+            self.assertNotIn('system_metadata', instance)
         test_fn(None, self.context, instance=db_inst)
 
     def test_object_compat_more_positional_args(self):
@@ -1368,6 +1386,9 @@ class ComputeTestCase(BaseTestCase):
         def test_fn(_self, context, instance, pos_arg_1, pos_arg_2):
             self.assertIsInstance(instance, objects.Instance)
             self.assertEqual(instance.uuid, db_inst['uuid'])
+            self.assertEqual(instance.metadata, db_inst['metadata'])
+            self.assertEqual(instance.system_metadata,
+                             db_inst['system_metadata'])
             self.assertEqual(pos_arg_1, 'fake_pos_arg1')
             self.assertEqual(pos_arg_2, 'fake_pos_arg2')
 
@@ -2553,6 +2574,59 @@ class ComputeTestCase(BaseTestCase):
                                       new_pass="new_password",
                                       orig_sys_metadata=sys_metadata,
                                       bdms=[], recreate=False,
+                                      on_shared_storage=False)
+        self.assertTrue(called['rebuild'])
+        self.compute.terminate_instance(self.context, instance, [], [])
+
+    @mock.patch('nova.compute.manager.ComputeManager._detach_volume')
+    def test_rebuild_driver_with_volumes(self, mock_detach):
+        bdms = block_device_obj.block_device_make_list(self.context,
+                [fake_block_device.FakeDbBlockDeviceDict({
+                'id': 3,
+                    'volume_id': u'4cbc9e62-6ba0-45dd-b647-934942ead7d6',
+                    'instance_uuid': 'fake-instance',
+                    'device_name': '/dev/vda',
+                    'connection_info': '{"driver_volume_type": "rbd"}',
+                    'source_type': 'image',
+                    'destination_type': 'volume',
+                    'image_id': 'fake-image-id-1',
+                    'boot_index': 0
+        })])
+
+        # Make sure virt drivers can override default rebuild
+        called = {'rebuild': False}
+
+        def fake(**kwargs):
+            instance = kwargs['instance']
+            instance.task_state = task_states.REBUILD_BLOCK_DEVICE_MAPPING
+            instance.save(expected_task_state=[task_states.REBUILDING])
+            instance.task_state = task_states.REBUILD_SPAWNING
+            instance.save(
+                expected_task_state=[task_states.REBUILD_BLOCK_DEVICE_MAPPING])
+            called['rebuild'] = True
+            func = kwargs['detach_block_devices']
+            # Have the fake driver call the function to detach block devices
+            func(self.context, bdms)
+            # Verify volumes to be detached without destroying
+            mock_detach.assert_called_once_with(self.context,
+                                                bdms[0].volume_id,
+                                                instance, destroy_bdm=False)
+
+        self.stubs.Set(self.compute.driver, 'rebuild', fake)
+        instance = self._create_fake_instance_obj()
+        image_ref = instance['image_ref']
+        sys_metadata = db.instance_system_metadata_get(self.context,
+                        instance['uuid'])
+        self.compute.build_and_run_instance(self.context, instance, {}, {}, {},
+                                            block_device_mapping=[])
+        db.instance_update(self.context, instance['uuid'],
+                           {"task_state": task_states.REBUILDING})
+        self.compute.rebuild_instance(self.context, instance,
+                                      image_ref, image_ref,
+                                      injected_files=[],
+                                      new_pass="new_password",
+                                      orig_sys_metadata=sys_metadata,
+                                      bdms=bdms, recreate=False,
                                       on_shared_storage=False)
         self.assertTrue(called['rebuild'])
         self.compute.terminate_instance(self.context, instance, [], [])
@@ -11356,6 +11430,8 @@ class ComputeInactiveImageTestCase(BaseTestCase):
             return {'id': id, 'min_disk': None, 'min_ram': None,
                     'name': 'fake_name',
                     'status': 'deleted',
+                    'min_ram': 0,
+                    'min_disk': 0,
                     'properties': {'kernel_id': 'fake_kernel_id',
                                    'ramdisk_id': 'fake_ramdisk_id',
                                    'something_else': 'meow'}}
@@ -11492,7 +11568,8 @@ class EvacuateHostTestCase(BaseTestCase):
                   'source_type': 'volume',
                   'device_name': '/dev/vdc',
                   'delete_on_termination': False,
-                  'volume_id': 'fake_volume_id'}
+                  'volume_id': 'fake_volume_id',
+                  'connection_info': '{}'}
 
         db.block_device_mapping_create(self.context, values)
 
@@ -11506,6 +11583,11 @@ class EvacuateHostTestCase(BaseTestCase):
         def fake_detach(self, context, volume):
             result["detached"] = volume["id"] == 'fake_volume_id'
         self.stubs.Set(cinder.API, "detach", fake_detach)
+
+        self.mox.StubOutWithMock(self.compute, '_driver_detach_volume')
+        self.compute._driver_detach_volume(mox.IsA(self.context),
+                                           mox.IsA(instance_obj.Instance),
+                                           mox.IsA(objects.BlockDeviceMapping))
 
         def fake_terminate_connection(self, context, volume, connector):
             return {}
@@ -11527,9 +11609,12 @@ class EvacuateHostTestCase(BaseTestCase):
         self._rebuild()
 
         # cleanup
-        for bdms in db.block_device_mapping_get_all_by_instance(
-                self.context, self.inst.uuid):
-            db.block_device_mapping_destroy(self.context, bdms['id'])
+        bdms = db.block_device_mapping_get_all_by_instance(self.context,
+                                                           self.inst.uuid)
+        if not bdms:
+            self.fail('BDM entry for the attached volume is missing')
+        for bdm in bdms:
+            db.block_device_mapping_destroy(self.context, bdm['id'])
 
     def test_rebuild_on_host_with_shared_storage(self):
         """Confirm evacuate scenario on shared storage."""
@@ -11708,78 +11793,175 @@ class CheckRequestedImageTestCase(test.TestCase):
 
     def test_no_image_specified(self):
         self.compute_api._check_requested_image(self.context, None, None,
-                self.instance_type)
+                self.instance_type, None)
 
     def test_image_status_must_be_active(self):
         image = dict(id='123', status='foo')
 
         self.assertRaises(exception.ImageNotActive,
                 self.compute_api._check_requested_image, self.context,
-                image['id'], image, self.instance_type)
+                image['id'], image, self.instance_type, None)
 
         image['status'] = 'active'
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_image_min_ram_check(self):
         image = dict(id='123', status='active', min_ram='65')
 
         self.assertRaises(exception.FlavorMemoryTooSmall,
                 self.compute_api._check_requested_image, self.context,
-                image['id'], image, self.instance_type)
+                image['id'], image, self.instance_type, None)
 
         image['min_ram'] = '64'
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_image_min_disk_check(self):
         image = dict(id='123', status='active', min_disk='2')
 
         self.assertRaises(exception.FlavorDiskTooSmall,
                 self.compute_api._check_requested_image, self.context,
-                image['id'], image, self.instance_type)
+                image['id'], image, self.instance_type, None)
 
         image['min_disk'] = '1'
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_image_too_large(self):
         image = dict(id='123', status='active', size='1073741825')
 
         self.assertRaises(exception.FlavorDiskTooSmall,
                 self.compute_api._check_requested_image, self.context,
-                image['id'], image, self.instance_type)
+                image['id'], image, self.instance_type, None)
 
         image['size'] = '1073741824'
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_root_gb_zero_disables_size_check(self):
         self.instance_type['root_gb'] = 0
         image = dict(id='123', status='active', size='1073741825')
 
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_root_gb_zero_disables_min_disk(self):
         self.instance_type['root_gb'] = 0
         image = dict(id='123', status='active', min_disk='2')
 
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
 
     def test_config_drive_option(self):
         image = {'id': 1, 'status': 'active'}
         image['properties'] = {'img_config_drive': 'optional'}
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
         image['properties'] = {'img_config_drive': 'mandatory'}
         self.compute_api._check_requested_image(self.context, image['id'],
-                image, self.instance_type)
+                image, self.instance_type, None)
         image['properties'] = {'img_config_drive': 'bar'}
         self.assertRaises(exception.InvalidImageConfigDrive,
                           self.compute_api._check_requested_image,
-                          self.context, image['id'], image, self.instance_type)
+                          self.context, image['id'], image, self.instance_type,
+                          None)
+
+    def test_volume_blockdevicemapping(self):
+        # We should allow a root volume which is larger than the flavor root
+        # disk.
+        # We should allow a root volume created from an image whose min_disk is
+        # larger than the flavor root disk.
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=self.instance_type.root_gb * units.Gi,
+                     min_disk=self.instance_type.root_gb + 1)
+
+        volume_uuid = str(uuid.uuid4())
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='volume', destination_type='volume',
+            volume_id=volume_uuid, volume_size=self.instance_type.root_gb + 1)
+
+        self.compute_api._check_requested_image(self.context, image['id'],
+                image, self.instance_type, root_bdm)
+
+    def test_volume_blockdevicemapping_min_disk(self):
+        # A bdm object volume smaller than the image's min_disk should not be
+        # allowed
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=self.instance_type.root_gb * units.Gi,
+                     min_disk=self.instance_type.root_gb + 1)
+
+        volume_uuid = str(uuid.uuid4())
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='image', destination_type='volume',
+            image_id=image_uuid, volume_id=volume_uuid,
+            volume_size=self.instance_type.root_gb)
+
+        self.assertRaises(exception.FlavorDiskTooSmall,
+                          self.compute_api._check_requested_image,
+                          self.context, image_uuid, image, self.instance_type,
+                          root_bdm)
+
+    def test_volume_blockdevicemapping_min_disk_no_size(self):
+        # We should allow a root volume whose size is not given
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=self.instance_type.root_gb * units.Gi,
+                     min_disk=self.instance_type.root_gb)
+
+        volume_uuid = str(uuid.uuid4())
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='volume', destination_type='volume',
+            volume_id=volume_uuid, volume_size=None)
+
+        self.compute_api._check_requested_image(self.context, image['id'],
+                image, self.instance_type, root_bdm)
+
+    def test_image_blockdevicemapping(self):
+        # Test that we can succeed when passing bdms, and the root bdm isn't a
+        # volume
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=self.instance_type.root_gb * units.Gi, min_disk=0)
+
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='image', destination_type='local', image_id=image_uuid)
+
+        self.compute_api._check_requested_image(self.context, image['id'],
+                image, self.instance_type, root_bdm)
+
+    def test_image_blockdevicemapping_too_big(self):
+        # We should do a size check against flavor if we were passed bdms but
+        # the root bdm isn't a volume
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=(self.instance_type.root_gb + 1) * units.Gi,
+                     min_disk=0)
+
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='image', destination_type='local', image_id=image_uuid)
+
+        self.assertRaises(exception.FlavorDiskTooSmall,
+                          self.compute_api._check_requested_image,
+                          self.context, image['id'],
+                          image, self.instance_type, root_bdm)
+
+    def test_image_blockdevicemapping_min_disk(self):
+        # We should do a min_disk check against flavor if we were passed bdms
+        # but the root bdm isn't a volume
+        image_uuid = str(uuid.uuid4())
+        image = dict(id=image_uuid, status='active',
+                     size=0, min_disk=self.instance_type.root_gb + 1)
+
+        root_bdm = block_device_obj.BlockDeviceMapping(
+            source_type='image', destination_type='local', image_id=image_uuid)
+
+        self.assertRaises(exception.FlavorDiskTooSmall,
+                          self.compute_api._check_requested_image,
+                          self.context, image['id'],
+                          image, self.instance_type, root_bdm)
 
 
 class ComputeHooksTestCase(test.BaseHookTestCase):

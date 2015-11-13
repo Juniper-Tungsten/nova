@@ -49,7 +49,24 @@ ERROR_INVALID_NAME = 123
 
 class PathUtils(object):
     def __init__(self):
-        self._smb_conn = wmi.WMI(moniker=r"root\Microsoft\Windows\SMB")
+        self._set_smb_conn()
+
+    @property
+    def _smb_conn(self):
+        if self._smb_conn_attr:
+            return self._smb_conn_attr
+        raise vmutils.HyperVException(_("The SMB WMI namespace is not "
+                                        "available on this OS version."))
+
+    def _set_smb_conn(self):
+        # The following namespace is not available prior to Windows
+        # Server 2012. utilsfactory is not used in order to avoid a
+        # circular dependency.
+        try:
+            self._smb_conn_attr = wmi.WMI(
+                moniker=r"root\Microsoft\Windows\SMB")
+        except wmi.x_wmi:
+            self._smb_conn_attr = None
 
     def open(self, path, mode):
         """Wrapper on __builtin__.open used to simplify unit testing."""
@@ -78,6 +95,7 @@ class PathUtils(object):
         # shutil.copy(...) but still 20% slower than a shell copy.
         # It can be replaced with Win32 API calls to avoid the process
         # spawning overhead.
+        LOG.debug('Copying file from %s to %s', src, dest)
         output, ret = utils.execute('cmd.exe', '/C', 'copy', '/Y', src, dest)
         if ret:
             raise IOError(_('The file copy from %(src)s to %(dest)s failed')

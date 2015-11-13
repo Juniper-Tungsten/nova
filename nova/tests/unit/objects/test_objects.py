@@ -1150,6 +1150,34 @@ class TestObjectSerializer(_BaseTestCase):
         # .0 of the object.
         self.assertEqual('1.6', obj.VERSION)
 
+    def test_nested_backport(self):
+        class Parent(base.NovaObject):
+            VERSION = '1.0'
+
+            fields = {
+                'child': fields.ObjectField('MyObj'),
+            }
+
+        class Parent(base.NovaObject):  # noqa
+            VERSION = '1.1'
+
+            fields = {
+                'child': fields.ObjectField('MyObj'),
+            }
+
+        child = MyObj(foo=1)
+        parent = Parent(child=child)
+        prim = parent.obj_to_primitive()
+        child_prim = prim['nova_object.data']['child']
+        child_prim['nova_object.version'] = '1.10'
+        ser = base.NovaObjectSerializer()
+        with mock.patch.object(ser.conductor, 'object_backport') as backport:
+            ser.deserialize_entity(self.context, prim)
+            # NOTE(danms): This should be the version of the parent object,
+            # not the child. If wrong, this will be '1.6', which is the max
+            # child version in our registry.
+            backport.assert_called_once_with(self.context, prim, '1.1')
+
     def test_object_serialization(self):
         ser = base.NovaObjectSerializer()
         obj = MyObj()
@@ -1452,3 +1480,12 @@ class TestObjectVersions(test.NoDBTestCase):
                                         field))
                     last_my_version = _my_version
                     last_child_version = _ch_version
+
+
+class TestObjMethodOverrides(test.NoDBTestCase):
+    def test_obj_reset_changes(self):
+        args = inspect.getargspec(base.NovaObject.obj_reset_changes)
+        for obj_classes in base.NovaObject._obj_classes.values():
+            for obj_class in obj_classes:
+                self.assertEqual(args,
+                        inspect.getargspec(obj_class.obj_reset_changes))
