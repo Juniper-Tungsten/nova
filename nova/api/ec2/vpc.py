@@ -26,8 +26,8 @@ from netaddr import IPNetwork
 
 from nova.api.ec2 import ec2utils
 from nova import exception
-from nova.openstack.common.gettextutils import _
-from nova.openstack.common import log as logging
+from nova.i18n import _
+from oslo_log import log as logging
 
 from keystoneclient import exceptions as ke
 import keystoneclient.v2_0
