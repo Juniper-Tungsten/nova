@@ -1473,6 +1473,40 @@ def power_off_instance(session, instance, vm_ref=None):
         LOG.debug("VM already powered off", instance=instance)
 
 
+def get_add_dvswitch_port_group_spec(client_factory, dvswitch_name,
+                                      port_group_name, vlan_id):
+    """Builds the distributed virtual switch port group add spec."""
+    config_spec = client_factory.create('ns0:DVPortgroupConfigSpec')
+    config_spec.name = port_group_name
+    config_spec.description = port_group_name
+    config_spec.numPorts = '128'
+    config_spec.autoExpand = 'True'
+    config_spec.type = 'earlyBinding'
+
+    vlan_spec = client_factory.create('ns0:VmwareDistributedVirtualSwitchPvlanSpec')
+    vlan_spec.pvlanId = int(vlan_id)
+    vlan_spec.inherited = 'False'
+
+    port_config_spec = client_factory.create('ns0:VMwareDVSPortSetting')
+    port_config_spec.vlan = vlan_spec
+    config_spec.defaultPortConfig = port_config_spec
+
+    return config_spec
+
+def get_dvs_ref_from_name(session, dvs_name):
+    """Get reference to the Distributd Virtual Switch with the name specified."""
+    dvs = session._call_method(vim_util, "get_objects",
+                "VmwareDistributedVirtualSwitch", ["summary.name"])
+    return _get_object_from_results(session, dvs, dvs_name,
+                                    _get_object_for_value)
+
+def get_dvportgroup_ref_from_name(session, dvpg_name):
+    """Get reference to the Distributd Virtual Switch with the name specified."""
+    pgs = session._call_method(vim_util, "get_objects",
+                "DistributedVirtualPortgroup", ["name"])
+    return _get_object_from_results(session, pgs, dvpg_name,
+                                    _get_object_for_value)
+
 def find_rescue_device(hardware_devices, instance):
     """Returns the rescue device.
 
