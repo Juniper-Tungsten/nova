@@ -234,3 +234,66 @@ class ContrailVCDriver(VMwareVCDriver):
         """Plug VIFs into networks."""
         # vif plug is done by vcenter plugin. Not done here.
         return
+
+    def attach_interface(self, instance, image_meta, vif):
+        """Attach an interface to the instance."""
+        session = self._session
+        first_cluster = self._resources.keys()[0]
+        network_uuid = vif['network']['id']
+        network_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
+
+        if not network_mor:
+            vif['network']['bridge'] = vif['network']['id']
+            pvlan_id = self.Vlan.alloc_pvlan()
+            #LOG.debug(_("Allocated pvlan for network %s") % network_uuid)
+            if pvlan_id == INVALID_VLAN_ID:
+                raise exception.NovaException("Vlan id space is full")
+
+            #LOG.debug(_("creating %s port-group on cluster!") % network_uuid)
+            network_util.create_dvsport_group(session,
+                                            network_uuid,
+                                            CONF.vmware.vcenter_dvswitch,
+                                            pvlan_id, first_cluster)
+        else:
+            vif['network']['bridge'] = vif['network']['id']
+            #LOG.debug(_("Network %s found on host!") % network_uuid)
+
+        args = {'should_create_vlan':False, 'vlan':'0'}
+        vif['network']._set_meta(args)
+
+        super(ContrailVCDriver, self).attach_interface(instance, image_meta, vif)
+
+    def detach_interface(self, instance, vif):
+        """Detach an interface from the instance."""
+        super(ContrailVCDriver, self).detach_interface(instance, vif)
+
+        session = self._session
+        network_uuid = vif['network']['id']
+        dvpg_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
+        if not dvpg_mor:
+            return;
+
+        vms_ret = session._call_method(vim_util,
+                                       "get_dynamic_property",
+                                       dvpg_mor,
+                                       "DistributedVirtualPortgroup",
+                                       "vm")
+        if not (vms_ret) or (vms_ret.ManagedObjectReference):
+            cfg_ret = session._call_method(vim_util,
+                                          "get_dynamic_property",
+                                          dvpg_mor,
+                                          "DistributedVirtualPortgroup",
+                                          "config")
+            if not cfg_ret:
+                return;
+
+            if not cfg_ret.defaultPortConfig:
+                return;
+
+            if not cfg_ret.defaultPortConfig.vlan:
+                return;
+
+            if hasattr(cfg_ret.defaultPortConfig.vlan, "pvlanId"):
+                self.Vlan.free_pvlan(cfg_ret.defaultPortConfig.vlan.pvlanId)
+
+            self.remove_dvport_group(network_uuid)
