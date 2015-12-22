@@ -64,6 +64,9 @@ VIF_DETAILS_VHOSTUSER_SOCKET = 'vhostuser_socket'
 # Specifies whether vhost-user socket should be plugged
 # into ovs bridge. Valid values are True and False
 VIF_DETAILS_VHOSTUSER_OVS_PLUG = 'vhostuser_ovs_plug'
+# Specifies whether vhost-user mode should be used by vrouter.
+# Valid values are True and False
+VIF_DETAILS_VHOSTUSER_VROUTER_PLUG = 'vhostuser_vrouter_plug'
 
 # Define supported virtual NIC types. VNIC_TYPE_DIRECT and VNIC_TYPE_MACVTAP
 # are used for SR-IOV ports

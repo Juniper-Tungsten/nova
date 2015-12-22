@@ -225,11 +225,7 @@ libvirt_opts = [
                 default=[],
                 help='List of guid targets and ranges.'
                      'Syntax is guest-gid:host-gid:count'
-                     'Maximum of 5 allowed.'),
-    cfg.BoolOpt('use_huge_pages',
-                default=False,
-                help='Use hugepages for backing the guest memory'
-                     'by the host.')
+                     'Maximum of 5 allowed.')
     ]
 
 CONF = cfg.CONF
@@ -4056,11 +4052,6 @@ class LibvirtDriver(driver.ComputeDriver):
         guest.uuid = instance.uuid
         # We are using default unit for memory: KiB
         guest.memory = flavor.memory_mb * units.Ki
-
-        if CONF.libvirt.use_huge_pages:
-            guest.membacking = vconfig.LibvirtConfigGuestMemoryBacking()
-            guest.membacking.hugepages = True
-
         guest.vcpus = flavor.vcpus
         allowed_cpus = hardware.get_vcpu_pin_set()
         pci_devs = pci_manager.get_instance_pci_devs(instance, 'all')
