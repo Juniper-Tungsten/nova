@@ -55,6 +55,19 @@ VIF_DETAILS_PHYSICAL_NETWORK = 'physical_network'
 VIF_DETAILS_PROFILEID = 'profileid'
 VIF_DETAILS_VLAN = 'vlan'
 
+# Constants for vhost-user related fields in 'vif_details'.
+# Sets mode on vhost-user socket, valid values are 'client'
+# and 'server'
+VIF_DETAILS_VHOSTUSER_MODE = 'vhostuser_mode'
+# vhost-user socket path
+VIF_DETAILS_VHOSTUSER_SOCKET = 'vhostuser_socket'
+# Specifies whether vhost-user socket should be plugged
+# into ovs bridge. Valid values are True and False
+VIF_DETAILS_VHOSTUSER_OVS_PLUG = 'vhostuser_ovs_plug'
+# Specifies whether vhost-user mode should be used by vrouter.
+# Valid values are True and False
+VIF_DETAILS_VHOSTUSER_VROUTER_PLUG = 'vhostuser_vrouter_plug'
+
 # Define supported virtual NIC types. VNIC_TYPE_DIRECT and VNIC_TYPE_MACVTAP
 # are used for SR-IOV ports
 VNIC_TYPE_NORMAL = 'normal'
