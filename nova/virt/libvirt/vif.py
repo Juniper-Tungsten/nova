@@ -557,16 +557,28 @@ class LibvirtGenericVIFDriver(object):
         if (cfg.CONF.libvirt.virt_type == 'lxc'):
             ptype = 'NameSpacePort'
 
+        vif_type = 'Vrouter'
+        vhostuser_socket = ''
+        if vif['type'] == network_model.VIF_TYPE_VHOSTUSER:
+            vif_type = 'VhostUser'
+            vhostuser_socket = '--vhostuser_socket=%s' % \
+                vif['details'][network_model.VIF_DETAILS_VHOSTUSER_SOCKET]
+
         cmd_args = ("--oper=add --uuid=%s --instance_uuid=%s --vn_uuid=%s "
                     "--vm_project_uuid=%s --ip_address=%s --ipv6_address=%s"
                     " --vm_name=%s --mac=%s --tap_name=%s --port_type=%s "
-                    "--tx_vlan_id=%d --rx_vlan_id=%d" % (vif['id'],
-                    instance.uuid, vif['network']['id'],
+                    "--vif_type=%s %s --tx_vlan_id=%d --rx_vlan_id=%d" %
+                    (vif['id'], instance.uuid, vif['network']['id'],
                     instance.project_id, ip_addr, ip6_addr,
                     instance.display_name, vif['address'],
-                    vif['devname'], ptype, -1, -1))
+                    vif['devname'], ptype, vif_type, vhostuser_socket, -1, -1))
 
-        utils.execute('vrouter-port-control', cmd_args, run_as_root=True)
+        try:
+            utils.execute('vrouter-port-control', cmd_args, run_as_root=True)
+        except processutils.ProcessExecutionError as e:
+            raise exception.VirtualInterfacePlugException(_("Failed to create "
+                "the vRouter port with the command: vrouter-port-control %s" %
+                cmd_args))
 
     def plug_vhostuser(self, instance, vif):
         ovs_plug = vif['details'].get(
