@@ -28,6 +28,7 @@ import sys
 import uuid
 
 from oslo.config import cfg
+from oslo.vmware import exceptions as vexc
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 from nova import exception
@@ -170,15 +171,16 @@ class ContrailVCDriver(VMwareVCDriver):
                 if not network_mor:
                     vif['network']['bridge'] = vif['network']['id']
                     pvlan_id = self.Vlan.alloc_pvlan()
-                    #LOG.debug(_("Allocated pvlan for network %s") % network_uuid)
                     if pvlan_id == INVALID_VLAN_ID:
                         raise exception.NovaException("Vlan id space is full")
 
-                    #LOG.debug(_("creating %s port-group on cluster!") % network_uuid)
-                    network_util.create_dvsport_group(session,
+                    try:
+                        network_util.create_dvsport_group(session,
                                                     network_uuid,
                                                     CONF.vmware.vcenter_dvswitch,
                                                     pvlan_id, first_cluster)
+                    except vexc.DuplicateName:
+                        self.Vlan.free_pvlan(pvlan_id)
                 else:
                     vif['network']['bridge'] = vif['network']['id']
                     #LOG.debug(_("Network %s found on host!") % network_uuid)
@@ -211,7 +213,7 @@ class ContrailVCDriver(VMwareVCDriver):
                                                  dvpg_mor,
                                                  "DistributedVirtualPortgroup",
                                                  "vm")
-            if not (vms_ret) or (vms_ret.ManagedObjectReference):
+            if not (vms_ret) or not (vms_ret.ManagedObjectReference):
                 cfg_ret = session._call_method(vim_util,
                                               "get_dynamic_property",
                                               dvpg_mor,
