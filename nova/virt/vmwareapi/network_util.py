@@ -193,12 +193,14 @@ def create_dvsport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None
                                     spec=add_prt_grp_spec)
         session._wait_for_task(pg_create_task)
 
-    except error_util.AlreadyExistsException:
+    except vexc.DuplicateName:
         # There can be a race condition when two instances try
         # adding port groups at the same time. One succeeds, then
         # the other one will get an exception. Since we are
         # concerned with the port group being created, which is done
         # by the other call, we can ignore the exception.
         LOG.debug(_("Port Group %s already exists."), pg_name)
+        raise
+
     LOG.debug(_("Created Port Group with name %s on "
                 "the ESX host") % pg_name)
