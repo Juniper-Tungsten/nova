@@ -173,7 +173,7 @@ def create_port_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
               "the ESX host", pg_name)
 
 
-def create_dvsport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
+def create_dvport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
     """Creates a port group on the host system with the vlan tags
     supplied. VLAN id 0 means no vlan id association.
     """
@@ -204,3 +204,12 @@ def create_dvsport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None
 
     LOG.debug(_("Created Port Group with name %s on "
                 "the ESX host") % pg_name)
+
+
+def delete_dvport_group(session, dvpg_mor):
+    if not dvpg_mor:
+        return;
+
+    destroy_task = session._call_method(session.vim, "Destroy_Task",
+                                              dvpg_mor)
+    session._wait_for_task(destroy_task)
