@@ -171,6 +171,7 @@ def get_vm_create_spec(client_factory, instance, data_store_name,
     config_spec.guestId = os_type
     # The name is the unique identifier for the VM.
     config_spec.instanceUuid = instance.uuid
+    config_spec.annotation = instance.display_name
     # set the Hardware version
     config_spec.version = extra_specs.hw_version
 
