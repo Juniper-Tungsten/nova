@@ -17,14 +17,8 @@
 """
 # NOTE(sdague) for nicer compute_driver specification
 from nova.virt.vmwareapi import driver
-from nova.virt.vmwareapi import contrail
 from nova.virt.vmwareapi import contrailVC
 
-# VMwareESXDriver is deprecated in Juno. This property definition
-# allows those configurations to work which reference it while
-# logging a deprecation warning
-VMwareESXDriver = driver.VMwareESXDriver
-ContrailESXDriver = contrail.ContrailESXDriver
+# VMwareESXDriver is deprecated in Juno. 
 VMwareVCDriver = driver.VMwareVCDriver
-ContrailESXDriver = contrail.ContrailESXDriver
 contrailVCDriver = contrailVC.ContrailVCDriver
