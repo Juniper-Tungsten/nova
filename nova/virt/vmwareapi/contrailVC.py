@@ -28,6 +28,7 @@ import sys
 import uuid
 
 from oslo.config import cfg
+from oslo_vmware import vim_util as oslo_vmware_vim_util
 from oslo.vmware import exceptions as vexc
 from oslo_log import log as logging
 from oslo_utils import uuidutils
@@ -144,41 +145,31 @@ class ContrailVCDriver(VMwareVCDriver):
                               "compute_driver=vmwareapi.contrailVCDriver"))
         self.Vlan = VCPVlans(self._session)
 
-    def remove_dvport_group(self, name):
-        session = self._session
-        try:
-            dvpg_mor = vm_util.get_dvportgroup_ref_from_name(session, name)
-            try:
-                destroy_task = self._session._call_method(
-                    session.vim,
-                    "Destroy_Task", dvpg_mor)
-                self._session._wait_for_task(destroy_task)
-            except Exception as excep:
-                LOG.warn(_("In contrailVC:dvportgroup:delete, got this exception"
-                           " while destroying the dvportGroup: %s") % str(excep))
-        except Exception as exc:
-            LOG.exception(exc)
-
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info=None, block_device_info=None):
         session = self._session
-        first_cluster = self._resources.keys()[0]
+        _vmops = self._get_vmops_for_compute_node(instance.node)
         if network_info:
             for vif in network_info:
                 network_uuid = vif['network']['id']
-                network_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
+                network_ref=None
+                try:
+                    network_ref = network_util.get_network_with_the_name(session,
+                                                   network_uuid, _vmops._cluster)
+                except vexc.VMwareDriverException:
+                    LOG.debug("Network %s not found on cluster!", network_uuid)
 
-                if not network_mor:
+                if not network_ref:
                     vif['network']['bridge'] = vif['network']['id']
                     pvlan_id = self.Vlan.alloc_pvlan()
                     if pvlan_id == INVALID_VLAN_ID:
                         raise exception.NovaException("Vlan id space is full")
 
                     try:
-                        network_util.create_dvsport_group(session,
+                        network_util.create_dvport_group(session,
                                                     network_uuid,
                                                     CONF.vmware.vcenter_dvswitch,
-                                                    pvlan_id, first_cluster)
+                                                    pvlan_id, _vmops._cluster)
                     except vexc.DuplicateName:
                         self.Vlan.free_pvlan(pvlan_id)
                 else:
@@ -192,21 +183,31 @@ class ContrailVCDriver(VMwareVCDriver):
                                              injected_files, admin_password,
                                              network_info, block_device_info)
 
-    def destroy(self, instance, network_info, block_device_info=None,
-                destroy_disks=True, context=None):
-        super(ContrailVCDriver, self).destroy(instance, network_info,
-                block_device_info, destroy_disks, context)
+    def destroy(self, context, instance, network_info, block_device_info=None,
+                destroy_disks=True, migrate_data=None):
+        session = self._session
+        _vmops = self._get_vmops_for_compute_node(instance.node)
+
+        super(ContrailVCDriver, self).destroy(context, instance, network_info,
+                                              block_device_info, destroy_disks,
+                                              migrate_data)
 
         if not network_info:
             return
 
-        session = self._session
-
-        for vif in network_info['info_cache']['network_info']:
+        for vif in network_info:
             network_uuid = vif['network']['id']
-            dvpg_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
-            if not dvpg_mor:
+            network_ref=None
+            try:
+                network_ref = network_util.get_network_with_the_name(session,
+                                                     network_uuid, _vmops._cluster);
+            except vexc.VMwareDriverException:
+                LOG.debug("Network %s not found on cluster!", network_uuid)
+
+            if not network_ref:
                 continue;
+
+            dvpg_mor = oslo_vmware_vim_util.get_moref(network_ref['dvpg'], network_ref['type']);
 
             vms_ret = session._call_method(vim_util,
                                                  "get_dynamic_property",
@@ -219,18 +220,22 @@ class ContrailVCDriver(VMwareVCDriver):
                                               dvpg_mor,
                                               "DistributedVirtualPortgroup",
                                               "config")
-                if not cfg_ret:
-                    continue;
+                if (cfg_ret) and (cfg_ret.defaultPortConfig) and (cfg_ret.defaultPortConfig.vlan) :
+                    if hasattr(cfg_ret.defaultPortConfig.vlan, "pvlanId"):
+                        pvlan_id = cfg_ret.defaultPortConfig.vlan.pvlanId
 
-                if not cfg_ret.defaultPortConfig:
-                    continue;
-
-                if not cfg_ret.defaultPortConfig.vlan:
-                    continue;
-
-                if hasattr(cfg_ret.defaultPortConfig.vlan, "pvlanId"):
-                    self.Vlan.free_pvlan(cfg_ret.defaultPortConfig.vlan.pvlanId)
-                self.remove_dvport_group(network_uuid)
+                # No VM exists on the dvPortGroup. Delete the network.
+                # Only if delete network is successful, free pvlan.
+                # This is to avoid it getting reused when old
+                # network is hanging around due to failed n/w delete operation
+                try:
+                    network_util.delete_dvport_group(session, dvpg_mor)
+                    if pvlan_id:
+                        self.Vlan.free_pvlan(pvlan_id)
+                except Exception as excep:
+                    LOG.warn(("In contrailVC:dvportgroup:delete, "
+                               "got this exception while destroying "
+                               "the dvportGroup: %s") % str(excep))
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
@@ -240,9 +245,14 @@ class ContrailVCDriver(VMwareVCDriver):
     def attach_interface(self, instance, image_meta, vif):
         """Attach an interface to the instance."""
         session = self._session
-        first_cluster = self._resources.keys()[0]
+        _vmops = self._get_vmops_for_compute_node(instance.node)
         network_uuid = vif['network']['id']
-        network_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
+        network_mor=None
+        try:
+            network_mor = network_util.get_network_with_the_name(session,
+                                                   network_uuid, _vmops._cluster);
+        except vexc.VMwareDriverException:
+            LOG.debug("Network %s not found on cluster!", network_uuid)
 
         if not network_mor:
             vif['network']['bridge'] = vif['network']['id']
@@ -252,10 +262,10 @@ class ContrailVCDriver(VMwareVCDriver):
                 raise exception.NovaException("Vlan id space is full")
 
             #LOG.debug(_("creating %s port-group on cluster!") % network_uuid)
-            network_util.create_dvsport_group(session,
+            network_util.create_dvport_group(session,
                                             network_uuid,
                                             CONF.vmware.vcenter_dvswitch,
-                                            pvlan_id, first_cluster)
+                                            pvlan_id, _vmops._cluster)
         else:
             vif['network']['bridge'] = vif['network']['id']
             #LOG.debug(_("Network %s found on host!") % network_uuid)
@@ -270,8 +280,15 @@ class ContrailVCDriver(VMwareVCDriver):
         super(ContrailVCDriver, self).detach_interface(instance, vif)
 
         session = self._session
+        _vmops = self._get_vmops_for_compute_node(instance.node)
         network_uuid = vif['network']['id']
-        dvpg_mor = vm_util.get_dvportgroup_ref_from_name(session, network_uuid)
+        dvpg_mor=None
+        try:
+            dvpg_mor = network_util.get_network_with_the_name(session, 
+                                                   network_uuid, _vmops._cluster);
+        except vexc.VMwareDriverException:
+            LOG.debug("Network %s not found on cluster!", network_uuid)
+
         if not dvpg_mor:
             return;
 
@@ -298,4 +315,4 @@ class ContrailVCDriver(VMwareVCDriver):
             if hasattr(cfg_ret.defaultPortConfig.vlan, "pvlanId"):
                 self.Vlan.free_pvlan(cfg_ret.defaultPortConfig.vlan.pvlanId)
 
-            self.remove_dvport_group(network_uuid)
+            self.remove_dvport_group(dvpg_mor)
