@@ -4,22 +4,22 @@
 #
 # Translators:
 # OpenStack Infra <zanata@openstack.org>, 2015. #zanata
+# Andreas Jaeger <jaegerandi@gmail.com>, 2016. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: nova 12.0.0.0b4.dev203\n"
+"Project-Id-Version: nova 12.0.2.dev1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2015-09-16 19:02+0000\n"
-"PO-Revision-Date: 2015-08-30 12:41+0000\n"
-"Last-Translator: openstackjenkins <jenkins@openstack.org>\n"
-"Language-Team: Turkish (Turkey) (http://www.transifex.com/openstack/nova/"
-"language/tr_TR/)\n"
-"Language: tr-TR\n"
+"POT-Creation-Date: 2016-01-21 20:15+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.0\n"
+"PO-Revision-Date: 2016-01-20 02:40+0000\n"
+"Last-Translator: Andreas Jaeger <jaegerandi@gmail.com>\n"
+"Language: tr-TR\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
-"X-Generator: Zanata 3.7.1\n"
+"Generated-By: Babel 2.0\n"
+"X-Generator: Zanata 3.7.3\n"
+"Language-Team: Turkish (Turkey)\n"
 
 msgid "\"Look for the VDIs failed"
 msgstr "\"VDI arama başarısız"
@@ -553,7 +553,7 @@ msgstr "%s-api yükleme başarısı"
 msgid ""
 "Failed to mount container filesystem '%(image)s' on '%(target)s': %(errors)s"
 msgstr ""
-"Kap dosya sistemi '%(image)s' '%(target)s' üstüne bağlanamadı: %(error)s"
+"Kap dosya sistemi '%(image)s' '%(target)s' üstüne bağlanamadı: %(errors)s"
 
 msgid "Failed to notify cells of BDM destroy."
 msgstr "BDM silme hücrelerini bilgilendirme başarısız."
@@ -921,7 +921,7 @@ msgstr ""
 
 #, python-format
 msgid "TIMEOUT: The call to %(method)s timed out. args=%(args)r"
-msgstr "ZAMAN AŞIMI: %(method)s çağrısı zaman aşımına uğradı. args=%(arg)r"
+msgstr "ZAMAN AŞIMI: %(method)s çağrısı zaman aşımına uğradı. args=%(args)r"
 
 #, python-format
 msgid "Temporary directory is invalid: %s"
@@ -1128,7 +1128,7 @@ msgstr ""
 
 #, python-format
 msgid "allocate_port_for_instance returned %(ports)s ports"
-msgstr "allocate_port_for_instance %(port)s bağlantı noktaları döndürdü"
+msgstr "allocate_port_for_instance %(ports)s bağlantı noktaları döndürdü"
 
 msgid "attaching network adapter failed."
 msgstr "ağ bağdaştırıcısı ekleme başarısız."

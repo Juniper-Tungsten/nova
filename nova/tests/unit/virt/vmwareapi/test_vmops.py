@@ -853,11 +853,13 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                  for i in range(4)]
         fake_progress.assert_has_calls(calls)
 
+    @mock.patch.object(vutil, 'get_inventory_path', return_value='fake_path')
     @mock.patch.object(vmops.VMwareVMOps, '_attach_cdrom_to_vm')
     @mock.patch.object(vmops.VMwareVMOps, '_create_config_drive')
     def test_configure_config_drive(self,
                                     mock_create_config_drive,
-                                    mock_attach_cdrom_to_vm):
+                                    mock_attach_cdrom_to_vm,
+                                    mock_get_inventory_path):
         injected_files = mock.Mock()
         admin_password = mock.Mock()
         network_info = mock.Mock()
@@ -868,9 +870,11 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                 injected_files, admin_password, network_info)
 
         upload_iso_path = self._ds.build_path("fake_iso_path")
+        mock_get_inventory_path.assert_called_once_with(self._session.vim,
+                                                        self._dc_info.ref)
         mock_create_config_drive.assert_called_once_with(self._instance,
                 injected_files, admin_password, network_info, self._ds.name,
-                self._dc_info.name, self._instance.uuid, "Fake-CookieJar")
+                'fake_path', self._instance.uuid, "Fake-CookieJar")
         mock_attach_cdrom_to_vm.assert_called_once_with(
                 vm_ref, self._instance, self._ds.ref, str(upload_iso_path))
 
@@ -2057,7 +2061,8 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                 image_ds_loc.rel_path,
                 cookies='Fake-CookieJar')
 
-    @mock.patch.object(images, 'fetch_image_stream_optimized')
+    @mock.patch.object(images, 'fetch_image_stream_optimized',
+                       return_value=123)
     def test_fetch_image_as_vapp(self, mock_fetch_image):
         vi = self._make_vm_config_info()
         image_ds_loc = mock.Mock()
@@ -2071,6 +2076,23 @@ class VMwareVMOpsTestCase(test.NoDBTestCase):
                 self._ds.name,
                 vi.dc_info.vmFolder,
                 self._vmops._root_resource_pool)
+        self.assertEqual(vi.ii.file_size, 123)
+
+    @mock.patch.object(images, 'fetch_image_ova', return_value=123)
+    def test_fetch_image_as_ova(self, mock_fetch_image):
+        vi = self._make_vm_config_info()
+        image_ds_loc = mock.Mock()
+        image_ds_loc.parent.basename = 'fake-name'
+        self._vmops._fetch_image_as_ova(self._context, vi, image_ds_loc)
+        mock_fetch_image.assert_called_once_with(
+                self._context,
+                vi.instance,
+                self._session,
+                'fake-name',
+                self._ds.name,
+                vi.dc_info.vmFolder,
+                self._vmops._root_resource_pool)
+        self.assertEqual(vi.ii.file_size, 123)
 
     @mock.patch.object(uuidutils, 'generate_uuid', return_value='tmp-uuid')
     def test_prepare_iso_image(self, mock_generate_uuid):

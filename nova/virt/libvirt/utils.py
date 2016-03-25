@@ -48,6 +48,8 @@ CONF.register_opts(libvirt_opts, 'libvirt')
 CONF.import_opt('instances_path', 'nova.compute.manager')
 LOG = logging.getLogger(__name__)
 
+RESIZE_SNAPSHOT_NAME = 'nova-resize'
+
 
 def execute(*args, **kwargs):
     return utils.execute(*args, **kwargs)
@@ -160,24 +162,25 @@ def pick_disk_driver_name(hypervisor_version, is_block_dev=False):
         return None
 
 
-def get_disk_size(path):
+def get_disk_size(path, format=None):
     """Get the (virtual) size of a disk image
 
     :param path: Path to the disk image
+    :param format: the on-disk format of path
     :returns: Size (in bytes) of the given disk image as it would be seen
               by a virtual machine.
     """
-    size = images.qemu_img_info(path).virtual_size
+    size = images.qemu_img_info(path, format).virtual_size
     return int(size)
 
 
-def get_disk_backing_file(path, basename=True):
+def get_disk_backing_file(path, basename=True, format=None):
     """Get the backing file of a disk image
 
     :param path: Path to the disk image
     :returns: a path to the image's backing store
     """
-    backing_file = images.qemu_img_info(path).backing_file
+    backing_file = images.qemu_img_info(path, format).backing_file
     if backing_file and basename:
         backing_file = os.path.basename(backing_file)
 
@@ -334,13 +337,20 @@ def find_disk(virt_dom):
     """
     xml_desc = virt_dom.XMLDesc(0)
     domain = etree.fromstring(xml_desc)
+    driver = None
     if CONF.libvirt.virt_type == 'lxc':
-        source = domain.find('devices/filesystem/source')
+        filesystem = domain.find('devices/filesystem')
+        driver = filesystem.find('driver')
+
+        source = filesystem.find('source')
         disk_path = source.get('dir')
         disk_path = disk_path[0:disk_path.rfind('rootfs')]
         disk_path = os.path.join(disk_path, 'disk')
     else:
-        source = domain.find('devices/disk/source')
+        disk = domain.find('devices/disk')
+        driver = disk.find('driver')
+
+        source = disk.find('source')
         disk_path = source.get('file') or source.get('dev')
         if not disk_path and CONF.libvirt.images_type == 'rbd':
             disk_path = source.get('name')
@@ -351,17 +361,26 @@ def find_disk(virt_dom):
         raise RuntimeError(_("Can't retrieve root device path "
                              "from instance libvirt configuration"))
 
-    return disk_path
+    if driver is not None:
+        format = driver.get('type')
+        # This is a legacy quirk of libvirt/xen. Everything else should
+        # report the on-disk format in type.
+        if format == 'aio':
+            format = 'raw'
+    else:
+        format = None
+    return (disk_path, format)
 
 
-def get_disk_type(path):
+def get_disk_type_from_path(path):
     """Retrieve disk type (raw, qcow2, lvm) for given file."""
     if path.startswith('/dev'):
         return 'lvm'
     elif path.startswith('rbd:'):
         return 'rbd'
 
-    return images.qemu_img_info(path).file_format
+    # We can't reliably determine the type from this path
+    return None
 
 
 def get_fs_info(path):

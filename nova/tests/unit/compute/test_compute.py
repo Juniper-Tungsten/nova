@@ -6664,7 +6664,7 @@ class ComputeTestCase(BaseTestCase):
         self.compute._destroy_evacuated_instances(fake_context)
         mock_get.assert_called_once_with(fake_context,
                                          {'source_compute': self.compute.host,
-                                          'status': 'accepted',
+                                          'status': ['accepted', 'done'],
                                           'migration_type': 'evacuation'})
 
     @mock.patch('nova.objects.MigrationList.get_by_filters')
@@ -8899,19 +8899,30 @@ class ComputeAPITestCase(BaseTestCase):
         self.assertIsNone(
             self.compute_api._volume_size(inst_type, blank_bdm))
 
-    def test_is_volume_backed_instance(self):
+    def test_is_volume_backed_instance_no_bdm_no_image(self):
         ctxt = self.context
 
         instance = self._create_fake_instance_obj({'image_ref': ''})
         self.assertTrue(
             self.compute_api.is_volume_backed_instance(ctxt, instance, None))
 
-        instance = self._create_fake_instance_obj({'root_device_name': 'vda'})
+    def test_is_volume_backed_instance_empty_bdm_with_image(self):
+        ctxt = self.context
+        instance = self._create_fake_instance_obj({
+            'root_device_name': 'vda',
+            'image_ref': FAKE_IMAGE_REF
+        })
         self.assertFalse(
             self.compute_api.is_volume_backed_instance(
                 ctxt, instance,
                 block_device_obj.block_device_make_list(ctxt, [])))
 
+    def test_is_volume_backed_instance_bdm_volume_no_image(self):
+        ctxt = self.context
+        instance = self._create_fake_instance_obj({
+            'root_device_name': 'vda',
+            'image_ref': ''
+        })
         bdms = block_device_obj.block_device_make_list(ctxt,
                             [fake_block_device.FakeDbBlockDeviceDict(
                                 {'source_type': 'volume',
@@ -8922,6 +8933,14 @@ class ComputeAPITestCase(BaseTestCase):
         self.assertTrue(
             self.compute_api.is_volume_backed_instance(ctxt, instance, bdms))
 
+    def test_is_volume_backed_instance_bdm_local_no_image(self):
+        # if the root device is local the instance is not volume backed, even
+        # if no image_ref is set.
+        ctxt = self.context
+        instance = self._create_fake_instance_obj({
+            'root_device_name': 'vda',
+            'image_ref': ''
+        })
         bdms = block_device_obj.block_device_make_list(ctxt,
                [fake_block_device.FakeDbBlockDeviceDict(
                 {'source_type': 'volume',
@@ -8940,6 +8959,25 @@ class ComputeAPITestCase(BaseTestCase):
         self.assertFalse(
             self.compute_api.is_volume_backed_instance(ctxt, instance, bdms))
 
+    def test_is_volume_backed_instance_bdm_volume_with_image(self):
+        ctxt = self.context
+        instance = self._create_fake_instance_obj({
+            'root_device_name': 'vda',
+            'image_ref': FAKE_IMAGE_REF
+        })
+        bdms = block_device_obj.block_device_make_list(ctxt,
+                            [fake_block_device.FakeDbBlockDeviceDict(
+                                {'source_type': 'volume',
+                                 'device_name': '/dev/vda',
+                                 'volume_id': 'fake_volume_id',
+                                 'boot_index': 0,
+                                 'destination_type': 'volume'})])
+        self.assertTrue(
+            self.compute_api.is_volume_backed_instance(ctxt, instance, bdms))
+
+    def test_is_volume_backed_instance_bdm_snapshot(self):
+        ctxt = self.context
+        instance = self._create_fake_instance_obj({'root_device_name': 'vda'})
         bdms = block_device_obj.block_device_make_list(ctxt,
                [fake_block_device.FakeDbBlockDeviceDict(
                 {'source_type': 'volume',
@@ -9704,6 +9742,7 @@ class ComputeAPITestCase(BaseTestCase):
                   'device_name': '/dev/vdc',
                   'delete_on_termination': False,
                   'volume_id': volume_id,
+                  'destination_type': 'volume'
                   }
         db.block_device_mapping_create(admin, values)
 

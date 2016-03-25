@@ -8,19 +8,19 @@
 # Zbyněk Schwarz <zbynek.schwarz@gmail.com>, 2015. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: nova 12.0.0.0b4.dev260\n"
+"Project-Id-Version: nova 12.0.1.dev70\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2015-09-22 07:45+0000\n"
-"PO-Revision-Date: 2015-09-21 08:44+0000\n"
-"Last-Translator: Zbyněk Schwarz <zbynek.schwarz@gmail.com>\n"
-"Language-Team: Czech (http://www.transifex.com/openstack/nova/language/cs/)\n"
-"Language: cs\n"
+"POT-Creation-Date: 2016-01-16 19:54+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.0\n"
+"PO-Revision-Date: 2015-09-21 08:44+0000\n"
+"Last-Translator: Zbyněk Schwarz <zbynek.schwarz@gmail.com>\n"
+"Language: cs\n"
 "Plural-Forms: nplurals=3; plural=(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2;\n"
-"X-Generator: Zanata 3.7.1\n"
+"Generated-By: Babel 2.0\n"
+"X-Generator: Zanata 3.7.3\n"
+"Language-Team: Czech\n"
 
 #, python-format
 msgid "%(action_str)s instance"
@@ -840,10 +840,6 @@ msgid "Recovered connection to memcache server for reporting service status."
 msgstr ""
 "Připojení k serveru memcache obnoveno a stav služby může být znovu "
 "kontrolován."
-
-msgid "Recovered connection to nova-conductor for reporting service status."
-msgstr ""
-"Připojení k nová-conductor obnoveno a stav služby může být znovu kontrolován."
 
 #, python-format
 msgid "Registered image %(image_location)s with id %(image_id)s"

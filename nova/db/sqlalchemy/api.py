@@ -1139,6 +1139,13 @@ def fixed_ip_associate(context, address, instance_uuid, network_id=None,
                            retry_on_request=True)
 def fixed_ip_associate_pool(context, network_id, instance_uuid=None,
                             host=None, virtual_interface_id=None):
+    """allocate a fixed ip out of a fixed ip network pool.
+
+    This allocates an unallocated fixed ip out of a specified
+    network. We sort by updated_at to hand out the oldest address in
+    the list.
+
+    """
     if instance_uuid and not uuidutils.is_uuid_like(instance_uuid):
         raise exception.InvalidUUID(uuid=instance_uuid)
 
@@ -1152,6 +1159,7 @@ def fixed_ip_associate_pool(context, network_id, instance_uuid=None,
                                filter_by(reserved=False).\
                                filter_by(instance_uuid=None).\
                                filter_by(host=None).\
+                               order_by(asc(models.FixedIp.updated_at)).\
                                first()
 
         if not fixed_ip_ref:
@@ -4483,7 +4491,9 @@ def migration_get_in_progress_by_host_and_node(context, host, node):
 def migration_get_all_by_filters(context, filters):
     query = model_query(context, models.Migration)
     if "status" in filters:
-        query = query.filter(models.Migration.status == filters["status"])
+        status = filters["status"]
+        status = [status] if isinstance(status, str) else status
+        query = query.filter(models.Migration.status.in_(status))
     if "host" in filters:
         host = filters["host"]
         query = query.filter(or_(models.Migration.source_compute == host,

@@ -1322,6 +1322,14 @@ class MigrationTestCase(test.TestCase):
             hosts = [migration['source_compute'], migration['dest_compute']]
             self.assertIn(filters["host"], hosts)
 
+    def test_get_migrations_by_filters_with_multiple_statuses(self):
+        filters = {"status": ["reverted", "confirmed"],
+                   "migration_type": None, "hidden": False}
+        migrations = db.migration_get_all_by_filters(self.ctxt, filters)
+        self.assertEqual(2, len(migrations))
+        for migration in migrations:
+            self.assertIn(migration['status'], filters['status'])
+
     def test_get_migrations_by_filters_with_type(self):
         self._create(status="special", source_compute="host9",
                      migration_type="evacuation")
@@ -4576,6 +4584,27 @@ class FixedIPTestCase(BaseInstanceTypeTestCase):
         network = db.network_create_safe(self.ctxt, {})
 
         address = self.create_fixed_ip(network_id=network['id'])
+        db.fixed_ip_associate_pool(self.ctxt, network['id'], instance_uuid)
+        fixed_ip = db.fixed_ip_get_by_address(self.ctxt, address)
+        self.assertEqual(fixed_ip['instance_uuid'], instance_uuid)
+
+    def test_fixed_ip_associate_pool_order(self):
+        """Test that fixed_ip always uses oldest fixed_ip.
+
+        We should always be using the fixed ip with the oldest
+        updated_at.
+        """
+        instance_uuid = self._create_instance()
+        network = db.network_create_safe(self.ctxt, {})
+        self.addCleanup(timeutils.clear_time_override)
+        start = timeutils.utcnow()
+        for i in range(1, 4):
+            now = start - datetime.timedelta(hours=i)
+            timeutils.set_time_override(now)
+            address = self.create_fixed_ip(
+                updated_at=now,
+                address='10.1.0.%d' % i,
+                network_id=network['id'])
         db.fixed_ip_associate_pool(self.ctxt, network['id'], instance_uuid)
         fixed_ip = db.fixed_ip_get_by_address(self.ctxt, address)
         self.assertEqual(fixed_ip['instance_uuid'], instance_uuid)
