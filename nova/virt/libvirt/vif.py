@@ -727,9 +727,20 @@ class LibvirtGenericVIFDriver(object):
 
         Bind the vif to a Contrail virtual port.
         """
+        def multiqueue_enabled(instance):
+            metadata = instance['system_metadata']
+            mq = metadata.get('image_hw_vif_multiqueue_enabled')
+            vcpus = 0 if 'vcpus' not in instance else instance['vcpus']
+
+            if mq and mq.lower() == 'true' and vcpus > 1:
+                return True
+            else:
+                return False
+
         dev = self.get_vif_devname(vif)
         try:
-            linux_net.create_tap_dev(dev)
+            linux_net.create_tap_dev(dev,
+                    multiqueue=multiqueue_enabled(instance))
             self._vrouter_port_add(instance, vif)
         except processutils.ProcessExecutionError:
             LOG.exception(_LE("Failed while plugging vif"), instance=instance)

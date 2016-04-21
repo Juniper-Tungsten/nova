@@ -1400,12 +1400,16 @@ def delete_ivs_vif_port(dev):
                   run_as_root=True)
 
 
-def create_tap_dev(dev, mac_address=None):
+def create_tap_dev(dev, mac_address=None, multiqueue=False):
     if not device_exists(dev):
         try:
             # First, try with 'ip'
-            utils.execute('ip', 'tuntap', 'add', dev, 'mode', 'tap',
-                          run_as_root=True, check_exit_code=[0, 2, 254])
+            if multiqueue:
+                cmd = ('ip', 'tuntap', 'add', dev, 'mode', 'tap',
+                       'multi_queue')
+            else:
+                cmd = ('ip', 'tuntap', 'add', dev, 'mode', 'tap')
+            utils.execute(*cmd, run_as_root=True, check_exit_code=[0, 2, 254])
         except processutils.ProcessExecutionError:
             # Second option: tunctl
             utils.execute('tunctl', '-b', '-t', dev, run_as_root=True)
