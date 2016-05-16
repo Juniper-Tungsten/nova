@@ -202,3 +202,44 @@ def create_port_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
         LOG.debug("Port Group %s already exists.", pg_name)
     LOG.debug("Created Port Group with name %s on "
               "the ESX host", pg_name)
+
+
+def create_dvport_group(session, pg_name, vswitch_name, vlan_id=0, cluster=None):
+    """Creates a port group on the host system with the vlan tags
+    supplied. VLAN id 0 means no vlan id association.
+    """
+    client_factory = session.vim.client.factory
+    dvs_mor = vm_util.get_dvs_ref_from_name(session, vswitch_name);
+
+    add_prt_grp_spec = vm_util.get_add_dvswitch_port_group_spec(
+                    client_factory,
+                    vswitch_name,
+                    pg_name,
+                    vlan_id)
+    try:
+        pg_create_task = session._call_method( session.vim,
+                                    "CreateDVPortgroup_Task", dvs_mor,
+                                    spec=add_prt_grp_spec)
+        session._wait_for_task(pg_create_task)
+
+    except vexc.DuplicateName:
+        # There can be a race condition when two instances try
+        # adding port groups at the same time. One succeeds, then
+        # the other one will get an exception. Since we are
+        # concerned with the port group being created, which is done
+        # by the other call, we can ignore the exception.
+        LOG.debug(_("Port Group %s already exists."), pg_name)
+        raise
+
+    LOG.debug(_("Created Port Group with name %s on "
+                "the ESX host") % pg_name)
+
+
+def delete_dvport_group(session, dvpg_mor):
+    if not dvpg_mor:
+        return;
+
+    destroy_task = session._call_method(session.vim, "Destroy_Task",
+                                              dvpg_mor)
+    session._wait_for_task(destroy_task)
+
