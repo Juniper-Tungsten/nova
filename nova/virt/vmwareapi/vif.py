@@ -137,6 +137,12 @@ def _get_neutron_network(session, cluster, vif):
                 session, network_id, cluster)
         if not network_ref:
             raise exception.NetworkNotFoundForBridge(bridge=network_id)
+    elif vif['type'] == model.VIF_TYPE_VROUTER:
+        network_id = vif['network']['bridge']
+        network_ref = network_util.get_network_with_the_name(
+                session, network_id, cluster)
+        if not network_ref:
+            raise exception.NetworkNotFoundForBridge(bridge=network_id)
     else:
         reason = _('vif type %s not supported') % vif['type']
         raise exception.InvalidInput(reason=reason)
