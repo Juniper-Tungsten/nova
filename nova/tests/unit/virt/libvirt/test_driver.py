@@ -6952,6 +6952,28 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         drvr.cleanup_live_migration_destination_check(self.context,
                                                       dest_check_data)
 
+    @mock.patch('os.path.exists', return_value=True)
+    @mock.patch('os.utime')
+    def test_check_shared_storage_test_file_exists(self, mock_utime,
+                                                   mock_path_exists):
+        tmpfile_path = os.path.join(CONF.instances_path, 'tmp123')
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        self.assertTrue(drvr._check_shared_storage_test_file(
+            'tmp123', mock.sentinel.instance))
+        mock_utime.assert_called_once_with(CONF.instances_path, None)
+        mock_path_exists.assert_called_once_with(tmpfile_path)
+
+    @mock.patch('os.path.exists', return_value=False)
+    @mock.patch('os.utime')
+    def test_check_shared_storage_test_file_does_not_exist(self, mock_utime,
+                                                   mock_path_exists):
+        tmpfile_path = os.path.join(CONF.instances_path, 'tmp123')
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        self.assertFalse(drvr._check_shared_storage_test_file(
+            'tmp123', mock.sentinel.instance))
+        mock_utime.assert_called_once_with(CONF.instances_path, None)
+        mock_path_exists.assert_called_once_with(tmpfile_path)
+
     def _mock_can_live_migrate_source(self, block_migration=False,
                                       is_shared_block_storage=False,
                                       is_shared_instance_path=False,
@@ -9252,10 +9274,11 @@ class LibvirtConnTestCase(test.NoDBTestCase):
                                 CONF.image_cache_subdirectory_name)
         instance = objects.Instance(**self.test_instance)
         disk_info_byname = fake_disk_info_byname(instance)
-        disk_info = disk_info_byname.values()
 
-        # Give the ephemeral disk a non-default name
         disk_info_byname['disk.local']['backing_file'] = 'ephemeral_foo'
+        disk_info_byname['disk.local']['virt_disk_size'] = 1 * units.Gi
+
+        disk_info = disk_info_byname.values()
 
         with test.nested(
             mock.patch.object(libvirt_driver.libvirt_utils, 'fetch_image'),
@@ -9283,8 +9306,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
 
             verify_base_size_mock.assert_has_calls([
                 mock.call(root_backing, instance.flavor.root_gb * units.Gi),
-                mock.call(ephemeral_backing,
-                          instance.flavor.ephemeral_gb * units.Gi)
+                mock.call(ephemeral_backing, 1 * units.Gi)
             ])
 
     def test_create_images_and_backing_disk_info_none(self):
