@@ -9,4 +9,5 @@
 host=review.opencontrail.org
 port=29418
 project=Juniper/nova.git
-defaultbranch=master
+defaultbranch=contrail/newton
+
