@@ -22,9 +22,9 @@ import os.path as path
 
 import os
 from oslo_concurrency import processutils
-from oslo_config import cfg
 from oslo_log import log as logging
 
+import nova.conf
 from nova import exception
 from nova.i18n import _
 from nova.i18n import _LE
@@ -38,15 +38,7 @@ from nova.virt import osinfo
 
 LOG = logging.getLogger(__name__)
 
-libvirt_vif_opts = [
-    cfg.BoolOpt('use_virtio_for_bridges',
-                default=True,
-                help='Use virtio for bridge interfaces with KVM/QEMU'),
-]
-
-CONF = cfg.CONF
-CONF.register_opts(libvirt_vif_opts, 'libvirt')
-CONF.import_opt('use_ipv6', 'nova.netconf')
+CONF = nova.conf.CONF
 
 contrail_vif_opts = [
     cfg.BoolOpt('use_userspace_vhost',
@@ -150,6 +142,12 @@ class LibvirtGenericVIFDriver(object):
         designer.set_vif_guest_frontend_config(
             conf, vif['address'], model, driver, vhost_queues)
 
+        return conf
+
+    def get_base_hostdev_pci_config(self, vif):
+        conf = vconfig.LibvirtConfigGuestHostdevPCI()
+        pci_slot = vif['profile']['pci_slot']
+        designer.set_vif_host_backend_hostdev_pci_config(conf, pci_slot)
         return conf
 
     def _get_virtio_mq_settings(self, image_meta, flavor):
@@ -335,6 +333,10 @@ class LibvirtGenericVIFDriver(object):
 
         return conf
 
+    def get_config_hostdev_physical(self, instance, vif, image_meta,
+                                    inst_type, virt_type, host):
+        return self.get_base_hostdev_pci_config(vif)
+
     def get_config_macvtap(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif, image_meta,
@@ -425,10 +427,7 @@ class LibvirtGenericVIFDriver(object):
 
     def get_config_ib_hostdev(self, instance, vif, image_meta,
                               inst_type, virt_type, host):
-        conf = vconfig.LibvirtConfigGuestHostdevPCI()
-        pci_slot = vif['profile']['pci_slot']
-        designer.set_vif_host_backend_ib_hostdev_config(conf, pci_slot)
-        return conf
+        return self.get_base_hostdev_pci_config(vif)
 
     def get_config_vrouter(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
@@ -451,7 +450,7 @@ class LibvirtGenericVIFDriver(object):
         vif_type = vif['type']
 
         LOG.debug('vif_type=%(vif_type)s instance=%(instance)s '
-                  'vif=%(vif)s virt_type%(virt_type)s',
+                  'vif=%(vif)s virt_type=%(virt_type)s',
                   {'vif_type': vif_type, 'instance': instance,
                    'vif': vif, 'virt_type': virt_type})
 
@@ -604,6 +603,9 @@ class LibvirtGenericVIFDriver(object):
                 mac_addr=vif['address'],
                 vlan=vif['details'][network_model.VIF_DETAILS_VLAN])
 
+    def plug_hostdev_physical(self, instance, vif):
+        pass
+
     def plug_macvtap(self, instance, vif):
         vif_details = vif['details']
         vlan = vif_details.get(network_model.VIF_DETAILS_VLAN)
@@ -737,7 +739,7 @@ class LibvirtGenericVIFDriver(object):
                     ip6_addr = ips['address']
 
         ptype = 'NovaVMPort'
-        if (cfg.CONF.libvirt.virt_type == 'lxc'):
+        if (CONF.libvirt.virt_type == 'lxc'):
             ptype = 'NameSpacePort'
 
         cmd_args = ("--oper=add --uuid=%s --instance_uuid=%s --vn_uuid=%s "
@@ -872,6 +874,9 @@ class LibvirtGenericVIFDriver(object):
             # the same VF will not be affected by the existing MAC.
             linux_net.set_vf_interface_vlan(vif['profile']['pci_slot'],
                                             mac_addr=vif['address'])
+
+    def unplug_hostdev_physical(self, instance, vif):
+        pass
 
     def unplug_macvtap(self, instance, vif):
         pass
