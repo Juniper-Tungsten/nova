@@ -5875,6 +5875,16 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         self.assertEqual(uuids[3], vm4.UUIDString())
         mock_list.assert_called_with(only_guests=True, only_running=False)
 
+    @mock.patch('nova.virt.libvirt.host.Host.get_online_cpus',
+                return_value=None)
+    @mock.patch('nova.virt.libvirt.host.Host.get_cpu_count',
+                return_value=4)
+    def test_get_host_vcpus_is_empty(self, get_cpu_count, get_online_cpus):
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
+        self.flags(vcpu_pin_set="")
+        vcpus = drvr._get_vcpu_total()
+        self.assertEqual(4, vcpus)
+
     @mock.patch('nova.virt.libvirt.host.Host.get_online_cpus')
     def test_get_host_vcpus(self, get_online_cpus):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
@@ -11623,16 +11633,48 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         drvr.destroy(self.context, instance, [])
         mock_save.assert_called_once_with()
 
-    @mock.patch.object(rbd_utils, 'RBDDriver')
-    def test_cleanup_rbd(self, mock_driver):
-        driver = mock_driver.return_value
-        driver.cleanup_volumes = mock.Mock()
-        fake_instance = {'uuid': '875a8070-d0b9-4949-8b31-104d125c9a64'}
+    @mock.patch.object(rbd_utils.RBDDriver, '_destroy_volume')
+    @mock.patch.object(rbd_utils.RBDDriver, '_disconnect_from_rados')
+    @mock.patch.object(rbd_utils.RBDDriver, '_connect_to_rados')
+    @mock.patch.object(rbd_utils, 'rbd')
+    @mock.patch.object(rbd_utils, 'rados')
+    def test_cleanup_rbd(self, mock_rados, mock_rbd, mock_connect,
+                         mock_disconnect, mock_destroy_volume):
+        mock_connect.return_value = mock.MagicMock(), mock.MagicMock()
+        instance = objects.Instance(**self.test_instance)
+        all_volumes = [uuids.other_instance + '_disk',
+                       uuids.other_instance + '_disk.swap',
+                       instance.uuid + '_disk',
+                       instance.uuid + '_disk.swap']
 
+        mock_rbd.RBD.return_value.list.return_value = all_volumes
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
-        drvr._cleanup_rbd(fake_instance)
+        drvr._cleanup_rbd(instance)
+        calls = [mock.call(mock.ANY, instance.uuid + '_disk'),
+                 mock.call(mock.ANY, instance.uuid + '_disk.swap')]
+        mock_destroy_volume.assert_has_calls(calls)
+        self.assertEqual(2, mock_destroy_volume.call_count)
 
-        driver.cleanup_volumes.assert_called_once_with(fake_instance)
+    @mock.patch.object(rbd_utils.RBDDriver, '_destroy_volume')
+    @mock.patch.object(rbd_utils.RBDDriver, '_disconnect_from_rados')
+    @mock.patch.object(rbd_utils.RBDDriver, '_connect_to_rados')
+    @mock.patch.object(rbd_utils, 'rbd')
+    @mock.patch.object(rbd_utils, 'rados')
+    def test_cleanup_rbd_resize_reverting(self, mock_rados, mock_rbd,
+                                          mock_connect, mock_disconnect,
+                                          mock_destroy_volume):
+        mock_connect.return_value = mock.MagicMock(), mock.MagicMock()
+        instance = objects.Instance(**self.test_instance)
+        instance.task_state = task_states.RESIZE_REVERTING
+        all_volumes = [uuids.other_instance + '_disk',
+                       uuids.other_instance + '_disk.local',
+                       instance.uuid + '_disk',
+                       instance.uuid + '_disk.local']
+        mock_rbd.RBD.return_value.list.return_value = all_volumes
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), True)
+        drvr._cleanup_rbd(instance)
+        mock_destroy_volume.assert_called_once_with(
+            mock.ANY, instance.uuid + '_disk.local')
 
     @mock.patch.object(objects.Instance, 'save')
     def test_destroy_undefines_no_undefine_flags(self, mock_save):
@@ -11963,7 +12005,8 @@ class LibvirtConnTestCase(test.NoDBTestCase):
             DiagFakeDomain("instance0000001"),
             DiagFakeDomain("instance0000002"),
             DiagFakeDomain("instance0000003"),
-            DiagFakeDomain("instance0000004")]
+            DiagFakeDomain("instance0000004"),
+            DiagFakeDomain("instance0000005")]
         mock_list.return_value = instance_domains
 
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI(), False)
@@ -12026,14 +12069,21 @@ class LibvirtConnTestCase(test.NoDBTestCase):
             root_device_name='/dev/vdc'),
             objects.Instance(
             uuid=instance_uuids[3],
-            root_device_name='/dev/vdd')
+            root_device_name='/dev/vdd'),
         ]
         mock_get.return_value = instances
+
+        # NOTE(danms): We need to have found bdms for our instances,
+        # but we don't really need them to be complete as we just need
+        # to make it to our side_effect above. Exclude the last domain
+        # to simulate the case where we have an instance with no BDMs.
+        mock_bdms.return_value = {uuid: [] for uuid in instance_uuids
+                                  if uuid != instance_domains[-1].UUIDString()}
 
         result = drvr._get_disk_over_committed_size_total()
         self.assertEqual(42949672960, result)
         mock_list.assert_called_once_with()
-        self.assertEqual(4, get_disk_info.call_count)
+        self.assertEqual(5, get_disk_info.call_count)
         filters = {'uuid': instance_uuids}
         mock_get.assert_called_once_with(mock.ANY, filters, use_slave=True)
         mock_bdms.assert_called_with(mock.ANY, instance_uuids)
@@ -16408,7 +16458,7 @@ class LibvirtDriverTestCase(test.NoDBTestCase):
     @mock.patch.object(libvirt_utils, 'get_instance_path')
     @mock.patch.object(libvirt_utils, 'load_file')
     @mock.patch.object(host.Host, "get_domain")
-    def test_unrescue(self, mock_get_domain, mock_load_file,
+    def _test_unrescue(self, instance, mock_get_domain, mock_load_file,
                                            mock_get_instance_path):
         dummyxml = ("<domain type='kvm'><name>instance-0000000a</name>"
                     "<devices>"
@@ -16418,7 +16468,6 @@ class LibvirtDriverTestCase(test.NoDBTestCase):
                     "</devices></domain>")
 
         mock_get_instance_path.return_value = '/path'
-        instance = objects.Instance(uuid=uuids.instance, id=1)
         fake_dom = FakeVirtDomain(fake_xml=dummyxml)
         mock_get_domain.return_value = fake_dom
         mock_load_file.return_value = "fake_unrescue_xml"
@@ -16462,6 +16511,29 @@ class LibvirtDriverTestCase(test.NoDBTestCase):
             self.assertEqual(rescue_dir, mock_rmtree.call_args_list[0][0][0])
             self.assertEqual(rescue_file, mock_del.call_args_list[1][0][0])
             mock_remove_volumes.assert_called_once_with(['lvm.rescue'])
+
+    def test_unrescue(self):
+        instance = objects.Instance(uuid=uuids.instance, id=1)
+        self._test_unrescue(instance)
+
+    @mock.patch.object(rbd_utils.RBDDriver, '_destroy_volume')
+    @mock.patch.object(rbd_utils.RBDDriver, '_disconnect_from_rados')
+    @mock.patch.object(rbd_utils.RBDDriver, '_connect_to_rados')
+    @mock.patch.object(rbd_utils, 'rbd')
+    @mock.patch.object(rbd_utils, 'rados')
+    def test_unrescue_rbd(self, mock_rados, mock_rbd, mock_connect,
+                          mock_disconnect, mock_destroy_volume):
+        self.flags(images_type='rbd', group='libvirt')
+        mock_connect.return_value = mock.MagicMock(), mock.MagicMock()
+        instance = objects.Instance(uuid=uuids.instance, id=1)
+        all_volumes = [uuids.other_instance + '_disk',
+                       uuids.other_instance + '_disk.rescue',
+                       instance.uuid + '_disk',
+                       instance.uuid + '_disk.rescue']
+        mock_rbd.RBD.return_value.list.return_value = all_volumes
+        self._test_unrescue(instance)
+        mock_destroy_volume.assert_called_once_with(
+            mock.ANY, instance.uuid + '_disk.rescue')
 
     @mock.patch('shutil.rmtree')
     @mock.patch('nova.utils.execute')
