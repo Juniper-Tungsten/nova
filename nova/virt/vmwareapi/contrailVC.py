@@ -162,6 +162,10 @@ class ContrailVCDriver(VMwareVCDriver):
                         raise exception.NovaException("Vlan id space is full")
 
                     try:
+                        #For Mitake multicluster support appending cluster id to port group
+                        separator = u'_'
+                        network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
+                                                        network_uuid))
                         network_util.create_dvport_group(session,
                                                     network_uuid,
                                                     CONF.vmware.vcenter_dvswitch,
