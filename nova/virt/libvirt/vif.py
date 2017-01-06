@@ -26,6 +26,7 @@ import os_vif
 from os_vif import exception as osv_exception
 from oslo_concurrency import processutils
 from oslo_log import log as logging
+from oslo_config import cfg
 
 import nova.conf
 from nova import exception

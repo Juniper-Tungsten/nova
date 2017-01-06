@@ -52,6 +52,7 @@ VIF_TYPE_BINDING_FAILED = 'binding_failed'
 # class
 VIF_DETAILS_PORT_FILTER = 'port_filter'
 VIF_DETAILS_OVS_HYBRID_PLUG = 'ovs_hybrid_plug'
+VIF_DETAILS_VHOSTUSER_VROUTER_PLUG = 'vhostuser_vrouter_plug'
 VIF_DETAILS_PHYSICAL_NETWORK = 'physical_network'
 VIF_DETAILS_BRIDGE_NAME = 'bridge_name'
 
