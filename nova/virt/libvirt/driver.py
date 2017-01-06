@@ -2985,7 +2985,7 @@ class LibvirtDriver(driver.ComputeDriver):
         if CONF.libvirt.virt_type == 'uml':
             libvirt_utils.chown(image('disk').path, 'root')
 
-        self._create_and_inject_local_root(context, instance,
+        self._create_and_inject_local_root(context, instance, interpath,
                                  booted_from_volume, suffix, disk_images,
                                  network_info, admin_pass, files, inject_files,
                                  fallback_from_host)
@@ -3058,7 +3058,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                          size=size,
                                          swap_mb=swap_mb)
 
-    def _create_and_inject_local_root(self, context, instance,
+    def _create_and_inject_local_root(self, context, instance, interpath,
                             booted_from_volume, suffix, disk_images,
                             network_info, admin_pass, files, inject_files,
                             fallback_from_host):
@@ -3090,7 +3090,8 @@ class LibvirtDriver(driver.ComputeDriver):
             else:
                 fetch_func = libvirt_utils.fetch_image
             self._try_fetch_image_cache(backend, fetch_func, context,
-                                        root_fname, disk_images['image_id'],
+                                        root_fname, interpath,
+                                        disk_images['image_id'],
                                         instance, size, fallback_from_host)
 
             if need_inject:
