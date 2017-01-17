@@ -323,7 +323,21 @@ def _nova_to_osvif_vif_midonet(vif):
 
 # VIF_TYPE_VHOSTUSER = 'vhostuser'
 def _nova_to_osvif_vif_vhostuser(vif):
-    raise NotImplementedError()
+    if vif['details'].get(model.VIF_DETAILS_VHOSTUSER_VROUTER_PLUG, False):
+        vif_details = vif['details']
+        mode = vif_details.get(model.VIF_DETAILS_VHOSTUSER_MODE,
+                               'server')
+        sock_path = vif_details.get(model.VIF_DETAILS_VHOSTUSER_SOCKET)
+        if sock_path is None:
+            raise exception.VifDetailsMissingVhostuserSockPath(
+                                                        vif_id=vif['id'])
+        obj = _get_vif_instance(vif, objects.vif.VIFVHostUser,
+                                mode=mode,
+                                path=sock_path,
+                                plugin="vrouter", vif_name=_get_vif_name(vif))
+        return obj
+    else:
+        raise NotImplementedError()
 
 
 # VIF_TYPE_VROUTER = 'vrouter'

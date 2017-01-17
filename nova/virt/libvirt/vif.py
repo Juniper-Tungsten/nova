@@ -26,6 +26,7 @@ import os_vif
 from os_vif import exception as osv_exception
 from oslo_concurrency import processutils
 from oslo_log import log as logging
+from oslo_config import cfg
 
 import nova.conf
 from nova import exception
@@ -444,6 +445,9 @@ class LibvirtGenericVIFDriver(object):
 
         designer.set_vif_bandwidth_config(conf, inst_type)
         return conf
+
+    def _set_config_VIFVHostUser(self, instance, vif, conf):
+        designer.set_vif_host_backend_vhostuser_config(conf, vif.mode, vif.path)
 
     def _set_config_VIFBridge(self, instance, vif, conf):
         conf.net_type = "bridge"
