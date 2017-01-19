@@ -738,6 +738,10 @@ class LibvirtGenericVIFDriver(object):
 
         Bind the vif to a Contrail virtual port.
         """
+        # vrouter_dpdk changes are not part of the nova vif code
+        # anymore, it is moved to the os-vif plugin (similarly for unplug).
+        # Any changes in plug_vrouter and unplug_vrouter need to also be
+        # made in nova_contrail_vif/vif_plug_vrouter/vrouter.py
         dev = self.get_vif_devname(vif)
         ip_addr = '0.0.0.0'
         ip6_addr = None
@@ -958,6 +962,10 @@ class LibvirtGenericVIFDriver(object):
 
         Unbind the vif from a Contrail virtual port.
         """
+        # vrouter_dpdk changes are not part of the nova vif code
+        # anymore, it is moved to the os-vif plugin (similarly for unplug).
+        # Any changes in plug_vrouter and unplug_vrouter need to also be
+        # made in nova_contrail_vif/vif_plug_vrouter/vrouter.py
         dev = self.get_vif_devname(vif)
         cmd_args = ("--oper=delete --uuid=%s" % (vif['id']))
         try:
