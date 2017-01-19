@@ -5294,22 +5294,20 @@ class LibvirtDriver(driver.ComputeDriver):
     def _check_shared_storage_test_file(self, filename, instance):
         """Confirms existence of the tmpfile under CONF.instances_path.
         Cannot confirm tmpfile return False."""
-        shared = False
+        dirpath = CONF.instances_path
         if CONF.storage_scope.lower() == "global":
-            shared = True
+            dirpath = os.path.join(CONF.instances_path, "global")
         if len(instance['metadata']) > 0:
             ins_meta = utils.instance_meta(instance)
             for key,value in ins_meta.items():
                 if key.lower() == 'storage_scope':
                     if value.lower() == 'global':
-                        shared = True
+                        dirpath = os.path.join(CONF.instances_path, "global")
                     else:
-                        shared = False
+                        dirpath = CONF.instances_path
                     break
 
-        if not shared:
-            return  False
-        tmp_file = os.path.join(CONF.instances_path, "global", filename)
+        tmp_file = os.path.join(dirpath, filename)
         if not os.path.exists(tmp_file):
             return False
         else:
@@ -5522,7 +5520,6 @@ class LibvirtDriver(driver.ComputeDriver):
         This method is intended to be run in a background thread and will
         block that thread until the migration is finished or failed.
         """
-
         try:
             if block_migration:
                 flaglist = CONF.libvirt.block_migration_flag.split(',')
@@ -6042,19 +6039,19 @@ class LibvirtDriver(driver.ComputeDriver):
             elif info['backing_file']:
                 # Creating backing file follows same way as spawning instances.
                 cache_name = os.path.basename(info['backing_file'])
-            if CONF.storage_scope.lower() == "global":
-                interpath = "global"
-            else:
-                interpath = None
-            if len(instance['metadata']) > 0:
-                ins_meta = utils.instance_meta(instance)
-                for key,value in ins_meta.items():
-                    if key.lower() == 'storage_scope':
-                        if value.lower() == 'global':
-                            interpath = "global"
-                        else:
-                            interpath = None
-                        break
+                if CONF.storage_scope.lower() == "global":
+                    interpath = "global"
+                else:
+                    interpath = None
+                if len(instance['metadata']) > 0:
+                    ins_meta = utils.instance_meta(instance)
+                    for key,value in ins_meta.items():
+                        if key.lower() == 'storage_scope':
+                            if value.lower() == 'global':
+                                interpath = "global"
+                            else:
+                                interpath = None
+                            break
 
                 image = self.image_backend.image(instance,
                                                  instance_disk,
