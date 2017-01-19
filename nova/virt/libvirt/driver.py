@@ -5578,6 +5578,17 @@ class LibvirtDriver(driver.ComputeDriver):
                            {'uuid': instance.uuid, 'libvirt_ver': ver})
                     LOG.error(msg, instance=instance)
                     raise exception.MigrationPreCheckError(reason=msg)
+                # NOTE(eliqiao): Selective disk migrations are not supported
+                # with tunnelled block migrations so we can block them early.
+                if (bdm and
+                    (self._block_migration_flags &
+                     libvirt.VIR_MIGRATE_TUNNELLED != 0)):
+                    msg = (_('Cannot block migrate instance %(uuid)s with'
+                             ' mapped volumes. Selective block device'
+                             ' migration is not supported with tunnelled'
+                             ' block migrations.') % {'uuid': instance.uuid})
+                    LOG.error(msg, instance=instance)
+                    raise exception.MigrationPreCheckError(reason=msg)
         elif not (dest_check_data.is_shared_block_storage or
                   dest_check_data.is_shared_instance_path or
                   (booted_from_volume and not has_local_disk)):
@@ -5751,22 +5762,21 @@ class LibvirtDriver(driver.ComputeDriver):
     def _check_shared_storage_test_file(self, filename, instance):
         """Confirms existence of the tmpfile under CONF.instances_path.
         Cannot confirm tmpfile return False."""
-        shared = False
+        dirpath = CONF.instances_path
         if CONF.storage_scope.lower() == "global":
-            shared = True
+            dirpath = os.path.join(CONF.instances_path, "global")
         if len(instance['metadata']) > 0:
             ins_meta = utils.instance_meta(instance)
             for key,value in ins_meta.items():
                 if key.lower() == 'storage_scope':
                     if value.lower() == 'global':
-                        shared = True
+                        dirpath = os.path.join(CONF.instances_path, "global")
                     else:
-                        shared = False
+                        dirpath = CONF.instances_path
                     break
 
-        if not shared:
-            return  False
-        tmp_file = os.path.join(CONF.instances_path, "global", filename)
+        os.utime(dirpath, None)
+        tmp_file = os.path.join(dirpath, filename)
         if not os.path.exists(tmp_file):
             return False
         else:
@@ -6075,6 +6085,18 @@ class LibvirtDriver(driver.ComputeDriver):
                             'destination_xml': new_xml_str,
                             'migrate_disks': device_names,
                         }
+                        # NOTE(pkoniszewski): Because of precheck which blocks
+                        # tunnelled block live migration with mapped volumes we
+                        # can safely remove migrate_disks when tunnelling is
+                        # on. Otherwise we will block all tunnelled block
+                        # migrations, even when an instance does not have
+                        # volumes mapped. This is because selective disk
+                        # migration is not supported in tunnelled block live
+                        # migration. Also we cannot fallback to migrateToURI2
+                        # in this case because of bug #1398999
+                        if (migration_flags &
+                            libvirt.VIR_MIGRATE_TUNNELLED != 0):
+                            params.pop('migrate_disks')
                         dom.migrateToURI3(
                             self._live_migration_uri(dest),
                             params,
@@ -6228,10 +6250,12 @@ class LibvirtDriver(driver.ComputeDriver):
         device_names = []
         block_devices = []
 
-        # TODO(pkoniszewski): Remove this if-statement when we bump min libvirt
-        # version to >= 1.2.17
-        if self._host.has_min_version(
-                MIN_LIBVIRT_BLOCK_LM_WITH_VOLUMES_VERSION):
+        # TODO(pkoniszewski): Remove version check when we bump min libvirt
+        # version to >= 1.2.17.
+        if (self._block_migration_flags &
+                libvirt.VIR_MIGRATE_TUNNELLED == 0 and
+                self._host.has_min_version(
+                    MIN_LIBVIRT_BLOCK_LM_WITH_VOLUMES_VERSION)):
             bdm_list = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
             block_device_info = driver.get_block_device_info(instance,
@@ -6850,19 +6874,19 @@ class LibvirtDriver(driver.ComputeDriver):
             elif info['backing_file']:
                 # Creating backing file follows same way as spawning instances.
                 cache_name = os.path.basename(info['backing_file'])
-            if CONF.storage_scope.lower() == "global":
-                interpath = "global"
-            else:
-                interpath = None
-            if len(instance['metadata']) > 0:
-                ins_meta = utils.instance_meta(instance)
-                for key,value in ins_meta.items():
-                    if key.lower() == 'storage_scope':
-                        if value.lower() == 'global':
-                            interpath = "global"
-                        else:
-                            interpath = None
-                        break
+                if CONF.storage_scope.lower() == "global":
+                    interpath = "global"
+                else:
+                    interpath = None
+                if len(instance['metadata']) > 0:
+                    ins_meta = utils.instance_meta(instance)
+                    for key,value in ins_meta.items():
+                        if key.lower() == 'storage_scope':
+                            if value.lower() == 'global':
+                                interpath = "global"
+                            else:
+                                interpath = None
+                            break
 
                 image = self.image_backend.image(instance,
                                                  instance_disk,
