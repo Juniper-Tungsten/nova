@@ -6000,17 +6000,17 @@ class LibvirtDriver(driver.ComputeDriver):
     def _check_shared_storage_test_file(self, filename, instance):
         """Confirms existence of the tmpfile under CONF.instances_path.
         Cannot confirm tmpfile return False."""
-        shared = False
+        dirpath = CONF.instances_path
         if CONF.storage_scope.lower() == "global":
-            shared = True
+            dirpath = os.path.join(CONF.instances_path, "global")
         if len(instance['metadata']) > 0:
             ins_meta = utils.instance_meta(instance)
             for key,value in ins_meta.items():
                 if key.lower() == 'storage_scope':
                     if value.lower() == 'global':
-                        shared = True
+                        dirpath = os.path.join(CONF.instances_path, "global")
                     else:
-                        shared = False
+                        dirpath = CONF.instances_path
                     break
 
         # NOTE(tpatzig): if instances_path is a shared volume that is
@@ -6019,11 +6019,9 @@ class LibvirtDriver(driver.ComputeDriver):
         # just because it takes longer until the client refreshes and new
         # content gets visible.
         # os.utime (like touch) on the directory forces the client to refresh.
-        os.utime(CONF.instances_path, None)
+        os.utime(dirpath, None)
 
-        if not shared:
-            return  False
-        tmp_file = os.path.join(CONF.instances_path, "global", filename)
+        tmp_file = os.path.join(dirpath, filename)
         if not os.path.exists(tmp_file):
             exists = False
         else:
@@ -6900,19 +6898,19 @@ class LibvirtDriver(driver.ComputeDriver):
             elif info['backing_file']:
                 # Creating backing file follows same way as spawning instances.
                 cache_name = os.path.basename(info['backing_file'])
-            if CONF.storage_scope.lower() == "global":
-                interpath = "global"
-            else:
-                interpath = None
-            if len(instance['metadata']) > 0:
-                ins_meta = utils.instance_meta(instance)
-                for key,value in ins_meta.items():
-                    if key.lower() == 'storage_scope':
-                        if value.lower() == 'global':
-                            interpath = "global"
-                        else:
-                            interpath = None
-                        break
+                if CONF.storage_scope.lower() == "global":
+                    interpath = "global"
+                else:
+                    interpath = None
+                if len(instance['metadata']) > 0:
+                    ins_meta = utils.instance_meta(instance)
+                    for key,value in ins_meta.items():
+                        if key.lower() == 'storage_scope':
+                            if value.lower() == 'global':
+                                interpath = "global"
+                            else:
+                                interpath = None
+                            break
 
                 disk = self.image_backend.by_name(instance, instance_disk,
                                                   CONF.libvirt.images_type)
