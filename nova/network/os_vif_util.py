@@ -344,7 +344,7 @@ def _nova_to_osvif_vif_vhostuser(vif):
         obj = _get_vif_instance(vif, objects.vif.VIFVHostUser,
                                 mode=mode,
                                 path=sock_path,
-                                plugin="vrouter", vif_name=_get_vif_name(vif))
+                                plugin="contrail_vrouter", vif_name=_get_vif_name(vif))
         return obj
     else:
         raise NotImplementedError()
