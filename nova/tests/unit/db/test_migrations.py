@@ -33,10 +33,6 @@ For postgres on Ubuntu this can be done with the following commands::
 """
 
 import glob
-# NOTE(dhellmann): Use stdlib logging instead of oslo.log because we
-# need to call methods on the logger that are not exposed through the
-# adapter provided by oslo.log.
-import logging
 import os
 
 from migrate import UniqueConstraint
@@ -58,6 +54,13 @@ from nova.db.sqlalchemy import utils as db_utils
 from nova import exception
 from nova import test
 from nova.tests import fixtures as nova_fixtures
+
+# TODO(sdague): no tests in the nova/tests tree should inherit from
+# base test classes in another library. This causes all kinds of havoc
+# in these doing things incorrectly for what we need in subunit
+# reporting. This is a long unwind, but should be done in the future
+# and any code needed out of oslo_db should be exported / accessed as
+# a fixture.
 
 
 class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
@@ -84,16 +87,15 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         return self.engine
 
     def setUp(self):
-        super(NovaMigrationsCheckers, self).setUp()
-        # NOTE(viktors): We should reduce log output because it causes issues,
-        #                when we run tests with testr
-        migrate_log = logging.getLogger('migrate')
-        old_level = migrate_log.level
-        migrate_log.setLevel(logging.WARN)
-        self.addCleanup(migrate_log.setLevel, old_level)
+        # NOTE(sdague): the oslo_db base test case completely
+        # invalidates our logging setup, we actually have to do that
+        # before it is called to keep this from vomitting all over our
+        # test output.
+        self.useFixture(nova_fixtures.StandardLogging())
 
+        super(NovaMigrationsCheckers, self).setUp()
         # NOTE(rpodolyaka): we need to repeat the functionality of the base
-        # test case a bit here as this gets overriden by oslotest base test
+        # test case a bit here as this gets overridden by oslotest base test
         # case and nova base test case cleanup must be the last one (as it
         # deletes attributes of test case instances)
         self.useFixture(nova_fixtures.Timeout(
@@ -166,12 +168,13 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
             272,  # NOOP migration due to revert
         ]
 
-        havana_placeholders = range(217, 227)
-        icehouse_placeholders = range(235, 244)
-        juno_placeholders = range(255, 265)
-        kilo_placeholders = range(281, 291)
-        liberty_placeholders = range(303, 313)
-        mitaka_placeholders = range(320, 330)
+        havana_placeholders = list(range(217, 227))
+        icehouse_placeholders = list(range(235, 244))
+        juno_placeholders = list(range(255, 265))
+        kilo_placeholders = list(range(281, 291))
+        liberty_placeholders = list(range(303, 313))
+        mitaka_placeholders = list(range(320, 330))
+        newton_placeholders = list(range(335, 345))
 
         return (special +
                 havana_placeholders +
@@ -179,7 +182,8 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
                 juno_placeholders +
                 kilo_placeholders +
                 liberty_placeholders +
-                mitaka_placeholders)
+                mitaka_placeholders +
+                newton_placeholders)
 
     def migrate_up(self, version, with_data=False):
         if with_data:
@@ -210,6 +214,11 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
             # 292 drops completely orphaned tables with no users, so
             # it can be done without affecting anything.
             292,
+
+            # 346 Drops column scheduled_at from instances table since it
+            # is no longer used. The field value is always NULL so
+            # it does not affect anything.
+            346,
         ]
         # Reviewers: DO NOT ALLOW THINGS TO BE ADDED HERE
 
@@ -765,7 +774,7 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         def removed_column(element):
             # Define a whitelist of columns that would be removed from the
             # DB at a later release.
-            column_whitelist = {'instances': ['scheduled_at']}
+            column_whitelist = {'instances': ['internal_id']}
 
             if element[0] != 'remove_column':
                 return False
@@ -915,6 +924,14 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         self.assertColumnExists(engine, 'instance_extra', 'device_metadata')
         self.assertColumnExists(engine, 'shadow_instance_extra',
                                         'device_metadata')
+
+    def _check_345(self, engine, data):
+        # NOTE(danms): Just a sanity-check migration
+        pass
+
+    def _check_346(self, engine, data):
+        self.assertColumnNotExists(engine, 'instances', 'scheduled_at')
+        self.assertColumnNotExists(engine, 'shadow_instances', 'scheduled_at')
 
 
 class TestNovaMigrationsSQLite(NovaMigrationsCheckers,

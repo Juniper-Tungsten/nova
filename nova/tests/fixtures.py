@@ -143,6 +143,17 @@ class StandardLogging(fixtures.Fixture):
             std_logging.getLogger(
                 'migrate.versioning.api').setLevel(std_logging.WARNING)
 
+        # At times we end up calling back into main() functions in
+        # testing. This has the possibility of calling logging.setup
+        # again, which completely unwinds the logging capture we've
+        # created here. Once we've setup the logging the way we want,
+        # disable the ability for the test to change this.
+        def fake_logging_setup(*args):
+            pass
+
+        self.useFixture(
+            fixtures.MonkeyPatch('oslo_log.log.setup', fake_logging_setup))
+
 
 class OutputStreamCapture(fixtures.Fixture):
     """Capture output streams during tests.
@@ -210,11 +221,10 @@ class DatabasePoisonFixture(fixtures.Fixture):
             self._poison_configure))
 
     def _poison_configure(self, *a, **k):
-        warnings.warn('This test uses methods that set internal oslo_db '
-                      'state, but it does not claim to use the database. '
-                      'This will conflict with the setup of tests that '
-                      'do use the database and cause failures later.')
-        return mock.MagicMock()
+        raise Exception('This test uses methods that set internal oslo_db '
+                        'state, but it does not claim to use the database. '
+                        'This will conflict with the setup of tests that '
+                        'do use the database and cause failures later.')
 
 
 class Database(fixtures.Fixture):
@@ -613,7 +623,7 @@ class EngineFacadeFixture(fixtures.Fixture):
     through it. This means that the initialization of sqlite in
     databases in our Database fixture will drive all connections to
     sqlite. While that's fine in a production environment, during
-    testing this means we can't test againts multiple backends in the
+    testing this means we can't test against multiple backends in the
     same test run.
 
     oslo.db does not yet support a reset mechanism here. This builds a
@@ -779,3 +789,112 @@ class NoopConductorFixture(fixtures.Fixture):
             'nova.conductor.ComputeTaskAPI', _NoopConductor))
         self.useFixture(fixtures.MonkeyPatch(
             'nova.conductor.API', _NoopConductor))
+
+
+class EventReporterStub(fixtures.Fixture):
+
+    def setUp(self):
+        super(EventReporterStub, self).setUp()
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.compute.utils.EventReporter',
+            lambda *args, **kwargs: mock.MagicMock()))
+
+
+class CinderFixture(fixtures.Fixture):
+    """A fixture to volume operations"""
+
+    # the default project_id in OSAPIFixtures
+    tenant_id = '6f70656e737461636b20342065766572'
+
+    SWAP_OLD_VOL = 'a07f71dc-8151-4e7d-a0cc-cd24a3f11113'
+    SWAP_NEW_VOL = '227cc671-f30b-4488-96fd-7d0bf13648d8'
+    SWAP_ERR_OLD_VOL = '828419fa-3efb-4533-b458-4267ca5fe9b1'
+    SWAP_ERR_NEW_VOL = '9c6d9c2d-7a8f-4c80-938d-3bf062b8d489'
+
+    def __init__(self, test):
+        super(CinderFixture, self).__init__()
+        self.test = test
+        self.swap_error = False
+        self.swap_volume_instance_uuid = None
+        self.swap_volume_instance_error_uuid = None
+
+    def setUp(self):
+        super(CinderFixture, self).setUp()
+
+        def fake_get(self_api, context, volume_id):
+            if volume_id in (CinderFixture.SWAP_OLD_VOL,
+                             CinderFixture.SWAP_ERR_OLD_VOL):
+                volume = {
+                             'status': 'available',
+                             'display_name': 'TEST1',
+                             'attach_status': 'detached',
+                             'id': volume_id,
+                             'size': 1
+                         }
+                if ((self.swap_volume_instance_uuid and
+                     volume_id == CinderFixture.SWAP_OLD_VOL) or
+                    (self.swap_volume_instance_error_uuid and
+                     volume_id == CinderFixture.SWAP_ERR_OLD_VOL)):
+                    instance_uuid = (self.swap_volume_instance_uuid
+                        if volume_id == CinderFixture.SWAP_OLD_VOL
+                        else self.swap_volume_instance_error_uuid)
+
+                    volume.update({
+                        'status': 'in-use',
+                        'attachments': {
+                            instance_uuid: {
+                                'mountpoint': '/dev/vdb',
+                                'attachment_id': volume_id
+                            }
+                        },
+                        'attach_status': 'attached'
+                    })
+                return volume
+            else:
+                return {
+                           'status': 'available',
+                           'display_name': 'TEST2',
+                           'attach_status': 'detached',
+                           'id': volume_id,
+                           'size': 1
+                       }
+
+        def fake_initialize_connection(self, context, volume_id, connector):
+            if volume_id == CinderFixture.SWAP_ERR_NEW_VOL:
+                # Return a tuple in order to raise an exception.
+                return ()
+            return {}
+
+        def fake_migrate_volume_completion(self, context, old_volume_id,
+                                           new_volume_id, error):
+            return {'save_volume_id': new_volume_id}
+
+        def fake_unreserve_volume(self_api, context, volume_id):
+            # Signaling that swap_volume has encountered the error
+            # from initialize_connection and is working on rolling back
+            # the reservation on SWAP_ERR_NEW_VOL.
+            self.swap_error = True
+
+        self.test.stub_out('nova.volume.cinder.API.attach',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.begin_detaching',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.check_attach',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.check_detach',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.get',
+                           fake_get)
+        self.test.stub_out('nova.volume.cinder.API.initialize_connection',
+                           fake_initialize_connection)
+        self.test.stub_out(
+            'nova.volume.cinder.API.migrate_volume_completion',
+            fake_migrate_volume_completion)
+        self.test.stub_out('nova.volume.cinder.API.reserve_volume',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.roll_detaching',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.terminate_connection',
+                           lambda *args, **kwargs: None)
+        self.test.stub_out('nova.volume.cinder.API.unreserve_volume',
+                           fake_unreserve_volume)

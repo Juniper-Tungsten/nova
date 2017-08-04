@@ -13,6 +13,7 @@
 """Unit tests for the utility functions used by the placement API."""
 
 
+import fixtures
 from oslo_middleware import request_id
 import webob
 
@@ -72,11 +73,86 @@ class TestCheckAccept(test.NoDBTestCase):
         self.assertTrue(self.handler(req))
 
 
+class TestExtractJSON(test.NoDBTestCase):
+
+    # Although the intent of this test class is not to test that
+    # schemas work, we may as well use a real one to ensure that
+    # behaviors are what we expect.
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "uuid": {"type": "string", "format": "uuid"}
+        },
+        "required": ["name"],
+        "additionalProperties": False
+    }
+
+    def test_not_json(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  'I am a string',
+                                  self.schema)
+        self.assertIn('Malformed JSON', str(error))
+
+    def test_malformed_json(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  '{"my bytes got left behind":}',
+                                  self.schema)
+        self.assertIn('Malformed JSON', str(error))
+
+    def test_schema_mismatch(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  '{"a": "b"}',
+                                  self.schema)
+        self.assertIn('JSON does not validate', str(error))
+
+    def test_type_invalid(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  '{"name": 1}',
+                                  self.schema)
+        self.assertIn('JSON does not validate', str(error))
+
+    def test_format_checker(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  '{"name": "hello", "uuid": "not a uuid"}',
+                                  self.schema)
+        self.assertIn('JSON does not validate', str(error))
+
+    def test_no_addtional_properties(self):
+        error = self.assertRaises(webob.exc.HTTPBadRequest,
+                                  util.extract_json,
+                                  '{"name": "hello", "cow": "moo"}',
+                                  self.schema)
+        self.assertIn('JSON does not validate', str(error))
+
+    def test_valid(self):
+        data = util.extract_json(
+            '{"name": "cow", '
+            '"uuid": "%s"}' % uuidsentinel.rp_uuid,
+            self.schema)
+        self.assertEqual('cow', data['name'])
+        self.assertEqual(uuidsentinel.rp_uuid, data['uuid'])
+
+
 class TestJSONErrorFormatter(test.NoDBTestCase):
 
     def setUp(self):
         super(TestJSONErrorFormatter, self).setUp()
         self.environ = {}
+        # TODO(jaypipes): Remove this when we get more than a single version
+        # in the placement API. The fact that we only had a single version was
+        # masking a bug in the utils code.
+        _versions = [
+            '1.0',
+            '1.1',
+        ]
+        mod_str = 'nova.api.openstack.placement.microversion.VERSIONS'
+        self.useFixture(fixtures.MonkeyPatch(mod_str, _versions))
 
     def test_status_to_int_code(self):
         body = ''

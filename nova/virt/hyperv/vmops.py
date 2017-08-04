@@ -40,6 +40,7 @@ import nova.conf
 from nova import exception
 from nova.i18n import _, _LI, _LE, _LW
 from nova import objects
+from nova.objects import fields
 from nova import utils
 from nova.virt import configdrive
 from nova.virt import hardware
@@ -291,7 +292,7 @@ class VMOps(object):
 
         try:
             self.create_instance(instance, network_info, root_device,
-                                 block_device_info, vm_gen)
+                                 block_device_info, vm_gen, image_meta)
             self._save_device_metadata(context, instance, block_device_info)
 
             if configdrive.required_by(instance):
@@ -309,9 +310,11 @@ class VMOps(object):
                 self.destroy(instance)
 
     def create_instance(self, instance, network_info, root_device,
-                        block_device_info, vm_gen):
+                        block_device_info, vm_gen, image_meta):
         instance_name = instance.name
         instance_path = os.path.join(CONF.instances_path, instance_name)
+        secure_boot_enabled = self._requires_secure_boot(instance, image_meta,
+                                                         vm_gen)
 
         self._vmutils.create_vm(instance_name,
                                 instance.flavor.memory_mb,
@@ -349,6 +352,13 @@ class VMOps(object):
 
         if CONF.hyperv.enable_instance_metrics_collection:
             self._metricsutils.enable_vm_metrics_collection(instance_name)
+
+        self._set_instance_disk_qos_specs(instance)
+
+        if secure_boot_enabled:
+            certificate_required = self._requires_certificate(image_meta)
+            self._vmutils.enable_secure_boot(
+                instance.name, msft_ca_required=certificate_required)
 
     def _configure_remotefx(self, instance, vm_gen):
         extra_specs = instance.flavor.extra_specs
@@ -440,6 +450,63 @@ class VMOps(object):
                          'instead of VHDX.') % vm_gen
             raise exception.InstanceUnacceptable(instance_id=instance_id,
                                                  reason=reason)
+
+    def _requires_certificate(self, image_meta):
+        os_type = image_meta.properties.get('os_type')
+        if os_type == fields.OSType.WINDOWS:
+            return False
+        return True
+
+    def _requires_secure_boot(self, instance, image_meta, vm_gen):
+        """Checks whether the given instance requires Secure Boot.
+
+        Secure Boot feature will be enabled by setting the "os_secure_boot"
+        image property or the "os:secure_boot" flavor extra spec to required.
+
+        :raises exception.InstanceUnacceptable: if the given image_meta has
+            no os_type property set, or if the image property value and the
+            flavor extra spec value are conflicting, or if Secure Boot is
+            required, but the instance's VM generation is 1.
+        """
+        img_secure_boot = image_meta.properties.get('os_secure_boot')
+        flavor_secure_boot = instance.flavor.extra_specs.get(
+            constants.FLAVOR_SPEC_SECURE_BOOT)
+
+        requires_sb = False
+        conflicting_values = False
+
+        if flavor_secure_boot == fields.SecureBoot.REQUIRED:
+            requires_sb = True
+            if img_secure_boot == fields.SecureBoot.DISABLED:
+                conflicting_values = True
+        elif img_secure_boot == fields.SecureBoot.REQUIRED:
+            requires_sb = True
+            if flavor_secure_boot == fields.SecureBoot.DISABLED:
+                conflicting_values = True
+
+        if conflicting_values:
+            reason = _(
+                "Conflicting image metadata property and flavor extra_specs "
+                "values: os_secure_boot (%(image_secure_boot)s) / "
+                "os:secure_boot (%(flavor_secure_boot)s)") % {
+                    'image_secure_boot': img_secure_boot,
+                    'flavor_secure_boot': flavor_secure_boot}
+            raise exception.InstanceUnacceptable(instance_id=instance.uuid,
+                                                 reason=reason)
+
+        if requires_sb:
+            if vm_gen != constants.VM_GEN_2:
+                reason = _('Secure boot requires generation 2 VM.')
+                raise exception.InstanceUnacceptable(instance_id=instance.uuid,
+                                                     reason=reason)
+
+            os_type = image_meta.properties.get('os_type')
+            if not os_type:
+                reason = _('For secure boot, os_type must be specified in '
+                           'image properties.')
+                raise exception.InstanceUnacceptable(instance_id=instance.uuid,
+                                                     reason=reason)
+        return requires_sb
 
     def _create_config_drive(self, context, instance, injected_files,
                              admin_password, network_info, rescue=False):
@@ -869,3 +936,35 @@ class VMOps(object):
             self.attach_config_drive(instance, configdrive_path, vm_gen)
 
         self.power_on(instance)
+
+    def _set_instance_disk_qos_specs(self, instance):
+        quota_specs = self._get_scoped_flavor_extra_specs(instance, 'quota')
+
+        disk_total_bytes_sec = int(
+            quota_specs.get('disk_total_bytes_sec') or 0)
+        disk_total_iops_sec = int(
+            quota_specs.get('disk_total_iops_sec') or
+            self._volumeops.bytes_per_sec_to_iops(disk_total_bytes_sec))
+
+        if disk_total_iops_sec:
+            local_disks = self._get_instance_local_disks(instance.name)
+            for disk_path in local_disks:
+                self._vmutils.set_disk_qos_specs(disk_path,
+                                                 disk_total_iops_sec)
+
+    def _get_instance_local_disks(self, instance_name):
+        instance_path = self._pathutils.get_instance_dir(instance_name)
+        instance_disks = self._vmutils.get_vm_storage_paths(instance_name)[0]
+        local_disks = [disk_path for disk_path in instance_disks
+                       if instance_path in disk_path]
+        return local_disks
+
+    def _get_scoped_flavor_extra_specs(self, instance, scope):
+        extra_specs = instance.flavor.extra_specs or {}
+        filtered_specs = {}
+        for spec, value in extra_specs.items():
+            if ':' in spec:
+                _scope, key = spec.split(':')
+                if _scope == scope:
+                    filtered_specs[key] = value
+        return filtered_specs

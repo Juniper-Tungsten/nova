@@ -73,7 +73,7 @@ class XenAPISession(object):
     # changed in development environments.
     # MAJOR VERSION: Incompatible changes with the plugins
     # MINOR VERSION: Compatible changes, new plguins, etc
-    PLUGIN_REQUIRED_VERSION = '1.7'
+    PLUGIN_REQUIRED_VERSION = '1.8'
 
     def __init__(self, url, user, pw):
         version_string = version.version_string_with_package()
@@ -94,8 +94,9 @@ class XenAPISession(object):
         self.host_ref = self._get_host_ref()
         self.product_version, self.product_brand = \
             self._get_product_version_and_brand()
-
         self._verify_plugin_version()
+        self.platform_version = self._get_platform_version()
+        self._cached_xsm_sr_relaxed = None
 
         apply_session_helpers(self)
 
@@ -107,7 +108,12 @@ class XenAPISession(object):
     def _verify_plugin_version(self):
         requested_version = self.PLUGIN_REQUIRED_VERSION
         current_version = self.call_plugin_serialized(
-            'nova_plugin_version', 'get_version')
+            'nova_plugin_version.py', 'get_version')
+
+        # v2.0 is the same as v1.8, with no version bumps. Remove this once
+        # Ocata is released
+        if requested_version == '2.0' and current_version == '1.8':
+            return
 
         if not versionutils.is_compatible(requested_version, current_version):
             raise self.XenAPI.Failure(
@@ -169,6 +175,15 @@ class XenAPISession(object):
 
         return product_version, product_brand
 
+    def _get_platform_version(self):
+        """Return a tuple of (major, minor, rev) for the host version"""
+        software_version = self._get_software_version()
+        platform_version_str = software_version.get('platform_version',
+                                                    '0.0.0')
+        platform_version = versionutils.convert_version_to_tuple(
+                                                        platform_version_str)
+        return platform_version
+
     def _get_software_version(self):
         return self.call_xenapi('host.get_software_version', self.host_ref)
 
@@ -201,6 +216,17 @@ class XenAPISession(object):
         # NOTE(armando): pass the host uuid along with the args so that
         # the plugin gets executed on the right host when using XS pools
         args['host_uuid'] = self.host_uuid
+
+        # TODO(sfinucan): Once the required plugin version is bumped to v2.0,
+        # we can assume that all files will have a '.py' extension. Until then,
+        # handle hosts without this extension by rewriting all calls to plugins
+        # to exclude the '.py' extension. This is made possible through the
+        # temporary inclusion of symlinks to plugins.
+        # NOTE(sfinucan): 'partition_utils.py' was the only plugin with a '.py'
+        # extension before this change was enacted, hence this plugin is
+        # excluded
+        if not plugin == 'partition_utils.py':
+            plugin = plugin.rstrip('.py')
 
         with self._get_session() as session:
             return self._unwrap_plugin_exceptions(
@@ -327,18 +353,18 @@ class XenAPISession(object):
         task_ref = self.call_xenapi("task.create", name,
                                        desc)
         try:
-            LOG.debug('Created task %s with ref %s' % (name, task_ref))
+            LOG.debug('Created task %s with ref %s', name, task_ref)
             yield task_ref
         finally:
             self.call_xenapi("task.destroy", task_ref)
-            LOG.debug('Destroyed task ref %s' % (task_ref))
+            LOG.debug('Destroyed task ref %s', task_ref)
 
     @contextlib.contextmanager
     def http_connection(session):
         conn = None
 
         xs_url = urllib.parse.urlparse(session.url)
-        LOG.debug("Creating http(s) connection to %s" % session.url)
+        LOG.debug("Creating http(s) connection to %s", session.url)
         if xs_url.scheme == 'http':
             conn = http_client.HTTPConnection(xs_url.netloc)
         elif xs_url.scheme == 'https':
@@ -349,3 +375,19 @@ class XenAPISession(object):
             yield conn
         finally:
             conn.close()
+
+    def is_xsm_sr_check_relaxed(self):
+        if self._cached_xsm_sr_relaxed is None:
+            config_value = self.call_plugin('config_file', 'get_val',
+                                            key='relax-xsm-sr-check')
+            if not config_value:
+                version_str = '.'.join(str(v) for v in self.platform_version)
+                if versionutils.is_compatible('2.1.0', version_str,
+                                              same_major=False):
+                    self._cached_xsm_sr_relaxed = True
+                else:
+                    self._cached_xsm_sr_relaxed = False
+            else:
+                self._cached_xsm_sr_relaxed = config_value.lower() == 'true'
+
+        return self._cached_xsm_sr_relaxed

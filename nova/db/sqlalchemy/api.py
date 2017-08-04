@@ -23,7 +23,6 @@ import datetime
 import functools
 import inspect
 import sys
-import uuid
 
 from oslo_db import api as oslo_db_api
 from oslo_db import exception as db_exc
@@ -39,6 +38,7 @@ from six.moves import range
 import sqlalchemy as sa
 from sqlalchemy import and_
 from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy import MetaData
 from sqlalchemy import or_
 from sqlalchemy.orm import aliased
@@ -51,6 +51,7 @@ from sqlalchemy.schema import Table
 from sqlalchemy import sql
 from sqlalchemy.sql.expression import asc
 from sqlalchemy.sql.expression import desc
+from sqlalchemy.sql.expression import UpdateBase
 from sqlalchemy.sql import false
 from sqlalchemy.sql import func
 from sqlalchemy.sql import null
@@ -416,6 +417,23 @@ class InequalityCondition(object):
     def clauses(self, field):
         return [field != value for value in self.values]
 
+
+class DeleteFromSelect(UpdateBase):
+    def __init__(self, table, select, column):
+        self.table = table
+        self.select = select
+        self.column = column
+
+
+# NOTE(guochbo): some versions of MySQL doesn't yet support subquery with
+# 'LIMIT & IN/ALL/ANY/SOME' We need work around this with nesting select .
+@compiles(DeleteFromSelect)
+def visit_delete_from_select(element, compiler, **kw):
+    return "DELETE FROM %s WHERE %s in (SELECT T1.%s FROM (%s) as T1)" % (
+        compiler.process(element.table, asfrom=True),
+        compiler.process(element.column),
+        element.column.name,
+        compiler.process(element.select))
 
 ###################
 
@@ -1755,7 +1773,7 @@ def instance_create(context, values):
 
     instance_ref = models.Instance()
     if not values.get('uuid'):
-        values['uuid'] = str(uuid.uuid4())
+        values['uuid'] = uuidutils.generate_uuid()
     instance_ref['info_cache'] = models.InstanceInfoCache()
     info_cache = values.pop('info_cache', None)
     if info_cache is not None:
@@ -3039,7 +3057,7 @@ def network_count_reserved_ips(context, network_id):
 @main_context_manager.writer
 def network_create_safe(context, values):
     network_ref = models.Network()
-    network_ref['uuid'] = str(uuid.uuid4())
+    network_ref['uuid'] = uuidutils.generate_uuid()
     network_ref.update(values)
 
     try:
@@ -3837,7 +3855,7 @@ def quota_reserve(context, resources, project_quotas, user_quotas, deltas,
         reservations = []
         for res, delta in deltas.items():
             reservation = _reservation_create(
-                                             str(uuid.uuid4()),
+                                             uuidutils.generate_uuid(),
                                              user_usages[res],
                                              project_id,
                                              user_id,
@@ -6275,16 +6293,51 @@ def task_log_end_task(context, task_name, period_beginning, period_ending,
 ##################
 
 
+def _archive_if_instance_deleted(table, shadow_table, instances, conn,
+                                 max_rows):
+    """Look for records that pertain to deleted instances, but may not be
+    deleted themselves. This catches cases where we delete an instance,
+    but leave some residue because of a failure in a cleanup path or
+    similar.
+
+    Logic is: if I have a column called instance_uuid, and that instance
+    is deleted, then I can be deleted.
+    """
+    query_insert = shadow_table.insert(inline=True).\
+        from_select(
+            [c.name for c in table.c],
+            sql.select(
+                [table],
+                and_(instances.c.deleted != instances.c.deleted.default.arg,
+                     instances.c.uuid == table.c.instance_uuid)).
+            order_by(table.c.id).limit(max_rows))
+
+    query_delete = sql.select(
+        [table.c.id],
+        and_(instances.c.deleted != instances.c.deleted.default.arg,
+             instances.c.uuid == table.c.instance_uuid)).\
+        order_by(table.c.id).limit(max_rows)
+    delete_statement = DeleteFromSelect(table, query_delete,
+                                        table.c.id)
+
+    try:
+        with conn.begin():
+            conn.execute(query_insert)
+            result_delete = conn.execute(delete_statement)
+            return result_delete.rowcount
+    except db_exc.DBReferenceError as ex:
+        LOG.warning(_LW('Failed to archive %(table)s: %(error)s'),
+                    {'table': table.__tablename__,
+                     'error': six.text_type(ex)})
+        return 0
+
+
 def _archive_deleted_rows_for_table(tablename, max_rows):
     """Move up to max_rows rows from one tables to the corresponding
     shadow table.
 
     :returns: number of rows archived
     """
-    # NOTE(guochbo): There is a circular import, nova.db.sqlalchemy.utils
-    # imports nova.db.sqlalchemy.api.
-    from nova.db.sqlalchemy import utils as db_utils
-
     engine = get_engine()
     conn = engine.connect()
     metadata = MetaData()
@@ -6354,12 +6407,13 @@ def _archive_deleted_rows_for_table(tablename, max_rows):
                           deleted_column != deleted_column.default.arg).\
                           order_by(column).limit(max_rows)
 
-    delete_statement = db_utils.DeleteFromSelect(table, query_delete, column)
+    delete_statement = DeleteFromSelect(table, query_delete, column)
     try:
         # Group the insert and delete in a transaction.
         with conn.begin():
             conn.execute(insert)
             result_delete = conn.execute(delete_statement)
+        rows_archived = result_delete.rowcount
     except db_exc.DBReferenceError as ex:
         # A foreign key constraint keeps us from deleting some of
         # these rows until we clean up a dependent table.  Just
@@ -6367,9 +6421,14 @@ def _archive_deleted_rows_for_table(tablename, max_rows):
         LOG.warning(_LW("IntegrityError detected when archiving table "
                         "%(tablename)s: %(error)s"),
                     {'tablename': tablename, 'error': six.text_type(ex)})
-        return rows_archived
 
-    rows_archived = result_delete.rowcount
+    if ((max_rows is None or rows_archived < max_rows)
+            and 'instance_uuid' in columns):
+        instances = models.BASE.metadata.tables['instances']
+        limit = max_rows - rows_archived if max_rows is not None else None
+        extra = _archive_if_instance_deleted(table, shadow_table, instances,
+                                             conn, limit)
+        rows_archived += extra
 
     return rows_archived
 
@@ -6411,31 +6470,6 @@ def archive_deleted_rows(max_rows=None):
         if total_rows_archived >= max_rows:
             break
     return table_to_rows_archived
-
-
-@main_context_manager.writer
-def pcidevice_online_data_migration(context, max_count):
-    from nova.objects import pci_device as pci_dev_obj
-
-    count_all = 0
-    count_hit = 0
-
-    if not pci_dev_obj.PciDevice.should_migrate_data():
-        LOG.error(_LE("Data migrations for PciDevice are not safe, likely "
-                      "because not all services that access the DB directly "
-                      "are updated to the latest version"))
-    else:
-        results = model_query(context, models.PciDevice).filter_by(
-            parent_addr=None).limit(max_count)
-
-        for db_dict in results:
-            count_all += 1
-            pci_dev = pci_dev_obj.PciDevice._from_db_object(
-                context, pci_dev_obj.PciDevice(), db_dict)
-            if pci_dev.obj_what_changed():
-                pci_dev.save()
-                count_hit += 1
-    return count_all, count_hit
 
 
 @main_context_manager.writer

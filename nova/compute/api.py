@@ -20,11 +20,11 @@
 networking and storage of VMs, and compute hosts on which they run)."""
 
 import base64
+import collections
 import copy
 import functools
 import re
 import string
-import uuid
 
 from oslo_log import log as logging
 from oslo_messaging import exceptions as oslo_exceptions
@@ -73,7 +73,6 @@ from nova.objects import block_device as block_device_obj
 from nova.objects import fields as fields_obj
 from nova.objects import keypair as keypair_obj
 from nova.objects import quotas as quotas_obj
-from nova.objects import security_group as security_group_obj
 from nova.pci import request as pci_request
 import nova.policy
 from nova import rpc
@@ -121,7 +120,7 @@ def check_instance_state(vm_state=None, task_state=(None,),
         task_state = set(task_state)
 
     def outer(f):
-        @functools.wraps(f)
+        @six.wraps(f)
         def inner(self, context, instance, *args, **kw):
             if vm_state is not None and instance.vm_state not in vm_state:
                 raise exception.InstanceInvalidState(
@@ -149,7 +148,7 @@ def check_instance_state(vm_state=None, task_state=(None,),
 
 
 def check_instance_host(function):
-    @functools.wraps(function)
+    @six.wraps(function)
     def wrapped(self, context, instance, *args, **kwargs):
         if not instance.host:
             raise exception.InstanceNotReady(instance_id=instance.uuid)
@@ -158,7 +157,7 @@ def check_instance_host(function):
 
 
 def check_instance_lock(function):
-    @functools.wraps(function)
+    @six.wraps(function)
     def inner(self, context, instance, *args, **kwargs):
         if instance.locked and not context.is_admin:
             raise exception.InstanceIsLocked(instance_uuid=instance.uuid)
@@ -167,10 +166,10 @@ def check_instance_lock(function):
 
 
 def check_instance_cell(fn):
+    @six.wraps(fn)
     def _wrapped(self, context, instance, *args, **kwargs):
         self._validate_cell(instance)
         return fn(self, context, instance, *args, **kwargs)
-    _wrapped.__name__ = fn.__name__
     return _wrapped
 
 
@@ -409,14 +408,37 @@ class API(base.Base):
     def _check_requested_secgroups(self, context, secgroups):
         """Check if the security group requested exists and belongs to
         the project.
+
+        :param context: The nova request context.
+        :type context: nova.context.RequestContext
+        :param secgroups: list of requested security group names, or uuids in
+            the case of Neutron.
+        :type secgroups: list
+        :returns: list of requested security group names unmodified if using
+            nova-network. If using Neutron, the list returned is all uuids.
+            Note that 'default' is a special case and will be unmodified if
+            it's requested.
         """
+        security_groups = []
         for secgroup in secgroups:
             # NOTE(sdague): default is handled special
             if secgroup == "default":
+                security_groups.append(secgroup)
                 continue
-            if not self.security_group_api.get(context, secgroup):
+            secgroup_dict = self.security_group_api.get(context, secgroup)
+            if not secgroup_dict:
                 raise exception.SecurityGroupNotFoundForProject(
                     project_id=context.project_id, security_group_id=secgroup)
+
+            # Check to see if it's a nova-network or neutron type.
+            if isinstance(secgroup_dict['id'], int):
+                # This is nova-network so just return the requested name.
+                security_groups.append(secgroup)
+            else:
+                # The id for neutron is a uuid, so we return the id (uuid).
+                security_groups.append(secgroup_dict['id'])
+
+        return security_groups
 
     def _check_requested_networks(self, context, requested_networks,
                                   max_count):
@@ -814,7 +836,10 @@ class API(base.Base):
             except base64.binascii.Error:
                 raise exception.InstanceUserDataMalformed()
 
-        self._check_requested_secgroups(context, security_groups)
+        # When using Neutron, _check_requested_secgroups will translate and
+        # return any requested security group names to uuids.
+        security_groups = (
+            self._check_requested_secgroups(context, security_groups))
 
         # Note:  max_count is the number of instances requested by the user,
         # max_network_count is the maximum number of instances taking into
@@ -900,7 +925,7 @@ class API(base.Base):
 
         # return the validated options and maximum number of instances allowed
         # by the network quotas
-        return base_options, max_network_count, key_pair
+        return base_options, max_network_count, key_pair, security_groups
 
     def _provision_instances(self, context, instance_type, min_count,
             max_count, base_options, boot_meta, security_groups,
@@ -921,7 +946,7 @@ class API(base.Base):
             for i in range(num_instances):
                 # Create a uuid for the instance so we can store the
                 # RequestSpec before the instance is created.
-                instance_uuid = str(uuid.uuid4())
+                instance_uuid = uuidutils.generate_uuid()
                 # Store the RequestSpec that will be used for scheduling.
                 req_spec = objects.RequestSpec.from_components(context,
                         instance_uuid, boot_meta, instance_type,
@@ -988,9 +1013,12 @@ class API(base.Base):
                                     "group")
                             raise exception.QuotaError(msg)
 
-                    objects.InstanceGroup.add_members(context,
-                                                      instance_group.uuid,
-                                                      [instance.uuid])
+                    members = objects.InstanceGroup.add_members(
+                        context, instance_group.uuid, [instance.uuid])
+                    # list of members added to servers group in this iteration
+                    # is needed to check quota of server group during add next
+                    # instance
+                    instance_group.members.extend(members)
 
                 # send a state update notification for the initial create to
                 # show it going from non-existent to BUILDING
@@ -1117,7 +1145,7 @@ class API(base.Base):
         self._check_auto_disk_config(image=boot_meta,
                                      auto_disk_config=auto_disk_config)
 
-        base_options, max_net_count, key_pair = \
+        base_options, max_net_count, key_pair, security_groups = \
                 self._validate_and_build_base_options(
                     context, instance_type, boot_meta, image_href, image_id,
                     kernel_id, ramdisk_id, display_name, display_description,
@@ -1418,7 +1446,13 @@ class API(base.Base):
 
         instance.system_metadata.update(system_meta)
 
-        instance.security_groups = security_groups
+        if CONF.use_neutron:
+            # For Neutron we don't actually store anything in the database, we
+            # proxy the security groups on the instance from the ports
+            # attached to the instance.
+            instance.security_groups = objects.SecurityGroupList()
+        else:
+            instance.security_groups = security_groups
 
         self._populate_instance_names(instance, num_instances)
         instance.shutdown_terminate = shutdown_terminate
@@ -1478,7 +1512,7 @@ class API(base.Base):
                image_href, kernel_id=None, ramdisk_id=None,
                min_count=None, max_count=None,
                display_name=None, display_description=None,
-               key_name=None, key_data=None, security_group=None,
+               key_name=None, key_data=None, security_groups=None,
                availability_zone=None, forced_host=None, forced_node=None,
                user_data=None, metadata=None, injected_files=None,
                admin_password=None, block_device_mapping=None,
@@ -1515,7 +1549,7 @@ class API(base.Base):
                        image_href, kernel_id, ramdisk_id,
                        min_count, max_count,
                        display_name, display_description,
-                       key_name, key_data, security_group,
+                       key_name, key_data, security_groups,
                        availability_zone, user_data, metadata,
                        injected_files, admin_password,
                        access_ip_v4, access_ip_v6,
@@ -1825,14 +1859,14 @@ class API(base.Base):
                              'id: %(id)s, status: %(status)s'),
                          {'id': migration.id,
                           'status': migration.status},
-                         context=context, instance=instance)
+                         instance=instance)
                 break
             except exception.MigrationNotFoundByStatus:
                 pass
 
         if not migration:
             LOG.info(_LI('Instance may have been confirmed during delete'),
-                     context=context, instance=instance)
+                     instance=instance)
             return
 
         src_host = migration.source_compute
@@ -1849,8 +1883,7 @@ class API(base.Base):
             deltas = compute_utils.downsize_quota_delta(context, instance)
         except KeyError:
             LOG.info(_LI('Migration %s may have been confirmed during '
-                         'delete'),
-                     migration.id, context=context, instance=instance)
+                         'delete'), migration.id, instance=instance)
             return
         quotas = compute_utils.reserve_quota_delta(context, deltas, instance)
 
@@ -1939,7 +1972,7 @@ class API(base.Base):
                         self.volume_api.delete(context, bdm.volume_id)
                 except Exception as exc:
                     err_str = _LW("Ignoring volume cleanup failure due to %s")
-                    LOG.warning(err_str % exc, instance=instance)
+                    LOG.warning(err_str, exc, instance=instance)
             bdm.destroy()
 
     def _local_delete(self, context, instance, bdms, delete_type, cb):
@@ -2498,7 +2531,7 @@ class API(base.Base):
 
         if compute_utils.is_volume_backed_instance(context, instance):
             LOG.info(_LI("It's not supported to backup volume backed "
-                         "instance."), context=context, instance=instance)
+                         "instance."), instance=instance)
             raise exception.InvalidRequest()
         else:
             image_meta = self._create_image(context, instance,
@@ -2538,7 +2571,36 @@ class API(base.Base):
         # NOTE(comstud): Any changes to this method should also be made
         # to the snapshot_instance() method in nova/cells/messaging.py
         instance.task_state = task_states.IMAGE_SNAPSHOT_PENDING
-        instance.save(expected_task_state=[None])
+        try:
+            instance.save(expected_task_state=[None])
+        except (exception.InstanceNotFound,
+                exception.UnexpectedDeletingTaskStateError) as ex:
+            # Changing the instance task state to use in raising the
+            # InstanceInvalidException below
+            LOG.debug('Instance disappeared during snapshot.',
+                      instance=instance)
+            try:
+                image_id = image_meta['id']
+                self.image_api.delete(context, image_id)
+                LOG.info(_LI('Image %s deleted because instance '
+                             'deleted before snapshot started.'),
+                         image_id, instance=instance)
+            except exception.ImageNotFound:
+                pass
+            except Exception as exc:
+                msg = _LW("Error while trying to clean up image %(img_id)s: "
+                          "%(error_msg)s")
+                LOG.warning(msg, {"img_id": image_meta['id'],
+                                  "error_msg": six.text_type(exc)})
+            attr = 'task_state'
+            state = task_states.DELETING
+            if type(ex) == exception.InstanceNotFound:
+                attr = 'vm_state'
+                state = vm_states.DELETED
+            raise exception.InstanceInvalidState(attr=attr,
+                                           instance_uuid=instance.uuid,
+                                           state=state,
+                                           method='snapshot')
 
         self.compute_rpcapi.snapshot_instance(context, instance,
                                               image_meta['id'])
@@ -2644,7 +2706,7 @@ class API(base.Base):
                 else:
                     LOG.info(_LI('Skipping quiescing instance: '
                                  '%(reason)s.'), {'reason': err},
-                             context=context, instance=instance)
+                             instance=instance)
 
         bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                 context, instance.uuid)
@@ -3310,7 +3372,7 @@ class API(base.Base):
             return
 
         context = context.elevated()
-        LOG.debug('Locking', context=context, instance=instance)
+        LOG.debug('Locking', instance=instance)
         instance.locked = True
         instance.locked_by = 'owner' if is_owner else 'admin'
         instance.save()
@@ -3326,7 +3388,7 @@ class API(base.Base):
     def unlock(self, context, instance):
         """Unlock the given instance."""
         context = context.elevated()
-        LOG.debug('Unlocking', context=context, instance=instance)
+        LOG.debug('Unlocking', instance=instance)
         instance.locked = False
         instance.locked_by = None
         instance.save()
@@ -3631,8 +3693,6 @@ class API(base.Base):
         # NOTE(sbauza): Force is a boolean by the new related API version
         if force is False and host_name:
             nodes = objects.ComputeNodeList.get_all_by_host(context, host_name)
-            if not nodes:
-                raise exception.ComputeHostNotFound(host=host_name)
             # NOTE(sbauza): Unset the host to make sure we call the scheduler
             host_name = None
             # FIXME(sbauza): Since only Ironic driver uses more than one
@@ -3778,8 +3838,6 @@ class API(base.Base):
         # NOTE(sbauza): Force is a boolean by the new related API version
         if force is False and host:
             nodes = objects.ComputeNodeList.get_all_by_host(context, host)
-            if not nodes:
-                raise exception.ComputeHostNotFound(host=host)
             # NOTE(sbauza): Unset the host to make sure we call the scheduler
             host = None
             # FIXME(sbauza): Since only Ironic driver uses more than one
@@ -3853,27 +3911,39 @@ class API(base.Base):
         # but doesn't know where they go. We need to collate lists
         # by the host the affected instance is on and dispatch them
         # according to host
-        instances_by_host = {}
-        events_by_host = {}
-        hosts_by_instance = {}
+        instances_by_host = collections.defaultdict(list)
+        events_by_host = collections.defaultdict(list)
+        hosts_by_instance = collections.defaultdict(list)
         for instance in instances:
-            instances_on_host = instances_by_host.get(instance.host, [])
-            instances_on_host.append(instance)
-            instances_by_host[instance.host] = instances_on_host
-            hosts_by_instance[instance.uuid] = instance.host
+            for host in self._get_relevant_hosts(context, instance):
+                instances_by_host[host].append(instance)
+                hosts_by_instance[instance.uuid].append(host)
 
         for event in events:
-            host = hosts_by_instance[event.instance_uuid]
-            events_on_host = events_by_host.get(host, [])
-            events_on_host.append(event)
-            events_by_host[host] = events_on_host
+            for host in hosts_by_instance[event.instance_uuid]:
+                events_by_host[host].append(event)
 
         for host in instances_by_host:
             # TODO(salv-orlando): Handle exceptions raised by the rpc api layer
             # in order to ensure that a failure in processing events on a host
             # will not prevent processing events on other hosts
             self.compute_rpcapi.external_instance_event(
-                context, instances_by_host[host], events_by_host[host])
+                context, instances_by_host[host], events_by_host[host],
+                host=host)
+
+    def _get_relevant_hosts(self, context, instance):
+        hosts = set()
+        hosts.add(instance.host)
+        if instance.migration_context is not None:
+            migration_id = instance.migration_context.migration_id
+            migration = objects.Migration.get_by_id(context, migration_id)
+            hosts.add(migration.dest_compute)
+            hosts.add(migration.source_compute)
+            LOG.debug('Instance %(instance)s is migrating, '
+                      'copying events to all relevant hosts: '
+                      '%(hosts)s', {'instance': instance.uuid,
+                                    'hosts': hosts})
+        return hosts
 
     def get_instance_host_status(self, instance):
         if instance.host:
@@ -4441,7 +4511,7 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
             msg = _("Quota exceeded, too many security groups.")
             self.raise_over_quota(msg)
 
-        LOG.info(_LI("Create Security Group %s"), name, context=context)
+        LOG.info(_LI("Create Security Group %s"), name)
 
         try:
             self.ensure_default(context)
@@ -4549,8 +4619,7 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
             LOG.exception(_LE("Failed to update usages deallocating "
                               "security group"))
 
-        LOG.info(_LI("Delete security group %s"), security_group['name'],
-                  context=context)
+        LOG.info(_LI("Delete security group %s"), security_group['name'])
         self.db.security_group_destroy(context, security_group['id'])
 
         # Commit the reservations
@@ -4736,9 +4805,3 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
             return self.db.security_group_get_by_instance(context,
                                                           instance.uuid)
         return [{'name': group.name} for group in instance.security_groups]
-
-    def populate_security_groups(self, security_groups):
-        if not security_groups:
-            # Make sure it's an empty SecurityGroupList and not None
-            return objects.SecurityGroupList()
-        return security_group_obj.make_secgroup_list(security_groups)

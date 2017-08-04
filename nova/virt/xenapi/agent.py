@@ -19,11 +19,11 @@ from distutils import version
 import os
 import sys
 import time
-import uuid
 
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import strutils
+from oslo_utils import uuidutils
 
 from nova.api.metadata import password
 from nova.compute import utils as compute_utils
@@ -62,14 +62,14 @@ def _call_agent(session, instance, vm_ref, method, addl_args=None,
     dom_id = session.VM.get_domid(vm_ref)
 
     args = {
-        'id': str(uuid.uuid4()),
+        'id': uuidutils.generate_uuid(),
         'dom_id': str(dom_id),
         'timeout': str(timeout),
     }
     args.update(addl_args)
 
     try:
-        ret = session.call_plugin('agent', method, args)
+        ret = session.call_plugin('agent.py', method, args)
     except session.XenAPI.Failure as e:
         err_msg = e.details[-1].splitlines()[-1]
         if 'TIMEOUT:' in err_msg:
@@ -316,8 +316,8 @@ class XenAPIBasedAgent(object):
         LOG.debug('Injecting file path: %r', path, instance=self.instance)
 
         # Files/paths must be base64-encoded for transmission to agent
-        b64_path = base64.b64encode(path)
-        b64_contents = base64.b64encode(contents)
+        b64_path = base64.b64encode(path.encode('utf-8'))
+        b64_contents = base64.b64encode(contents.encode('utf-8'))
 
         args = {'b64_path': b64_path, 'b64_contents': b64_contents}
         return self._call_agent('inject_file', args)

@@ -46,12 +46,14 @@ ironic_options = [
     cfg.StrOpt(
         'admin_username',
         deprecated_for_removal=True,
+        deprecated_since='14.0.0',
         help='Ironic keystone admin name. '
              'Use ``username`` instead.'),
     cfg.StrOpt(
         'admin_password',
         secret=True,
         deprecated_for_removal=True,
+        deprecated_since='14.0.0',
         help='Ironic keystone admin password. '
              'Use ``password`` instead.'),
     cfg.StrOpt(
@@ -88,6 +90,12 @@ Related options:
 
 * api_max_retries
 """),
+    cfg.IntOpt(
+        'serial_console_state_timeout',
+        default=10,
+        min=0,
+        help='Timeout (seconds) to wait for node serial console state '
+             'changed. Set to 0 to disable timeout.'),
 ]
 
 

@@ -88,7 +88,13 @@ def _expected_cols(expected_attrs):
     if complex_cols:
         simple_cols.append('extra')
     simple_cols = [x for x in simple_cols if x not in _INSTANCE_EXTRA_FIELDS]
-    return simple_cols + complex_cols
+    expected_cols = simple_cols + complex_cols
+    # NOTE(pumaranikar): expected_cols list can contain duplicates since
+    # caller appends column attributes to expected_attr without checking if
+    # it is already present in the list or not. Hence, we remove duplicates
+    # here, if any. The resultant list is sorted based on list index to
+    # maintain the insertion order.
+    return sorted(list(set(expected_cols)), key=expected_cols.index)
 
 
 _NO_DATA_SENTINEL = object()
@@ -233,6 +239,19 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         if fields is None or 'metadata' in fields:
             self._orig_metadata = (dict(self.metadata) if
                                    'metadata' in self else {})
+
+    def obj_clone(self):
+        """Create a copy of this instance object."""
+        nobj = super(Instance, self).obj_clone()
+        # Since the base object only does a deep copy of the defined fields,
+        # need to make sure to also copy the additional tracking metadata
+        # attributes so they don't show as changed and cause the metadata
+        # to always be updated even when stale information.
+        if hasattr(self, '_orig_metadata'):
+            nobj._orig_metadata = dict(self._orig_metadata)
+        if hasattr(self, '_orig_system_metadata'):
+            nobj._orig_system_metadata = dict(self._orig_system_metadata)
+        return nobj
 
     def obj_reset_changes(self, fields=None, recursive=False):
         super(Instance, self).obj_reset_changes(fields,
@@ -834,11 +853,11 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
                 objects.InstancePCIRequests.get_by_instance_uuid(
                     self._context, self.uuid)
 
-    def _load_device_metadata(self, db_requests=None):
-        if db_requests is not None:
+    def _load_device_metadata(self, db_dev_meta=None):
+        if db_dev_meta is not None:
             self.device_metadata = \
                 objects.InstanceDeviceMetadata.obj_from_db(
-                self._context, db_requests)
+                self._context, db_dev_meta)
         else:
             self.device_metadata = \
                 objects.InstanceDeviceMetadata.get_by_instance_uuid(

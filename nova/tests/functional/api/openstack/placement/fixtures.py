@@ -37,6 +37,15 @@ class APIFixture(fixture.GabbiFixture):
         self.conf = None
 
     def start_fixture(self):
+        # Set up stderr and stdout captures by directly driving the
+        # existing nova fixtures that do that. This captures the
+        # output that happens outside individual tests (for
+        # example database migrations).
+        self.standard_logging_fixture = fixtures.StandardLogging()
+        self.standard_logging_fixture.setUp()
+        self.output_stream_fixture = fixtures.OutputStreamCapture()
+        self.output_stream_fixture.setUp()
+
         self.conf = CONF
         self.conf.set_override('auth_strategy', 'noauth2')
         # Be explicit about all three database connections to avoid
@@ -63,6 +72,8 @@ class APIFixture(fixture.GabbiFixture):
     def stop_fixture(self):
         self.api_db_fixture.cleanup()
         self.main_db_fixture.cleanup()
+        self.output_stream_fixture.cleanUp()
+        self.standard_logging_fixture.cleanUp()
         if self.conf:
             self.conf.reset()
 

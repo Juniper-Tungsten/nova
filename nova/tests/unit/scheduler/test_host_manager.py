@@ -27,7 +27,6 @@ import six
 import nova
 from nova.compute import task_states
 from nova.compute import vm_states
-import nova.conf
 from nova import exception
 from nova import objects
 from nova.objects import base as obj_base
@@ -40,8 +39,6 @@ from nova.tests.unit import fake_instance
 from nova.tests.unit import matchers
 from nova.tests.unit.scheduler import fakes
 from nova.tests import uuidsentinel as uuids
-
-CONF = nova.conf.CONF
 
 
 class FakeFilterClass1(filters.BaseHostFilter):
@@ -61,10 +58,11 @@ class HostManagerTestCase(test.NoDBTestCase):
     @mock.patch.object(host_manager.HostManager, '_init_aggregates')
     def setUp(self, mock_init_agg, mock_init_inst):
         super(HostManagerTestCase, self).setUp()
-        self.flags(scheduler_available_filters=['%s.%s' % (__name__, cls) for
-                                                cls in ['FakeFilterClass1',
-                                                        'FakeFilterClass2']])
-        self.flags(scheduler_default_filters=['FakeFilterClass1'])
+        self.flags(available_filters=[
+            __name__ + '.FakeFilterClass1', __name__ + '.FakeFilterClass2'],
+            group='filter_scheduler')
+        self.flags(enabled_filters=['FakeFilterClass1'],
+                   group='filter_scheduler')
         self.host_manager = host_manager.HostManager()
         self.fake_hosts = [host_manager.HostState('fake_host%s' % x,
                 'fake-node') for x in range(1, 5)]
@@ -136,10 +134,10 @@ class HostManagerTestCase(test.NoDBTestCase):
         # should not be called if the list of nodes was passed explicitly
         self.assertFalse(mock_get_all.called)
 
-    def test_default_filters(self):
-        default_filters = self.host_manager.default_filters
-        self.assertEqual(1, len(default_filters))
-        self.assertIsInstance(default_filters[0], FakeFilterClass1)
+    def test_enabled_filters(self):
+        enabled_filters = self.host_manager.enabled_filters
+        self.assertEqual(1, len(enabled_filters))
+        self.assertIsInstance(enabled_filters[0], FakeFilterClass1)
 
     @mock.patch.object(host_manager.HostManager, '_init_instance_info')
     @mock.patch.object(objects.AggregateList, 'get_all')
@@ -960,8 +958,8 @@ class HostStateTestCase(test.NoDBTestCase):
             stats=stats, memory_mb=1, free_disk_gb=0, local_gb=0,
             local_gb_used=0, free_ram_mb=0, vcpus=0, vcpus_used=0,
             disk_available_least=None,
-            updated_at=None, host_ip='127.0.0.1',
-            hypervisor_type='htype',
+            updated_at=datetime.datetime(2015, 11, 11, 11, 0, 0),
+            host_ip='127.0.0.1', hypervisor_type='htype',
             hypervisor_hostname='hostname', cpu_info='cpu_info',
             supported_hv_specs=[],
             hypervisor_version=hyper_ver_int, numa_topology=None,
@@ -1003,8 +1001,8 @@ class HostStateTestCase(test.NoDBTestCase):
             stats=stats, memory_mb=0, free_disk_gb=0, local_gb=0,
             local_gb_used=0, free_ram_mb=0, vcpus=0, vcpus_used=0,
             disk_available_least=None,
-            updated_at=None, host_ip='127.0.0.1',
-            hypervisor_type='htype',
+            updated_at=datetime.datetime(2015, 11, 11, 11, 0, 0),
+            host_ip='127.0.0.1', hypervisor_type='htype',
             hypervisor_hostname='hostname', cpu_info='cpu_info',
             supported_hv_specs=[],
             hypervisor_version=hyper_ver_int, numa_topology=None,
@@ -1036,8 +1034,8 @@ class HostStateTestCase(test.NoDBTestCase):
             stats=stats, memory_mb=0, free_disk_gb=0, local_gb=0,
             local_gb_used=0, free_ram_mb=0, vcpus=0, vcpus_used=0,
             disk_available_least=None,
-            updated_at=None, host_ip='127.0.0.1',
-            hypervisor_type='htype',
+            updated_at=datetime.datetime(2015, 11, 11, 11, 0, 0),
+            host_ip='127.0.0.1', hypervisor_type='htype',
             hypervisor_hostname='hostname', cpu_info='cpu_info',
             supported_hv_specs=[],
             hypervisor_version=hyper_ver_int, numa_topology=None,
@@ -1196,8 +1194,8 @@ class HostStateTestCase(test.NoDBTestCase):
             memory_mb=0, free_disk_gb=0, local_gb=0,
             local_gb_used=0, free_ram_mb=0, vcpus=0, vcpus_used=0,
             disk_available_least=None,
-            updated_at=None, host_ip='127.0.0.1',
-            hypervisor_type='htype',
+            updated_at=datetime.datetime(2015, 11, 11, 11, 0, 0),
+            host_ip='127.0.0.1', hypervisor_type='htype',
             hypervisor_hostname='hostname', cpu_info='cpu_info',
             supported_hv_specs=[],
             hypervisor_version=hyper_ver_int,
@@ -1217,3 +1215,13 @@ class HostStateTestCase(test.NoDBTestCase):
         self.assertEqual({'0': 10, '1': 43},
                          host.metrics[1].numa_membw_values)
         self.assertIsInstance(host.numa_topology, six.string_types)
+
+    def test_stat_consumption_from_compute_node_not_ready(self):
+        compute = objects.ComputeNode(free_ram_mb=100,
+            updated_at=None)
+
+        host = host_manager.HostState("fakehost", "fakenode")
+        host._update_from_compute_node(compute)
+        # Because compute record not ready, the update of free ram
+        # will not happen and the value will still be 0
+        self.assertEqual(0, host.free_ram_mb)

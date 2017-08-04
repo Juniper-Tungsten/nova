@@ -20,7 +20,6 @@ Provides common functionality for integrated unit tests
 import random
 import string
 import time
-import uuid
 
 from oslo_log import log as logging
 
@@ -30,6 +29,7 @@ from nova import test
 from nova.tests import fixtures as nova_fixtures
 from nova.tests.unit import cast_as_call
 import nova.tests.unit.image.fake
+from nova.tests import uuidsentinel as uuids
 
 
 CONF = nova.conf.CONF
@@ -90,7 +90,7 @@ class _IntegratedTestBase(test.TestCase):
         return self.start_service('compute')
 
     def _setup_scheduler_service(self):
-        self.flags(scheduler_driver='chance_scheduler')
+        self.flags(group='scheduler', driver='chance_scheduler')
         return self.start_service('scheduler')
 
     def _setup_services(self):
@@ -118,7 +118,7 @@ class _IntegratedTestBase(test.TestCase):
                 int(generate_new_element(flavor_ids, '', True)))
 
     def get_invalid_image(self):
-        return str(uuid.uuid4())
+        return uuids.fake
 
     def _build_minimal_create_server_request(self):
         server = {}

@@ -282,9 +282,6 @@ class Instance(BASE, NovaBase, models.SoftDeleteMixin):
 
     reservation_id = Column(String(255))
 
-    # NOTE(sbiswas7): 'scheduled_at' is still in the database
-    # and can be removed in the future release.
-
     launched_at = Column(DateTime)
     terminated_at = Column(DateTime)
 
@@ -337,7 +334,12 @@ class Instance(BASE, NovaBase, models.SoftDeleteMixin):
     # OpenStack compute cell name.  This will only be set at the top of
     # the cells tree and it'll be a full cell name such as 'api!hop1!hop2'
     cell_name = Column(String(255))
-    internal_id = Column(Integer)
+
+    # NOTE(pumaranikar): internal_id attribute is no longer used (bug 1441242)
+    # Hence, removing from object layer in current release (Ocata) and will
+    # treated as deprecated. The column can be removed from schema with
+    # a migration at the start of next release.
+    # internal_id = Column(Integer)
 
     # Records whether an instance has been deleted from disk
     cleaned = Column(Integer, default=0)

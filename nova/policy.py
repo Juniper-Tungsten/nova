@@ -152,7 +152,7 @@ def authorize(context, action, target, do_raise=True, exc=None):
            do_raise is False.
     """
     init()
-    credentials = context.to_dict()
+    credentials = context.to_policy_values()
     if not exc:
         exc = exception.PolicyNotAuthorized
     try:
@@ -162,7 +162,6 @@ def authorize(context, action, target, do_raise=True, exc=None):
         with excutils.save_and_reraise_exception():
             LOG.exception(_LE('Policy not registered'))
     except Exception:
-        credentials.pop('auth_token', None)
         with excutils.save_and_reraise_exception():
             LOG.debug('Policy check for %(action)s failed with credentials '
                       '%(credentials)s',
@@ -177,7 +176,7 @@ def check_is_admin(context):
 
     init()
     # the target is user-self
-    credentials = context.to_dict()
+    credentials = context.to_policy_values()
     target = credentials
     return _ENFORCER.authorize('context_is_admin', target, credentials)
 

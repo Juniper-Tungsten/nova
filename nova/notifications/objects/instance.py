@@ -97,12 +97,34 @@ class InstanceActionPayload(InstancePayload):
         'fault': fields.ObjectField('ExceptionPayload', nullable=True),
     }
 
-    def __init__(self, instance, fault, ip_addresses, flavor):
+    def __init__(self, instance, fault, ip_addresses, flavor, **kwargs):
         super(InstanceActionPayload, self).__init__(
                 instance=instance,
                 fault=fault,
                 ip_addresses=ip_addresses,
-                flavor=flavor)
+                flavor=flavor,
+                **kwargs)
+
+
+@nova_base.NovaObjectRegistry.register_notification
+class InstanceActionVolumeSwapPayload(InstanceActionPayload):
+    # No SCHEMA as all the additional fields are calculated
+
+    VERSION = '1.0'
+    fields = {
+        'old_volume_id': fields.UUIDField(),
+        'new_volume_id': fields.UUIDField(),
+    }
+
+    def __init__(self, instance, fault, ip_addresses, flavor,
+                 old_volume_id, new_volume_id):
+        super(InstanceActionVolumeSwapPayload, self).__init__(
+                instance=instance,
+                fault=fault,
+                ip_addresses=ip_addresses,
+                flavor=flavor,
+                old_volume_id=old_volume_id,
+                new_volume_id=new_volume_id)
 
 
 @nova_base.NovaObjectRegistry.register_notification
@@ -225,30 +247,63 @@ class InstanceStateUpdatePayload(base.NotificationPayloadBase):
 @base.notification_sample('instance-delete-end.json')
 @base.notification_sample('instance-pause-start.json')
 @base.notification_sample('instance-pause-end.json')
-# @base.notification_sample('instance-unpause-start.json')
-# @base.notification_sample('instance-unpause-end.json')
+@base.notification_sample('instance-unpause-start.json')
+@base.notification_sample('instance-unpause-end.json')
 @base.notification_sample('instance-resize-start.json')
 @base.notification_sample('instance-resize-end.json')
 @base.notification_sample('instance-suspend-start.json')
 @base.notification_sample('instance-suspend-end.json')
 @base.notification_sample('instance-power_on-start.json')
 @base.notification_sample('instance-power_on-end.json')
-# @base.notification_sample('instance-power_off-start.json')
-# @base.notification_sample('instance-power_off-end.json')
+@base.notification_sample('instance-power_off-start.json')
+@base.notification_sample('instance-power_off-end.json')
 # @base.notification_sample('instance-reboot-start.json')
 # @base.notification_sample('instance-reboot-end.json')
-# @base.notification_sample('instance-shutdown-start.json')
-# @base.notification_sample('instance-shutdown-end.json')
+@base.notification_sample('instance-shutdown-start.json')
+@base.notification_sample('instance-shutdown-end.json')
 # @base.notification_sample('instance-snapshot-start.json')
 # @base.notification_sample('instance-snapshot-end.json')
 # @base.notification_sample('instance-add_fixed_ip-start.json')
 # @base.notification_sample('instance-add_fixed_ip-end.json')
 @base.notification_sample('instance-shelve-start.json')
 @base.notification_sample('instance-shelve-end.json')
-# @base.notification_sample('instance-resume-start.json')
-# @base.notification_sample('instance-resume-end.json')
+@base.notification_sample('instance-resume-start.json')
+@base.notification_sample('instance-resume-end.json')
 @base.notification_sample('instance-restore-start.json')
 @base.notification_sample('instance-restore-end.json')
+# @base.notification_sample('instance-evacuate.json')
+# @base.notification_sample('instance-resize_finish-start.json')
+# @base.notification_sample('instance-resize_finish-end.json')
+# @base.notification_sample('instance-live_migration_pre-start.json')
+# @base.notification_sample('instance-live_migration_pre-end.json')
+# @base.notification_sample('instance-live_migration_abort-start.json')
+# @base.notification_sample('instance-live_migration_abort-end.json')
+# @base.notification_sample('instance-live_migration_post-start.json')
+# @base.notification_sample('instance-live_migration_post-end.json')
+# @base.notification_sample('instance-live_migration_post_dest-start.json')
+# @base.notification_sample('instance-live_migration_post_dest-end.json')
+# @base.notification_sample('instance-live_migration_rollback-start.json')
+# @base.notification_sample('instance-live_migration_rollback-end.json')
+# @base.notification_sample('instance-live_migration_rollback_dest-start.json')
+# @base.notification_sample('instance-live_migration_rollback_dest-end.json')
+# @base.notification_sample('instance-rebuild-error.json')
+# @base.notification_sample('instance-remove_fixed_ip-start.json')
+# @base.notification_sample('instance-remove_fixed_ip-end.json')
+# @base.notification_sample('instance-resize_confirm-start.json')
+# @base.notification_sample('instance-resize_confirm-end.json')
+# @base.notification_sample('instance-resize_prep-start.json')
+# @base.notification_sample('instance-resize_revert-start.json')
+# @base.notification_sample('instance-resize_revert-end.json')
+@base.notification_sample('instance-shelve_offload-start.json')
+@base.notification_sample('instance-shelve_offload-end.json')
+# @base.notification_sample('instance-soft_delete-start.json')
+# @base.notification_sample('instance-soft_delete-end.json')
+# @base.notification_sample('instance-trigger_crash_dump-start.json')
+# @base.notification_sample('instance-trigger_crash_dump-end.json')
+# @base.notification_sample('instance-unrescue-start.json')
+# @base.notification_sample('instance-unrescue-end.json')
+@base.notification_sample('instance-unshelve-start.json')
+@base.notification_sample('instance-unshelve-end.json')
 @nova_base.NovaObjectRegistry.register_notification
 class InstanceActionNotification(base.NotificationBase):
     # Version 1.0: Initial version
@@ -267,4 +322,17 @@ class InstanceUpdateNotification(base.NotificationBase):
 
     fields = {
         'payload': fields.ObjectField('InstanceUpdatePayload')
+    }
+
+
+@base.notification_sample('instance-volume_swap-start.json')
+@base.notification_sample('instance-volume_swap-end.json')
+@base.notification_sample('instance-volume_swap-error.json')
+@nova_base.NovaObjectRegistry.register_notification
+class InstanceActionVolumeSwapNotification(base.NotificationBase):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    fields = {
+        'payload': fields.ObjectField('InstanceActionVolumeSwapPayload')
     }

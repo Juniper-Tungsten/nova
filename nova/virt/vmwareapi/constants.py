@@ -19,6 +19,7 @@ Shared constants across the VMware driver
 from nova.network import model as network_model
 
 MIN_VC_VERSION = '5.1.0'
+NEXT_MIN_VC_VERSION = '5.5.0'
 # The minimum VC version for Neutron 'ovs' port type support
 MIN_VC_OVS_VERSION = '5.5.0'
 
@@ -30,7 +31,7 @@ DISK_FORMATS_ALL = [DISK_FORMAT_ISO, DISK_FORMAT_VMDK]
 DISK_TYPE_THIN = 'thin'
 CONTAINER_FORMAT_BARE = 'bare'
 CONTAINER_FORMAT_OVA = 'ova'
-CONTAINER_FORMATS_ALL = [CONTAINER_FORMAT_BARE, DISK_FORMAT_VMDK]
+CONTAINER_FORMATS_ALL = [CONTAINER_FORMAT_BARE, CONTAINER_FORMAT_OVA]
 
 DISK_TYPE_SPARSE = 'sparse'
 DISK_TYPE_PREALLOCATED = 'preallocated'

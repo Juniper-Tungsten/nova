@@ -15,9 +15,9 @@
 
 """Test of Policy Engine For Nova."""
 
-import mock
 import os.path
 
+import mock
 from oslo_policy import policy as oslo_policy
 from oslo_serialization import jsonutils
 import requests_mock
@@ -204,18 +204,18 @@ class IsAdminCheckTestCase(test.NoDBTestCase):
     def test_call_true(self):
         check = policy.IsAdminCheck('is_admin', 'True')
 
-        self.assertEqual(check('target', dict(is_admin=True),
-                               policy._ENFORCER), True)
-        self.assertEqual(check('target', dict(is_admin=False),
-                               policy._ENFORCER), False)
+        self.assertTrue(check('target', dict(is_admin=True),
+                              policy._ENFORCER))
+        self.assertFalse(check('target', dict(is_admin=False),
+                               policy._ENFORCER))
 
     def test_call_false(self):
         check = policy.IsAdminCheck('is_admin', 'False')
 
-        self.assertEqual(check('target', dict(is_admin=True),
-                               policy._ENFORCER), False)
-        self.assertEqual(check('target', dict(is_admin=False),
-                               policy._ENFORCER), True)
+        self.assertFalse(check('target', dict(is_admin=True),
+                               policy._ENFORCER))
+        self.assertTrue(check('target', dict(is_admin=False),
+                              policy._ENFORCER))
 
 
 class AdminRolePolicyTestCase(test.NoDBTestCase):
@@ -536,19 +536,6 @@ class RealRolePolicyTestCase(test.NoDBTestCase):
                               self.non_admin_context, rule, self.target)
             policy.authorize(self.non_admin_context, rule,
                            {'project_id': 'fake', 'user_id': 'fake'})
-
-    def test_no_empty_rules(self):
-        # Parsed rules substitute '@' for '', so we need to look at the raw
-        # policy definitions
-        # CONF.oslo_policy.policy_file has been set to the sample file by
-        # the RealPolicyFixture used in setUp
-        with open(CONF.oslo_policy.policy_file, 'r') as policy_file:
-            policy_dict = jsonutils.loads(policy_file.read())
-
-        for rule_name, rule in policy_dict.items():
-            self.assertNotEqual('', str(rule),
-                    '%s should not be empty, use "@" instead if the policy '
-                    'should allow everything' % rule_name)
 
     def test_allow_all_rules(self):
         for rule in self.allow_all_rules:

@@ -10,8 +10,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_config import cfg
-
 from nova import context
 from nova.db.sqlalchemy import api as db
 from nova.db.sqlalchemy import api_models
@@ -24,8 +22,6 @@ from nova.tests import fixtures
 from nova.tests.functional import integrated_helpers
 from nova.tests.unit import fake_network
 from nova.tests.unit import fake_request_spec
-
-CONF = cfg.CONF
 
 
 class RequestSpecTestCase(test.NoDBTestCase):
@@ -71,6 +67,19 @@ class RequestSpecTestCase(test.NoDBTestCase):
     def test_double_create(self):
         spec = self._create_spec()
         self.assertRaises(exception.ObjectActionError, spec.create)
+
+    def test_destroy(self):
+        spec = self._create_spec()
+        spec.destroy()
+        self.assertRaises(
+            exception.RequestSpecNotFound,
+            self.spec_obj._get_by_instance_uuid_from_db, self.context,
+            self.instance_uuid)
+
+    def test_destroy_not_found(self):
+        spec = self._create_spec()
+        spec.destroy()
+        self.assertRaises(exception.RequestSpecNotFound, spec.destroy)
 
 
 @db.api_context_manager.writer

@@ -22,43 +22,6 @@ from nova.objects import base as obj_base
 from nova import test
 
 
-DEFAULT_FLAVORS = [
-    {'memory_mb': 512, 'root_gb': 1, 'deleted_at': None, 'name': 'm1.tiny',
-     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
-     'disabled': False, 'vcpus': 1, 'extra_specs': {}, 'swap': 0,
-     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '1',
-     'vcpu_weight': None, 'id': 2},
-    {'memory_mb': 2048, 'root_gb': 20, 'deleted_at': None, 'name': 'm1.small',
-     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
-     'disabled': False, 'vcpus': 1, 'extra_specs': {}, 'swap': 0,
-     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '2',
-     'vcpu_weight': None, 'id': 5},
-    {'memory_mb': 4096, 'root_gb': 40, 'deleted_at': None, 'name': 'm1.medium',
-     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
-     'disabled': False, 'vcpus': 2, 'extra_specs': {}, 'swap': 0,
-     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '3',
-     'vcpu_weight': None, 'id': 1},
-    {'memory_mb': 8192, 'root_gb': 80, 'deleted_at': None, 'name': 'm1.large',
-     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
-     'disabled': False, 'vcpus': 4, 'extra_specs': {}, 'swap': 0,
-     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '4',
-     'vcpu_weight': None, 'id': 3},
-    {'memory_mb': 16384, 'root_gb': 160, 'deleted_at': None,
-     'name': 'm1.xlarge', 'deleted': 0, 'created_at': None, 'ephemeral_gb': 0,
-     'updated_at': None, 'disabled': False, 'vcpus': 8, 'extra_specs': {},
-     'swap': 0, 'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '5',
-     'vcpu_weight': None, 'id': 4}
-]
-
-CONTEXT = context.RequestContext('fake', 'fake', is_admin=False)
-
-DEFAULT_FLAVOR_OBJS = [
-    objects.Flavor._obj_from_primitive(CONTEXT, objects.Flavor.VERSION,
-                                       {'nova_object.data': flavor})
-    for flavor in DEFAULT_FLAVORS
-]
-
-
 class InstanceTypeTestCase(test.TestCase):
     """Test cases for flavor  code."""
     def test_will_not_get_bad_default_instance_type(self):
@@ -92,44 +55,6 @@ class InstanceTypeTestCase(test.TestCase):
         fetched = flavors.get_flavor_by_flavor_id(flavorid)
         self.assertIsInstance(fetched, objects.Flavor)
         self.assertEqual(default_instance_type.flavorid, fetched.flavorid)
-
-    def test_get_all_flavors_sorted_list_sort(self):
-        # Test default sort
-        all_flavors = flavors.get_all_flavors_sorted_list()
-        self.assertEqual(len(DEFAULT_FLAVORS), len(all_flavors))
-        for i in range(len(all_flavors)):
-            f = all_flavors[i]
-            self.assertIsInstance(f, objects.Flavor)
-            self.assertEqual(DEFAULT_FLAVORS[i]['flavorid'], f.flavorid)
-
-        # Test sorted by name
-        all_flavors = flavors.get_all_flavors_sorted_list(sort_key='name')
-        expected = sorted(DEFAULT_FLAVORS, key=lambda item: item['name'])
-        self.assertEqual(len(expected), len(all_flavors))
-        for i in range(len(all_flavors)):
-            f = all_flavors[i]
-            self.assertIsInstance(f, objects.Flavor)
-            self.assertEqual(expected[i]['flavorid'], f.flavorid)
-
-    def test_get_all_flavors_sorted_list_limit(self):
-        limited_flavors = flavors.get_all_flavors_sorted_list(limit=2)
-        self.assertEqual(2, len(limited_flavors))
-
-    def test_get_all_flavors_sorted_list_marker(self):
-        all_flavors = flavors.get_all_flavors_sorted_list()
-
-        # Set the 3rd result as the marker
-        marker_flavorid = all_flavors[2].flavorid
-        marked_flavors = flavors.get_all_flavors_sorted_list(
-            marker=marker_flavorid)
-        # We expect everything /after/ the 3rd result
-        expected_results = all_flavors[3:]
-        self.assertEqual(len(expected_results), len(marked_flavors))
-        for i in range(len(marked_flavors)):
-            f = marked_flavors[i]
-            self.assertIsInstance(f, objects.Flavor)
-            self.assertEqual(expected_results[i].flavorid,
-                             f.flavorid)
 
 
 class InstanceTypeToolsTest(test.TestCase):
@@ -377,10 +302,10 @@ class CreateInstanceTypeTest(test.TestCase):
 
     def test_flavorid_populated(self):
         flavor1 = flavors.create('flavor1', 64, 1, 120)
-        self.assertIsNot(None, flavor1.flavorid)
+        self.assertIsNotNone(flavor1.flavorid)
 
         flavor2 = flavors.create('flavor2', 64, 1, 120, flavorid='')
-        self.assertIsNot(None, flavor2.flavorid)
+        self.assertIsNotNone(flavor2.flavorid)
 
         flavor3 = flavors.create('flavor3', 64, 1, 120, flavorid='foo')
         self.assertEqual('foo', flavor3.flavorid)
@@ -388,7 +313,7 @@ class CreateInstanceTypeTest(test.TestCase):
     def test_default_values(self):
         flavor1 = flavors.create('flavor1', 64, 1, 120)
 
-        self.assertIsNot(None, flavor1.flavorid)
+        self.assertIsNotNone(flavor1.flavorid)
         self.assertEqual(flavor1.ephemeral_gb, 0)
         self.assertEqual(flavor1.swap, 0)
         self.assertEqual(flavor1.rxtx_factor, 1.0)

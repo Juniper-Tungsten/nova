@@ -297,7 +297,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         stubs.stubout_get_this_vm_uuid(self.stubs)
         stubs.stub_out_vm_methods(self.stubs)
-        fake_processutils.stub_out_processutils_execute(self.stubs)
+        fake_processutils.stub_out_processutils_execute(self)
         self.user_id = 'fake'
         self.project_id = fakes.FAKE_PROJECT_ID
         self.context = context.RequestContext(self.user_id, self.project_id)
@@ -769,7 +769,7 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
                    group='xenserver')
         self.mox.StubOutWithMock(self.conn._session, 'call_plugin_serialized')
         self.conn._session.call_plugin_serialized(
-            'ipxe', 'inject', '/sr/path', mox.IgnoreArg(),
+            'ipxe.py', 'inject', '/sr/path', mox.IgnoreArg(),
             'http://boot.example.com', '192.168.1.100', '255.255.255.0',
             '192.168.1.1', '192.168.1.3', '/root/mkisofs')
         self.conn._session.call_plugin_serialized('partition_utils.py',
@@ -1686,7 +1686,7 @@ class XenAPIMigrateInstance(stubs.XenAPITestBase):
         self.migration = db.migration_create(
             context.get_admin_context(), migration_values)
 
-        fake_processutils.stub_out_processutils_execute(self.stubs)
+        fake_processutils.stub_out_processutils_execute(self)
         stubs.stub_out_migration_methods(self.stubs)
         stubs.stubout_get_this_vm_uuid(self.stubs)
 
@@ -2108,7 +2108,6 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
                    group='xenserver')
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.context = context.get_admin_context()
-        self.flags(use_local=True, group='conductor')
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
         self.instance = fake_instance.fake_db_instance(name='foo')
 
@@ -2968,7 +2967,6 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
                    host='host',
                    compute_driver='xenapi.XenAPIDriver',
                    default_availability_zone='avail_zone1')
-        self.flags(use_local=True, group='conductor')
         host_ref = xenapi_fake.get_all('host')[0]
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.context = context.get_admin_context()
@@ -3512,10 +3510,11 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
         self.stubs.Set(self.conn._vmops, "_get_iscsi_srs",
                        fake_get_iscsi_srs)
 
-        def fake_make_plugin_call(plugin, method, **args):
-            return "true"
-        self.stubs.Set(self.conn._vmops, "_make_plugin_call",
-                       fake_make_plugin_call)
+        def fake_is_xsm_sr_check_relaxed():
+            return True
+        self.stubs.Set(self.conn._vmops._session,
+                       'is_xsm_sr_check_relaxed',
+                       fake_is_xsm_sr_check_relaxed)
 
         dest_check_data = objects.XenapiLiveMigrateData(
             block_migration=True,
@@ -3539,10 +3538,11 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
         self.stubs.Set(self.conn._vmops, "_get_iscsi_srs",
                        fake_get_iscsi_srs)
 
-        def fake_make_plugin_call(plugin, method, **args):
-            return {'returncode': 'error', 'message': 'Plugin not found'}
-        self.stubs.Set(self.conn._vmops, "_make_plugin_call",
-                       fake_make_plugin_call)
+        def fake_is_xsm_sr_check_relaxed():
+            return False
+        self.stubs.Set(self.conn._vmops._session,
+                       'is_xsm_sr_check_relaxed',
+                       fake_is_xsm_sr_check_relaxed)
 
         self.assertRaises(exception.MigrationError,
                           self.conn.check_can_live_migrate_source,
@@ -3565,34 +3565,38 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
                           {'host': 'host'},
                           dest_check_data)
 
-    def test_check_can_live_migrate_works(self):
+    @mock.patch.object(objects.AggregateList, 'get_by_host')
+    def test_check_can_live_migrate_works(self, mock_get_by_host):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
 
-        def fake_aggregate_get_by_host(context, host, key=None):
-            self.assertEqual(CONF.host, host)
-            return [dict(test_aggregate.fake_aggregate,
-                         metadetails={"host": "test_host_uuid"})]
+        metadata = {'host': 'test_host_uuid'}
+        aggregate = objects.Aggregate(metadata=metadata)
+        aggregate_list = objects.AggregateList(objects=[aggregate])
+        mock_get_by_host.return_value = aggregate_list
 
-        self.stub_out("nova.db.aggregate_get_by_host",
-                fake_aggregate_get_by_host)
-        self.conn.check_can_live_migrate_destination(self.context,
-                {'host': 'host'}, False, False)
+        instance = objects.Instance(host='host')
+        self.conn.check_can_live_migrate_destination(
+            self.context, instance, None, None)
+        mock_get_by_host.assert_called_once_with(
+            self.context, CONF.host, key='hypervisor_pool')
 
-    def test_check_can_live_migrate_fails(self):
+    @mock.patch.object(objects.AggregateList, 'get_by_host')
+    def test_check_can_live_migrate_fails(self, mock_get_by_host):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
 
-        def fake_aggregate_get_by_host(context, host, key=None):
-            self.assertEqual(CONF.host, host)
-            return [dict(test_aggregate.fake_aggregate,
-                         metadetails={"dest_other": "test_host_uuid"})]
+        metadata = {'dest_other': 'test_host_uuid'}
+        aggregate = objects.Aggregate(metadata=metadata)
+        aggregate_list = objects.AggregateList(objects=[aggregate])
+        mock_get_by_host.return_value = aggregate_list
 
-        self.stub_out("nova.db.aggregate_get_by_host",
-                      fake_aggregate_get_by_host)
+        instance = objects.Instance(host='host')
         self.assertRaises(exception.MigrationError,
                           self.conn.check_can_live_migrate_destination,
-                          self.context, {'host': 'host'}, None, None)
+                          self.context, instance, None, None)
+        mock_get_by_host.assert_called_once_with(
+            self.context, CONF.host, key='hypervisor_pool')
 
     def test_live_migration(self):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
@@ -3645,8 +3649,7 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
         self.stubs.Set(self.conn._vmops._session, "call_xenapi",
                        fake_call_xenapi)
 
-        def recover_method(context, instance, destination_hostname,
-                        block_migration):
+        def recover_method(context, instance, destination_hostname):
             recover_method.called = True
         migrate_data = objects.XenapiLiveMigrateData(
             destination_sr_ref="foo",
@@ -3714,8 +3717,7 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
 
         self._add_default_live_migrate_stubs(self.conn)
 
-        def recover_method(context, instance, destination_hostname,
-                           block_migration):
+        def recover_method(context, instance, destination_hostname):
             recover_method.called = True
         # pass block_migration = True and migrate data
         migrate_data = objects.XenapiLiveMigrateData(
@@ -4076,7 +4078,7 @@ class XenAPISessionTestCase(test.NoDBTestCase):
         session.PLUGIN_REQUIRED_VERSION = '2.4'
 
         self.mox.StubOutWithMock(session, 'call_plugin_serialized')
-        session.call_plugin_serialized('nova_plugin_version', 'get_version',
+        session.call_plugin_serialized('nova_plugin_version.py', 'get_version',
                             ).AndReturn("2.4")
 
         self.mox.ReplayAll()
@@ -4089,11 +4091,22 @@ class XenAPISessionTestCase(test.NoDBTestCase):
         session.PLUGIN_REQUIRED_VERSION = '2.4'
 
         self.mox.StubOutWithMock(session, 'call_plugin_serialized')
-        session.call_plugin_serialized('nova_plugin_version', 'get_version',
+        session.call_plugin_serialized('nova_plugin_version.py', 'get_version',
                             ).AndReturn("2.5")
 
         self.mox.ReplayAll()
         session._verify_plugin_version()
+
+    def test_verify_plugin_version_python_extensions(self):
+        """Validate that 2.0 is equivalent to 1.8."""
+        session = self._get_mock_xapisession({})
+        session.XenAPI = xenapi_fake.FakeXenAPI()
+
+        session.PLUGIN_REQUIRED_VERSION = '2.0'
+
+        with mock.patch.object(session, 'call_plugin_serialized',
+                               return_value='1.8'):
+            session._verify_plugin_version()
 
     def test_verify_plugin_version_bad_maj(self):
         session = self._get_mock_xapisession({})
@@ -4102,7 +4115,7 @@ class XenAPISessionTestCase(test.NoDBTestCase):
         session.PLUGIN_REQUIRED_VERSION = '2.4'
 
         self.mox.StubOutWithMock(session, 'call_plugin_serialized')
-        session.call_plugin_serialized('nova_plugin_version', 'get_version',
+        session.call_plugin_serialized('nova_plugin_version.py', 'get_version',
                             ).AndReturn("3.0")
 
         self.mox.ReplayAll()
@@ -4115,7 +4128,7 @@ class XenAPISessionTestCase(test.NoDBTestCase):
         session.PLUGIN_REQUIRED_VERSION = '2.4'
 
         self.mox.StubOutWithMock(session, 'call_plugin_serialized')
-        session.call_plugin_serialized('nova_plugin_version', 'get_version',
+        session.call_plugin_serialized('nova_plugin_version.py', 'get_version',
                             ).AndReturn("2.3")
 
         self.mox.ReplayAll()
@@ -4127,7 +4140,7 @@ class XenAPISessionTestCase(test.NoDBTestCase):
         # Import the plugin to extract its version
         path = os.path.dirname(__file__)
         rel_path_elem = "../../../../../plugins/xenserver/xenapi/etc/xapi.d/" \
-            "plugins/nova_plugin_version"
+            "plugins/nova_plugin_version.py"
         for elem in rel_path_elem.split('/'):
             path = os.path.join(path, elem)
         path = os.path.realpath(path)

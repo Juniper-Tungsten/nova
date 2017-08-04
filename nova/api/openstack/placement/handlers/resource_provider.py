@@ -13,7 +13,6 @@
 
 import copy
 
-import jsonschema
 from oslo_db import exception as db_exc
 from oslo_serialization import jsonutils
 from oslo_utils import uuidutils
@@ -44,25 +43,6 @@ POST_RESOURCE_PROVIDER_SCHEMA = {
 # Remove uuid to create the schema for PUTting a resource provider
 PUT_RESOURCE_PROVIDER_SCHEMA = copy.deepcopy(POST_RESOURCE_PROVIDER_SCHEMA)
 PUT_RESOURCE_PROVIDER_SCHEMA['properties'].pop('uuid')
-
-
-def _extract_resource_provider(body, schema):
-    """Extract and validate resource provider from JSON body."""
-    try:
-        data = jsonutils.loads(body)
-    except ValueError as exc:
-        raise webob.exc.HTTPBadRequest(
-            _('Malformed JSON: %(error)s') % {'error': exc},
-            json_formatter=util.json_error_formatter)
-    try:
-        jsonschema.validate(data, schema,
-                            format_checker=jsonschema.FormatChecker())
-    except jsonschema.ValidationError as exc:
-        raise webob.exc.HTTPBadRequest(
-            _('JSON does not validate: %(error)s') % {'error': exc},
-            json_formatter=util.json_error_formatter)
-
-    return data
 
 
 def _serialize_links(environ, resource_provider):
@@ -100,8 +80,7 @@ def create_resource_provider(req):
     header pointing to the newly created resource provider.
     """
     context = req.environ['placement.context']
-    data = _extract_resource_provider(req.body,
-                                      POST_RESOURCE_PROVIDER_SCHEMA)
+    data = util.extract_json(req.body, POST_RESOURCE_PROVIDER_SCHEMA)
 
     try:
         uuid = data.get('uuid', uuidutils.generate_uuid())
@@ -135,15 +114,18 @@ def delete_resource_provider(req):
     uuid = util.wsgi_path_item(req.environ, 'uuid')
     context = req.environ['placement.context']
     # The containing application will catch a not found here.
-    resource_provider = objects.ResourceProvider.get_by_uuid(
-        context, uuid)
     try:
+        resource_provider = objects.ResourceProvider.get_by_uuid(
+            context, uuid)
         resource_provider.destroy()
     except exception.ResourceProviderInUse as exc:
         raise webob.exc.HTTPConflict(
             _('Unable to delete resource provider %(rp_uuid)s: %(error)s') %
             {'rp_uuid': uuid, 'error': exc},
             json_formatter=util.json_error_formatter)
+    except exception.NotFound as exc:
+        raise webob.exc.HTTPNotFound(
+            _("No resource provider with uuid %s found for delete") % uuid)
     req.response.status = 204
     req.response.content_type = None
     return req.response
@@ -223,8 +205,7 @@ def update_resource_provider(req):
     resource_provider = objects.ResourceProvider.get_by_uuid(
         context, uuid)
 
-    data = _extract_resource_provider(req.body,
-                                      PUT_RESOURCE_PROVIDER_SCHEMA)
+    data = util.extract_json(req.body, PUT_RESOURCE_PROVIDER_SCHEMA)
 
     resource_provider.name = data['name']
 

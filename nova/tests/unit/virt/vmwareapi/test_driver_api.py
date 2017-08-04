@@ -48,7 +48,6 @@ from nova import test
 from nova.tests.unit import fake_instance
 import nova.tests.unit.image.fake
 from nova.tests.unit import matchers
-from nova.tests.unit import test_flavors
 from nova.tests.unit import utils
 from nova.tests.unit.virt.vmwareapi import fake as vmwareapi_fake
 from nova.tests.unit.virt.vmwareapi import stubs
@@ -67,6 +66,42 @@ from nova.virt.vmwareapi import vmops
 from nova.virt.vmwareapi import volumeops
 
 CONF = nova.conf.CONF
+
+DEFAULT_FLAVORS = [
+    {'memory_mb': 512, 'root_gb': 1, 'deleted_at': None, 'name': 'm1.tiny',
+     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
+     'disabled': False, 'vcpus': 1, 'extra_specs': {}, 'swap': 0,
+     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '1',
+     'vcpu_weight': None, 'id': 2},
+    {'memory_mb': 2048, 'root_gb': 20, 'deleted_at': None, 'name': 'm1.small',
+     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
+     'disabled': False, 'vcpus': 1, 'extra_specs': {}, 'swap': 0,
+     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '2',
+     'vcpu_weight': None, 'id': 5},
+    {'memory_mb': 4096, 'root_gb': 40, 'deleted_at': None, 'name': 'm1.medium',
+     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
+     'disabled': False, 'vcpus': 2, 'extra_specs': {}, 'swap': 0,
+     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '3',
+     'vcpu_weight': None, 'id': 1},
+    {'memory_mb': 8192, 'root_gb': 80, 'deleted_at': None, 'name': 'm1.large',
+     'deleted': 0, 'created_at': None, 'ephemeral_gb': 0, 'updated_at': None,
+     'disabled': False, 'vcpus': 4, 'extra_specs': {}, 'swap': 0,
+     'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '4',
+     'vcpu_weight': None, 'id': 3},
+    {'memory_mb': 16384, 'root_gb': 160, 'deleted_at': None,
+     'name': 'm1.xlarge', 'deleted': 0, 'created_at': None, 'ephemeral_gb': 0,
+     'updated_at': None, 'disabled': False, 'vcpus': 8, 'extra_specs': {},
+     'swap': 0, 'rxtx_factor': 1.0, 'is_public': True, 'flavorid': '5',
+     'vcpu_weight': None, 'id': 4}
+]
+
+CONTEXT = context.RequestContext('fake', 'fake', is_admin=False)
+
+DEFAULT_FLAVOR_OBJS = [
+    objects.Flavor._obj_from_primitive(CONTEXT, objects.Flavor.VERSION,
+                                       {'nova_object.data': flavor})
+    for flavor in DEFAULT_FLAVORS
+]
 
 
 def _fake_create_session(inst):
@@ -290,7 +325,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.assertEqual(2, self.attempts)
 
     def _get_instance_type_by_name(self, type):
-        for instance_type in test_flavors.DEFAULT_FLAVOR_OBJS:
+        for instance_type in DEFAULT_FLAVOR_OBJS:
             if instance_type.name == type:
                 return instance_type
         if type == 'm1.micro':
@@ -1876,7 +1911,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                           instance=None)
 
     @mock.patch.object(objects.block_device.BlockDeviceMappingList,
-                       'get_by_instance_uuid')
+                       'get_by_instance_uuids')
     def test_image_aging_image_used(self, mock_get_by_inst):
         self._create_vm()
         all_instances = [self.instance]
@@ -1914,7 +1949,9 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self._cached_files_exist()
         self._timestamp_file_exists()
 
-    def test_image_aging_image_marked_for_deletion(self):
+    @mock.patch.object(objects.block_device.BlockDeviceMappingList,
+                       'get_by_instance_uuids')
+    def test_image_aging_image_marked_for_deletion(self, mock_get_by_inst):
         self._override_time()
         self._image_aging_image_marked_for_deletion()
 
@@ -1925,11 +1962,13 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                         uuid=uuidutils.generate_uuid())
         self._timestamp_file_exists(exists=False)
 
-    def test_timestamp_file_removed_spawn(self):
+    @mock.patch.object(objects.block_device.BlockDeviceMappingList,
+                       'get_by_instance_uuids')
+    def test_timestamp_file_removed_spawn(self, mock_get_by_inst):
         self._timestamp_file_removed()
 
     @mock.patch.object(objects.block_device.BlockDeviceMappingList,
-                       'get_by_instance_uuid')
+                       'get_by_instance_uuids')
     def test_timestamp_file_removed_aging(self, mock_get_by_inst):
         self._timestamp_file_removed()
         ts = self._get_timestamp_filename()
@@ -1941,9 +1980,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.conn.manage_image_cache(self.context, all_instances)
         self._timestamp_file_exists(exists=False)
 
-    @mock.patch.object(objects.block_device.BlockDeviceMappingList,
-                       'get_by_instance_uuid')
-    def test_image_aging_disabled(self, mock_get_by_inst):
+    def test_image_aging_disabled(self):
         self._override_time()
         self.flags(remove_unused_base_images=False)
         self._create_vm()
@@ -1962,11 +1999,15 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.useFixture(utils_fixture.TimeFixture(cur_time))
         self.conn.manage_image_cache(self.context, all_instances)
 
-    def test_image_aging_aged(self):
+    @mock.patch.object(objects.block_device.BlockDeviceMappingList,
+                       'get_by_instance_uuids')
+    def test_image_aging_aged(self, mock_get_by_inst):
         self._image_aging_aged(aging_time=8)
         self._cached_files_exist(exists=False)
 
-    def test_image_aging_not_aged(self):
+    @mock.patch.object(objects.block_device.BlockDeviceMappingList,
+                       'get_by_instance_uuids')
+    def test_image_aging_not_aged(self, mock_get_by_inst):
         self._image_aging_aged()
         self._cached_files_exist()
 
@@ -2137,7 +2178,8 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self.assertEqual(num_iface_ids, num_found)
 
     def _attach_interface(self, vif):
-        self.conn.attach_interface(self.instance, self.image, vif)
+        self.conn.attach_interface(self.context, self.instance, self.image,
+                                   vif)
         self._validate_interfaces(vif['id'], 1, 2)
 
     def test_attach_interface(self):
@@ -2153,14 +2195,14 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                                side_effect=Exception):
             self.assertRaises(exception.InterfaceAttachFailed,
                               self.conn.attach_interface,
-                              self.instance, self.image, vif)
+                              self.context, self.instance, self.image, vif)
 
     @mock.patch.object(vif, 'get_network_device',
                        return_value='fake_device')
     def _detach_interface(self, vif, mock_get_device):
         self._create_vm()
         self._attach_interface(vif)
-        self.conn.detach_interface(self.instance, vif)
+        self.conn.detach_interface(self.context, self.instance, vif)
         self._validate_interfaces('free', 1, 2)
 
     def test_detach_interface(self):
@@ -2170,7 +2212,8 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
     def test_detach_interface_and_attach(self):
         vif = self._create_vif()
         self._detach_interface(vif)
-        self.conn.attach_interface(self.instance, self.image, vif)
+        self.conn.attach_interface(self.context, self.instance, self.image,
+                                   vif)
         self._validate_interfaces(vif['id'], 1, 2)
 
     def test_detach_interface_no_device(self):
@@ -2178,7 +2221,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         vif = self._create_vif()
         self._attach_interface(vif)
         self.assertRaises(exception.NotFound, self.conn.detach_interface,
-                          self.instance, vif)
+                          self.context, self.instance, vif)
 
     def test_detach_interface_no_vif_match(self):
         self._create_vm()
@@ -2186,7 +2229,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
         self._attach_interface(vif)
         vif['id'] = 'bad-id'
         self.assertRaises(exception.NotFound, self.conn.detach_interface,
-                          self.instance, vif)
+                          self.context, self.instance, vif)
 
     @mock.patch.object(vif, 'get_network_device',
                        return_value='fake_device')
@@ -2199,7 +2242,7 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                                side_effect=Exception):
             self.assertRaises(exception.InterfaceDetachFailed,
                               self.conn.detach_interface,
-                              self.instance, vif)
+                              self.context, self.instance, vif)
 
     def test_resize_to_smaller_disk(self):
         self._create_vm(instance_type='m1.large')
@@ -2283,18 +2326,17 @@ class VMwareAPIVMTestCase(test.NoDBTestCase):
                          self.conn._create_nodename(test_mor),
                          "VC driver failed to create the proper node name")
 
-    @mock.patch.object(driver.LOG, 'warning')
-    def test_min_version(self, mock_warning):
-        self.conn._check_min_version()
-        self.assertFalse(mock_warning.called)
+    @mock.patch.object(oslo_vim_util, 'get_vc_version', return_value='5.0.0')
+    def test_invalid_min_version(self, mock_version):
+        self.assertRaises(exception.NovaException,
+                          self.conn._check_min_version)
 
     @mock.patch.object(driver.LOG, 'warning')
-    @mock.patch.object(oslo_vim_util, 'get_vc_version',
-                       return_value='5.0.0')
-    def test_invalid_min_version(self, mock_version, mock_warning):
+    @mock.patch.object(oslo_vim_util, 'get_vc_version', return_value='5.1.0')
+    def test_warning_deprecated_version(self, mock_version, mock_warning):
         self.conn._check_min_version()
-        # assert that the min version is in a warning message
-        expected_arg = {'version': constants.MIN_VC_VERSION}
+        # assert that the next min version is in the warning message
+        expected_arg = {'version': constants.NEXT_MIN_VC_VERSION}
         version_arg_found = False
         for call in mock_warning.call_args_list:
             if call[0][1] == expected_arg:

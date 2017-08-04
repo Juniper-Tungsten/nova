@@ -13,12 +13,12 @@
 
 """Stubouts, mocks and fixtures for the test suite."""
 
-import mock
 import pickle
 import random
 import sys
 
 import fixtures
+import mock
 from oslo_serialization import jsonutils
 import six
 
@@ -56,12 +56,15 @@ def stubout_instance_snapshot(stubs):
 
 
 def stubout_session(stubs, cls, product_version=(5, 6, 2),
-                    product_brand='XenServer', **opt_args):
+                    product_brand='XenServer', platform_version=(1, 9, 0),
+                    **opt_args):
     """Stubs out methods from XenAPISession."""
     stubs.Set(session.XenAPISession, '_create_session',
               lambda s, url: cls(url, **opt_args))
     stubs.Set(session.XenAPISession, '_get_product_version_and_brand',
               lambda s: (product_version, product_brand))
+    stubs.Set(session.XenAPISession, '_get_platform_version',
+              lambda s: platform_version)
 
 
 def stubout_get_this_vm_uuid(stubs):
@@ -169,10 +172,12 @@ class FakeSessionForVMTests(fake.SessionBase):
                                   "# Completed on Sun Nov  6 22:49:02 2011\n")
 
     def host_call_plugin(self, _1, _2, plugin, method, _5):
+        plugin = plugin.rstrip('.py')
+
         if plugin == 'glance' and method in ('download_vhd2'):
             root_uuid = _make_fake_vdi()
             return pickle.dumps(dict(root=dict(uuid=root_uuid)))
-        elif (plugin, method) == ("xenhost", "iptables_config"):
+        elif (plugin, method) == ('xenhost', 'iptables_config'):
             return fake.as_json(out=self._fake_iptables_save_output,
                                 err='')
         else:
@@ -214,11 +219,13 @@ class FakeSessionForFirewallTests(FakeSessionForVMTests):
         self._test_case = test_case
 
     def host_call_plugin(self, _1, _2, plugin, method, args):
-        """Mock method four host_call_plugin to be used in unit tests
+        """Mock method for host_call_plugin to be used in unit tests
            for the dom0 iptables Firewall drivers for XenAPI
 
         """
-        if plugin == "xenhost" and method == "iptables_config":
+        plugin = plugin.rstrip('.py')
+
+        if plugin == 'xenhost' and method == 'iptables_config':
             # The command to execute is a json-encoded list
             cmd_args = args.get('cmd_args', None)
             cmd = jsonutils.loads(cmd_args)

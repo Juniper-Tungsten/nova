@@ -23,7 +23,6 @@ import contextlib
 import os
 import time
 import urllib
-import uuid
 from xml.dom import minidom
 from xml.parsers import expat
 
@@ -35,6 +34,7 @@ from oslo_utils import importutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
 from oslo_utils import units
+from oslo_utils import uuidutils
 from oslo_utils import versionutils
 import six
 from six.moves import range
@@ -490,7 +490,7 @@ def _safe_copy_vdi(session, sr_ref, instance, vdi_to_copy_ref):
         with snapshot_attached_here(
                 session, instance, vm_ref, label) as vdi_uuids:
             imported_vhds = session.call_plugin_serialized(
-                'workarounds', 'safe_copy_vdis',
+                'workarounds.py', 'safe_copy_vdis',
                 sr_path=get_sr_path(session, sr_ref=sr_ref),
                 vdi_uuids=vdi_uuids, uuid_stack=_make_uuid_stack())
 
@@ -932,7 +932,7 @@ def try_auto_configure_disk(session, vdi_ref, new_gb):
         _auto_configure_disk(session, vdi_ref, new_gb)
     except exception.CannotResizeDisk as e:
         msg = _LW('Attempted auto_configure_disk failed because: %s')
-        LOG.warning(msg % e)
+        LOG.warning(msg, e)
 
 
 def _make_partition(session, dev, partition_start, partition_end):
@@ -1157,8 +1157,9 @@ def _create_kernel_image(context, session, instance, name_label, image_id,
     if CONF.xenserver.cache_images != 'none':
         args = {}
         args['cached-image'] = image_id
-        args['new-image-uuid'] = str(uuid.uuid4())
-        filename = session.call_plugin('kernel', 'create_kernel_ramdisk', args)
+        args['new-image-uuid'] = uuidutils.generate_uuid()
+        filename = session.call_plugin('kernel.py', 'create_kernel_ramdisk',
+                                       args)
 
     if filename == "":
         return _fetch_disk_image(context, session, instance, name_label,
@@ -1195,7 +1196,7 @@ def destroy_kernel_ramdisk(session, instance, kernel, ramdisk):
     if args:
         LOG.debug("Removing kernel/ramdisk files from dom0",
                     instance=instance)
-        session.call_plugin('kernel', 'remove_kernel_ramdisk', args)
+        session.call_plugin('kernel.py', 'remove_kernel_ramdisk', args)
 
 
 def _get_image_vdi_label(image_id):
@@ -1344,7 +1345,7 @@ def _make_uuid_stack():
     # which does not have the `uuid` module. To work around this,
     # we generate the uuids here (under Python 2.6+) and
     # pass them as arguments
-    return [str(uuid.uuid4()) for i in range(MAX_VDI_CHAIN_SIZE)]
+    return [uuidutils.generate_uuid() for i in range(MAX_VDI_CHAIN_SIZE)]
 
 
 def _image_uses_bittorrent(context, instance):
@@ -1550,7 +1551,7 @@ def _fetch_disk_image(context, session, instance, name_label, image_id,
             args['image-size'] = str(vdi_size)
             if CONF.xenserver.cache_images != 'none':
                 args['cached-image'] = image_id
-            filename = session.call_plugin('kernel', 'copy_vdi', args)
+            filename = session.call_plugin('kernel.py', 'copy_vdi', args)
 
             # Remove the VDI as it is not needed anymore.
             destroy_vdi(session, vdi_ref)
@@ -1793,7 +1794,7 @@ def compile_diagnostics(vm_rec):
 
 
 def fetch_bandwidth(session):
-    bw = session.call_plugin_serialized('bandwidth', 'fetch_all_bandwidth')
+    bw = session.call_plugin_serialized('bandwidth.py', 'fetch_all_bandwidth')
     return bw
 
 
@@ -2547,7 +2548,7 @@ def _import_migrated_vhds(session, instance, chain_label, disk_type,
     """Move and possibly link VHDs via the XAPI plugin."""
     # TODO(johngarbutt) tidy up plugin params
     imported_vhds = session.call_plugin_serialized(
-            'migration', 'move_vhds_into_sr', instance_uuid=chain_label,
+            'migration.py', 'move_vhds_into_sr', instance_uuid=chain_label,
             sr_path=get_sr_path(session), uuid_stack=_make_uuid_stack())
 
     # Now we rescan the SR so we find the VHDs
@@ -2573,7 +2574,7 @@ def migrate_vhd(session, instance, vdi_uuid, dest, sr_path, seq_num,
         chain_label = instance['uuid'] + "_ephemeral_%d" % ephemeral_number
     try:
         # TODO(johngarbutt) tidy up plugin params
-        session.call_plugin_serialized('migration', 'transfer_vhd',
+        session.call_plugin_serialized('migration.py', 'transfer_vhd',
                 instance_uuid=chain_label, host=dest, vdi_uuid=vdi_uuid,
                 sr_path=sr_path, seq_num=seq_num)
     except session.XenAPI.Failure:
@@ -2638,7 +2639,7 @@ def handle_ipxe_iso(session, instance, cd_vdi, network_info):
     dns = subnet['dns'][0]['address']
 
     try:
-        session.call_plugin_serialized("ipxe", "inject", sr_path,
+        session.call_plugin_serialized('ipxe.py', 'inject', sr_path,
                 cd_vdi['uuid'], boot_menu_url, ip_address, netmask,
                 gateway, dns, CONF.xenserver.ipxe_mkisofs_cmd)
     except session.XenAPI.Failure as exc:

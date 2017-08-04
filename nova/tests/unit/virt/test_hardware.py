@@ -13,7 +13,6 @@
 # under the License.
 
 import collections
-import uuid
 
 import mock
 from oslo_serialization import jsonutils
@@ -1851,7 +1850,7 @@ class HelperMethodsTestCase(test.NoDBTestCase):
 
     def test_instance_with_fetch(self):
         host = objects.ComputeNode(numa_topology=self.hosttopo._to_json())
-        fake_uuid = str(uuid.uuid4())
+        fake_uuid = uuids.fake
         instance = {'uuid': fake_uuid}
 
         with mock.patch.object(objects.InstanceNUMATopology,
@@ -1862,7 +1861,7 @@ class HelperMethodsTestCase(test.NoDBTestCase):
 
     def test_object_instance_with_load(self):
         host = objects.ComputeNode(numa_topology=self.hosttopo._to_json())
-        fake_uuid = str(uuid.uuid4())
+        fake_uuid = uuids.fake
         instance = objects.Instance(context=self.context, uuid=fake_uuid)
 
         with mock.patch.object(objects.InstanceNUMATopology,
@@ -1873,7 +1872,7 @@ class HelperMethodsTestCase(test.NoDBTestCase):
 
     def test_instance_serialized_by_build_request_spec(self):
         host = objects.ComputeNode(numa_topology=self.hosttopo._to_json())
-        fake_uuid = str(uuid.uuid4())
+        fake_uuid = uuids.fake
         instance = objects.Instance(context=self.context, id=1, uuid=fake_uuid,
                 numa_topology=self.instancetopo)
         # NOTE (ndipanov): This emulates scheduler.utils.build_request_spec
@@ -1906,7 +1905,7 @@ class HelperMethodsTestCase(test.NoDBTestCase):
         self._check_usage(res)
 
     def test_dict_numa_topology_to_obj(self):
-        fake_uuid = str(uuid.uuid4())
+        fake_uuid = uuids.fake
         instance = objects.Instance(context=self.context, id=1, uuid=fake_uuid,
                                     numa_topology=self.instancetopo)
         instance_dict = base_obj.obj_to_primitive(instance)
@@ -2397,6 +2396,19 @@ class CPUPinningCellTestCase(test.NoDBTestCase, _CPUPinningTestCaseBase):
         got_topo = objects.VirtCPUTopology(sockets=1, cores=3, threads=1)
         self.assertEqualTopology(got_topo, inst_pin.cpu_topology)
 
+    def test_get_pinning_host_siblings_instance_mixed_siblings(self):
+        host_pin = objects.NUMACell(id=0, cpuset=set([0, 1, 2, 3, 4, 5, 6, 7]),
+                                    memory=4096, memory_usage=0,
+                                    siblings=[set([0, 1]), set([2, 3]),
+                                              set([4, 5]), set([6, 7])],
+                                    mempages=[], pinned_cpus=set([0, 1, 2, 5]))
+        inst_pin = objects.InstanceNUMACell(cpuset=set([0, 1, 2, 3]),
+                                            memory=2048)
+        inst_pin = hw._numa_fit_instance_cell_with_pinning(host_pin, inst_pin)
+        self.assertInstanceCellPinned(inst_pin)
+        got_topo = objects.VirtCPUTopology(sockets=1, cores=4, threads=1)
+        self.assertEqualTopology(got_topo, inst_pin.cpu_topology)
+
     def test_get_pinning_host_siblings_instance_odd_fit_orphan_only(self):
         host_pin = objects.NUMACell(id=0, cpuset=set([0, 1, 2, 3, 4, 5, 6, 7]),
                                     memory=4096, memory_usage=0,
@@ -2756,30 +2768,32 @@ class CPUPinningTestCase(test.NoDBTestCase, _CPUPinningTestCaseBase):
 
 class CPURealtimeTestCase(test.NoDBTestCase):
     def test_success_flavor(self):
-        flavor = {"extra_specs": {"hw:cpu_realtime_mask": "^1"}}
+        flavor = objects.Flavor(vcpus=3, memory_mb=2048,
+                                extra_specs={"hw:cpu_realtime_mask": "^1"})
         image = objects.ImageMeta.from_dict({})
-        rt, em = hw.vcpus_realtime_topology(set([0, 1, 2]), flavor, image)
+        rt = hw.vcpus_realtime_topology(flavor, image)
         self.assertEqual(set([0, 2]), rt)
-        self.assertEqual(set([1]), em)
 
     def test_success_image(self):
-        flavor = {"extra_specs": {}}
+        flavor = objects.Flavor(vcpus=3, memory_mb=2048,
+                                extra_specs={"hw:cpu_realtime_mask": "^1"})
         image = objects.ImageMeta.from_dict(
             {"properties": {"hw_cpu_realtime_mask": "^0-1"}})
-        rt, em = hw.vcpus_realtime_topology(set([0, 1, 2]), flavor, image)
+        rt = hw.vcpus_realtime_topology(flavor, image)
         self.assertEqual(set([2]), rt)
-        self.assertEqual(set([0, 1]), em)
 
     def test_no_mask_configured(self):
-        flavor = {"extra_specs": {}}
+        flavor = objects.Flavor(vcpus=3, memory_mb=2048,
+                                extra_specs={})
         image = objects.ImageMeta.from_dict({"properties": {}})
         self.assertRaises(
             exception.RealtimeMaskNotFoundOrInvalid,
-            hw.vcpus_realtime_topology, set([0, 1, 2]), flavor, image)
+            hw.vcpus_realtime_topology, flavor, image)
 
     def test_mask_badly_configured(self):
-        flavor = {"extra_specs": {"hw:cpu_realtime_mask": "^0-2"}}
+        flavor = objects.Flavor(vcpus=3, memory_mb=2048,
+                                extra_specs={"hw:cpu_realtime_mask": "^0-2"})
         image = objects.ImageMeta.from_dict({"properties": {}})
         self.assertRaises(
             exception.RealtimeMaskNotFoundOrInvalid,
-            hw.vcpus_realtime_topology, set([0, 1, 2]), flavor, image)
+            hw.vcpus_realtime_topology, flavor, image)

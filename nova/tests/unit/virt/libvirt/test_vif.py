@@ -12,7 +12,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import copy
 import os
 
 import fixtures
@@ -33,6 +32,7 @@ from nova.pci import utils as pci_utils
 from nova import test
 from nova.tests.unit import matchers
 from nova.tests.unit.virt import fakelibosinfo
+from nova.tests.unit.virt.libvirt import fakelibvirt
 from nova import utils
 from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import host
@@ -389,52 +389,57 @@ class LibvirtVifTestCase(test.NoDBTestCase):
         'quota:vif_outbound_burst': '30'
     }
 
-    os_vif_network = osv_objects.network.Network(
-        id="b82c1929-051e-481d-8110-4669916c7915",
-        label="Demo Net",
-        subnets=osv_objects.subnet.SubnetList(
-            objects=[]))
+    def setup_os_vif_objects(self):
+        self.os_vif_network = osv_objects.network.Network(
+            id="b82c1929-051e-481d-8110-4669916c7915",
+            label="Demo Net",
+            subnets=osv_objects.subnet.SubnetList(
+                objects=[]))
 
-    os_vif_bridge = osv_objects.vif.VIFBridge(
-        id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
-        address="22:52:25:62:e2:aa",
-        plugin="linux_bridge",
-        vif_name="nicdc065497-3c",
-        bridge_name="br100",
-        has_traffic_filtering=False,
-        network=os_vif_network)
+        self.os_vif_bridge = osv_objects.vif.VIFBridge(
+            id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
+            address="22:52:25:62:e2:aa",
+            plugin="linux_bridge",
+            vif_name="nicdc065497-3c",
+            bridge_name="br100",
+            has_traffic_filtering=False,
+            network=self.os_vif_network)
 
-    os_vif_ovs_prof = osv_objects.vif.VIFPortProfileOpenVSwitch(
-        interface_id="07bd6cea-fb37-4594-b769-90fc51854ee9",
-        profile_id="fishfood")
+        self.os_vif_ovs_prof = osv_objects.vif.VIFPortProfileOpenVSwitch(
+            interface_id="07bd6cea-fb37-4594-b769-90fc51854ee9",
+            profile_id="fishfood")
 
-    os_vif_ovs = osv_objects.vif.VIFOpenVSwitch(
-        id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
-        address="22:52:25:62:e2:aa",
-        unplugin="linux_bridge",
-        vif_name="nicdc065497-3c",
-        bridge_name="br0",
-        port_profile=os_vif_ovs_prof,
-        network=os_vif_network)
+        self.os_vif_ovs = osv_objects.vif.VIFOpenVSwitch(
+            id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
+            address="22:52:25:62:e2:aa",
+            unplugin="linux_bridge",
+            vif_name="nicdc065497-3c",
+            bridge_name="br0",
+            port_profile=self.os_vif_ovs_prof,
+            network=self.os_vif_network)
 
-    os_vif_ovs_hybrid = osv_objects.vif.VIFBridge(
-        id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
-        address="22:52:25:62:e2:aa",
-        unplugin="linux_bridge",
-        vif_name="nicdc065497-3c",
-        bridge_name="br0",
-        port_profile=os_vif_ovs_prof,
-        has_traffic_filtering=False,
-        network=os_vif_network)
+        self.os_vif_ovs_hybrid = osv_objects.vif.VIFBridge(
+            id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
+            address="22:52:25:62:e2:aa",
+            unplugin="linux_bridge",
+            vif_name="nicdc065497-3c",
+            bridge_name="br0",
+            port_profile=self.os_vif_ovs_prof,
+            has_traffic_filtering=False,
+            network=self.os_vif_network)
 
-    os_vif_inst_info = osv_objects.instance_info.InstanceInfo(
-        uuid="d5b1090c-9e00-4fa4-9504-4b1494857970",
-        name="instance-000004da",
-        project_id="2f37d7f6-e51a-4a1f-8b6e-b0917ffc8390")
+        self.os_vif_inst_info = osv_objects.instance_info.InstanceInfo(
+            uuid="d5b1090c-9e00-4fa4-9504-4b1494857970",
+            name="instance-000004da",
+            project_id="2f37d7f6-e51a-4a1f-8b6e-b0917ffc8390")
 
     def setUp(self):
         super(LibvirtVifTestCase, self).setUp()
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
         self.flags(allow_same_net_traffic=True)
+        # os_vif.initialize is typically done in nova-compute startup
+        os_vif.initialize()
+        self.setup_os_vif_objects()
         self.executes = []
 
         def fake_execute(*cmd, **kwargs):
@@ -637,18 +642,31 @@ class LibvirtVifTestCase(test.NoDBTestCase):
         xml = self._get_instance_xml(d, self.vif_bridge)
         self._assertModel(xml, network_model.VIF_MODEL_VIRTIO)
 
-    def test_model_kvm_qemu_custom(self):
-        for virt in ('kvm', 'qemu'):
+    def test_model_parallels(self):
+        self.flags(use_virtio_for_bridges=True,
+                   virt_type='parallels',
+                   group='libvirt')
+
+        d = vif.LibvirtGenericVIFDriver()
+        xml = self._get_instance_xml(d, self.vif_bridge)
+        self._assertModel(xml, network_model.VIF_MODEL_VIRTIO)
+
+    def test_model_kvm_qemu_parallels_custom(self):
+        for virt in ('kvm', 'qemu', 'parallels'):
             self.flags(use_virtio_for_bridges=True,
                        virt_type=virt,
                        group='libvirt')
 
             d = vif.LibvirtGenericVIFDriver()
-            supported = (network_model.VIF_MODEL_NE2K_PCI,
-                         network_model.VIF_MODEL_PCNET,
-                         network_model.VIF_MODEL_RTL8139,
-                         network_model.VIF_MODEL_E1000,
-                         network_model.VIF_MODEL_SPAPR_VLAN)
+            if virt == 'parallels':
+                supported = (network_model.VIF_MODEL_RTL8139,
+                             network_model.VIF_MODEL_E1000)
+            else:
+                supported = (network_model.VIF_MODEL_NE2K_PCI,
+                             network_model.VIF_MODEL_PCNET,
+                             network_model.VIF_MODEL_RTL8139,
+                             network_model.VIF_MODEL_E1000,
+                             network_model.VIF_MODEL_SPAPR_VLAN)
             for model in supported:
                 image_meta = objects.ImageMeta.from_dict(
                     {'properties': {'hw_vif_model': model}})
@@ -688,7 +706,7 @@ class LibvirtVifTestCase(test.NoDBTestCase):
             doc = etree.fromstring(xml)
 
             bandwidth = doc.find('./devices/interface/bandwidth')
-            self.assertNotEqual(bandwidth, None)
+            self.assertIsNotNone(bandwidth)
 
             inbound = bandwidth.find('inbound')
             self.assertEqual(inbound.get("average"),
@@ -1599,40 +1617,3 @@ class LibvirtVifTestCase(test.NoDBTestCase):
                 <filterref
                  filter="nova-instance-instance-00000001-22522562e2aa"/>
             </interface>""", cfg.to_xml())
-
-    @mock.patch('nova.network.linux_net._set_device_mtu')
-    @mock.patch("nova.network.os_vif_util.nova_to_osvif_instance")
-    @mock.patch("nova.network.os_vif_util.nova_to_osvif_vif")
-    @mock.patch.object(os_vif, "plug")
-    def test_plug_ovs_vif_no_mtu(self, mock_plug,
-                              mock_convert_vif, mock_convert_inst,
-                              mock_set_mtu):
-        mock_convert_vif.return_value = self.os_vif_bridge
-        mock_convert_inst.return_value = self.os_vif_inst_info
-
-        d = vif.LibvirtGenericVIFDriver()
-        # Hack the network mtu in the vif_bridge object - make sure to copy it
-        # so we don't change state on a global object during a test run.
-        vif_bridge = copy.deepcopy(self.vif_bridge)
-        vif_bridge['network']._set_meta({'mtu': None})
-        d.plug(self.instance, vif_bridge)
-
-        self.assertFalse(mock_set_mtu.called)
-
-    @mock.patch('nova.network.linux_net._set_device_mtu')
-    @mock.patch("nova.network.os_vif_util.nova_to_osvif_instance")
-    @mock.patch("nova.network.os_vif_util.nova_to_osvif_vif")
-    @mock.patch.object(os_vif, "plug")
-    def test_plug_ovs_vif_mtu(self, mock_plug,
-                              mock_convert_vif, mock_convert_inst,
-                              mock_set_mtu):
-        mock_convert_vif.return_value = self.os_vif_ovs
-        mock_convert_inst.return_value = self.os_vif_inst_info
-
-        d = vif.LibvirtGenericVIFDriver()
-        d.plug(self.instance, self.vif_ovs)
-
-        mock_set_mtu.assert_any_call("br0", 1000)
-        mock_set_mtu.assert_any_call("qvbdc065497-3c", 1000)
-        mock_set_mtu.assert_any_call("qvodc065497-3c", 1000)
-        self.assertEqual(3, mock_set_mtu.call_count)

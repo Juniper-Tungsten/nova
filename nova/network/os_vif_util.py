@@ -20,7 +20,6 @@ versioned object model os_vif.objects.*
 
 import sys
 
-import os_vif
 from os_vif import objects
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -32,9 +31,6 @@ from nova.network import model
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
-
-# Ensure os-vif objects are registered and plugins loaded
-os_vif.initialize()
 
 
 def _get_vif_name(vif):
@@ -211,6 +207,8 @@ def _nova_to_osvif_network(network):
     if network['label'] is not None:
         netobj.label = network['label']
 
+    if network.get_meta("mtu") is not None:
+        netobj.mtu = network.get_meta("mtu")
     if network.get_meta("multi_host") is not None:
         netobj.multi_host = network.get_meta("multi_host")
     if network.get_meta("should_create_bridge") is not None:

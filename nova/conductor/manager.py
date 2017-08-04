@@ -20,6 +20,7 @@ from oslo_config import cfg
 from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_utils import excutils
+from oslo_utils import versionutils
 import six
 
 from nova.compute import rpcapi as compute_rpcapi
@@ -96,10 +97,21 @@ class ConductorManager(manager.Manager):
         # NOTE(danms): The RPC layer will convert to primitives for us,
         # but in this case, we need to honor the version the client is
         # asking for, so we do it before returning here.
-        return (result.obj_to_primitive(
-            target_version=object_versions[objname],
-            version_manifest=object_versions)
-                if isinstance(result, nova_object.NovaObject) else result)
+        # NOTE(hanlind): Do not convert older than requested objects,
+        # see bug #1596119.
+        if isinstance(result, nova_object.NovaObject):
+            target_version = object_versions[objname]
+            requested_version = versionutils.convert_version_to_tuple(
+                target_version)
+            actual_version = versionutils.convert_version_to_tuple(
+                result.VERSION)
+            do_backport = requested_version < actual_version
+            other_major_version = requested_version[0] != actual_version[0]
+            if do_backport or other_major_version:
+                result = result.obj_to_primitive(
+                    target_version=target_version,
+                    version_manifest=object_versions)
+        return result
 
     def object_action(self, context, objinst, objmethod, args, kwargs):
         """Perform an action on an object."""
@@ -476,10 +488,10 @@ class ComputeTaskManager(base.Base):
             # check retry policy. Rather ugly use of instances[0]...
             # but if we've exceeded max retries... then we really only
             # have a single instance.
+            request_spec = scheduler_utils.build_request_spec(
+                context, image, instances)
             scheduler_utils.populate_retry(
                 filter_properties, instances[0].uuid)
-            request_spec = scheduler_utils.build_request_spec(
-                    context, image, instances)
             hosts = self._schedule_instances(
                     context, request_spec, filter_properties)
         except Exception as exc:
@@ -513,18 +525,26 @@ class ComputeTaskManager(base.Base):
             bdms = objects.BlockDeviceMappingList.get_by_instance_uuid(
                     context, instance.uuid)
 
-            inst_mapping = self._populate_instance_mapping(context, instance,
-                                                           host)
-            try:
-                self._destroy_build_request(context, instance)
-            except exception.BuildRequestNotFound:
-                # This indicates an instance delete has been requested in the
-                # API. Stop the build, cleanup the instance_mapping and
-                # potentially the block_device_mappings
-                # TODO(alaski): Handle block_device_mapping cleanup
-                if inst_mapping:
-                    inst_mapping.destroy()
-                return
+            # This is populated in scheduler_utils.populate_retry
+            num_attempts = local_filter_props.get('retry',
+                                                  {}).get('num_attempts', 1)
+            if num_attempts <= 1:
+                # If this is a reschedule the instance is already mapped to
+                # this cell and the BuildRequest is already deleted so ignore
+                # the logic below.
+                inst_mapping = self._populate_instance_mapping(context,
+                                                               instance,
+                                                               host)
+                try:
+                    self._destroy_build_request(context, instance)
+                except exception.BuildRequestNotFound:
+                    # This indicates an instance delete has been requested in
+                    # the API. Stop the build, cleanup the instance_mapping and
+                    # potentially the block_device_mappings
+                    # TODO(alaski): Handle block_device_mapping cleanup
+                    if inst_mapping:
+                        inst_mapping.destroy()
+                    return
 
             self.compute_rpcapi.build_and_run_instance(context,
                     instance=instance, host=host['host'], image=image,

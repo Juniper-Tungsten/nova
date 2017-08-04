@@ -10,18 +10,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 import mock
 
-import nova.conf
 from nova import objects
 from nova.scheduler.filters import affinity_filter
 from nova import test
 from nova.tests.unit.scheduler import fakes
 from nova.tests import uuidsentinel as uuids
-
-CONF = nova.conf.CONF
 
 
 class TestDifferentHostFilter(test.NoDBTestCase):
@@ -154,7 +149,7 @@ class TestGroupAffinityFilter(test.NoDBTestCase):
             policies=['affinity']))
         self.assertTrue(filt_cls.host_passes(host, spec_obj))
         spec_obj = objects.RequestSpec(instance_group=objects.InstanceGroup(
-            policies=[policy]), instance_uuid=str(uuid.uuid4()))
+            policies=[policy]), instance_uuid=uuids.fake)
         spec_obj.instance_group.hosts = []
         self.assertTrue(filt_cls.host_passes(host, spec_obj))
         spec_obj.instance_group.hosts = ['host2']
@@ -170,7 +165,7 @@ class TestGroupAffinityFilter(test.NoDBTestCase):
         spec_obj = objects.RequestSpec(
             instance_group=objects.InstanceGroup(policies=[policy],
                                                  hosts=['host1']),
-            instance_uuid=str(uuid.uuid4()))
+            instance_uuid=uuids.fake)
         self.assertFalse(filt_cls.host_passes(host, spec_obj))
 
     def test_group_anti_affinity_filter_fails(self):
@@ -179,7 +174,7 @@ class TestGroupAffinityFilter(test.NoDBTestCase):
                 'anti-affinity')
 
     def test_group_anti_affinity_filter_allows_instance_to_same_host(self):
-        fake_uuid = str(uuid.uuid4())
+        fake_uuid = uuids.fake
         mock_instance = objects.Instance(uuid=fake_uuid)
         host_state = fakes.FakeHostState('host1', 'node1',
                                          {}, instances=[mock_instance])

@@ -2114,8 +2114,16 @@ class ConcurrentUpdateDetected(NovaException):
                 "Please retry your update")
 
 
+class ResourceClassNotFound(NotFound):
+    msg_fmt = _("No such resource class %(resource_class)s.")
+
+
 class ResourceProviderInUse(NovaException):
     msg_fmt = _("Resource provider has allocations.")
+
+
+class InventoryWithResourceClassNotFound(NotFound):
+    msg_fmt = _("No inventory of class %(resource_class)s found.")
 
 
 class InvalidInventory(Invalid):
@@ -2138,6 +2146,12 @@ class InvalidAllocationCapacityExceeded(InvalidInventory):
     msg_fmt = _("Unable to create allocation for '%(resource_class)s' on "
                 "resource provider '%(resource_provider)s'. The requested "
                 "amount would exceed the capacity.")
+
+
+class InvalidAllocationConstraintsViolated(InvalidInventory):
+    msg_fmt = _("Unable to create allocation for '%(resource_class)s' on "
+                "resource provider '%(resource_provider)s'. The requested "
+                "amount would violate inventory constraints.")
 
 
 class UnsupportedPointerModelRequested(Invalid):

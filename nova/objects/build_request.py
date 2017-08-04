@@ -13,7 +13,6 @@
 import functools
 import re
 
-from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import versionutils
@@ -28,7 +27,6 @@ from nova import objects
 from nova.objects import base
 from nova.objects import fields
 
-CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -67,7 +65,7 @@ class BuildRequest(base.NovaObject):
                     jsonutils.loads(db_instance))
         except TypeError:
             LOG.debug('Failed to load instance from BuildRequest with uuid '
-                      '%s because it is None' % (self.instance_uuid))
+                      '%s because it is None', self.instance_uuid)
             raise exception.BuildRequestNotFound(uuid=self.instance_uuid)
         except ovoo_exc.IncompatibleObjectVersion as exc:
             # This should only happen if proper service upgrade strategies are

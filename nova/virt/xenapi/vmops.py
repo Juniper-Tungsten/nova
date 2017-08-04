@@ -1807,7 +1807,7 @@ class VMOps(object):
         dom_id = self._get_last_dom_id(instance, check_rescue=True)
 
         try:
-            raw_console_data = self._session.call_plugin('console',
+            raw_console_data = self._session.call_plugin('console.py',
                     'get_console_log', {'dom_id': dom_id})
         except self._session.XenAPI.Failure:
             LOG.exception(_LE("Guest does not have a console available"))
@@ -2216,20 +2216,6 @@ class VMOps(object):
             # block migration work will be able to resolve this
         return dest_check_data
 
-    def _is_xsm_sr_check_relaxed(self):
-        try:
-            return self.cached_xsm_sr_relaxed
-        except AttributeError:
-            config_value = None
-            try:
-                config_value = self._make_plugin_call('config_file',
-                                                      'get_val',
-                                                      key='relax-xsm-sr-check')
-            except Exception:
-                LOG.exception(_LE('Plugin config_file get_val failed'))
-            self.cached_xsm_sr_relaxed = config_value == "true"
-            return self.cached_xsm_sr_relaxed
-
     def check_can_live_migrate_source(self, ctxt, instance_ref,
                                       dest_check_data):
         """Check if it's possible to execute live migration on the source side.
@@ -2243,7 +2229,7 @@ class VMOps(object):
         if len(self._get_iscsi_srs(ctxt, instance_ref)) > 0:
             # XAPI must support the relaxed SR check for live migrating with
             # iSCSI VBDs
-            if not self._is_xsm_sr_check_relaxed():
+            if not self._session.is_xsm_sr_check_relaxed():
                 raise exception.MigrationError(reason=_('XAPI supporting '
                                 'relax-xsm-sr-check=true required'))
 
@@ -2420,8 +2406,7 @@ class VMOps(object):
                         block_migration, migrate_data)
         except Exception:
             with excutils.save_and_reraise_exception():
-                recover_method(context, instance, destination_hostname,
-                               block_migration)
+                recover_method(context, instance, destination_hostname)
 
     def post_live_migration(self, context, instance, migrate_data=None):
         if migrate_data is not None:

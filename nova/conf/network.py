@@ -370,6 +370,7 @@ Related options:
     cfg.BoolOpt("share_dhcp_address",
             default=False,
             deprecated_for_removal=True,
+            deprecated_since='2014.2',
             help="""
 THIS VALUE SHOULD BE SET WHEN CREATING THE NETWORK.
 
@@ -751,6 +752,13 @@ driver_opts = [
 rpcapi_opts = [
     cfg.StrOpt('network_topic',
                default='network',
+               deprecated_for_removal=True,
+               deprecated_since='15.0.0',
+               deprecated_reason="""
+There is no need to let users choose the RPC topic for all services - there
+is little gain from this. Furthermore, it makes it really easy to break Nova
+by using this option.
+""",
                help='The topic network nodes listen on'),
     cfg.BoolOpt('multi_host',
                 default=False,

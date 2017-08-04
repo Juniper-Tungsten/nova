@@ -248,8 +248,8 @@ class RequestContext(context.RequestContext):
 
         return context
 
-    def can(self, rule, target=None, fatal=True):
-        """Verifies that the given rule is valid on the target in this context.
+    def can(self, action, target=None, fatal=True):
+        """Verifies that the given action is valid on the target in this context.
 
         :param action: string representing the action to be checked.
         :param target: dictionary representing the object of the action
@@ -271,17 +271,40 @@ class RequestContext(context.RequestContext):
                       'user_id': self.user_id}
 
         try:
-            return policy.authorize(self, rule, target)
+            return policy.authorize(self, action, target)
         except exception.Forbidden:
             if fatal:
                 raise
             return False
 
+    def to_policy_values(self):
+        policy = super(RequestContext, self).to_policy_values()
+        policy['is_admin'] = self.is_admin
+        return policy
+
     def __str__(self):
         return "<Context %s>" % self.to_dict()
 
 
+def get_context():
+    """A helper method to get a blank context.
+
+    Note that overwrite is False here so this context will not update the
+    greenthread-local stored context that is used when logging.
+    """
+    return RequestContext(user_id=None,
+                          project_id=None,
+                          is_admin=False,
+                          overwrite=False)
+
+
 def get_admin_context(read_deleted="no"):
+    # NOTE(alaski): This method should only be used when an admin context is
+    # necessary for the entirety of the context lifetime. If that's not the
+    # case please use get_context(), or create the RequestContext manually, and
+    # use context.elevated() where necessary. Some periodic tasks may use
+    # get_admin_context so that their database calls are not filtered on
+    # project_id.
     return RequestContext(user_id=None,
                           project_id=None,
                           is_admin=True,

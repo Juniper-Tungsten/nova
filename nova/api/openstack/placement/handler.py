@@ -36,6 +36,7 @@ from nova.api.openstack.placement.handlers import usage
 from nova.api.openstack.placement import util
 from nova import exception
 from nova.i18n import _, _LE
+from nova.api.openstack.placement import policy
 
 LOG = logging.getLogger(__name__)
 
@@ -46,6 +47,14 @@ LOG = logging.getLogger(__name__)
 # and thus do not include specific information on the why of the 404.
 ROUTE_DECLARATIONS = {
     '/': {
+        'GET': root.home,
+    },
+    # NOTE(cdent): This allows '/placement/' and '/placement' to
+    # both work as the root of the service, which we probably want
+    # for those situations where the service is mounted under a
+    # prefix (as it is in devstack). While weird, an empty string is
+    # a legit key in a dictionary and matches as desired in Routes.
+    '': {
         'GET': root.home,
     },
     '/resource_providers': {
@@ -107,7 +116,11 @@ def handle_405(environ, start_response):
     _methods = util.wsgi_path_item(environ, '_methods')
     headers = {}
     if _methods:
-        headers['allow'] = _methods
+        # Ensure allow header is a python 2 or 3 native string (thus
+        # not unicode in python 2 but stay a string in python 3)
+        # In the process done by Routes to save the allowed methods
+        # to its routing table they become unicode in py2.
+        headers['allow'] = str(_methods)
     raise webob.exc.HTTPMethodNotAllowed(
         _('The method specified is not allowed for this resource.'),
         headers=headers, json_formatter=util.json_error_formatter)
@@ -139,18 +152,12 @@ class PlacementHandler(object):
 
     def __call__(self, environ, start_response):
         # All requests but '/' require admin.
-        # TODO(cdent): We'll eventually want our own auth context,
-        # but using nova's is convenient for now.
         if environ['PATH_INFO'] != '/':
             context = environ['placement.context']
             # TODO(cdent): Using is_admin everywhere (except /) is
             # insufficiently flexible for future use case but is
-            # convenient for initial exploration. We will need to
-            # determine how to manage authorization/policy and
-            # implement that, probably per handler. Also this is
-            # just the wrong way to do things, but policy not
-            # integrated yet.
-            if 'admin' not in context.to_policy_values()['roles']:
+            # convenient for initial exploration.
+            if not policy.placement_authorize(context, 'placement'):
                 raise webob.exc.HTTPForbidden(
                     _('admin required'),
                     json_formatter=util.json_error_formatter)
@@ -171,13 +178,17 @@ class PlacementHandler(object):
                     json_formatter=util.json_error_formatter)
         try:
             return dispatch(environ, start_response, self._map)
-        # Trap the small number of nova exceptions that aren't
-        # caught elsewhere and transform them into webob.exc.
-        # These are common exceptions raised when making calls against
-        # nova.objects in the handlers.
+        # Trap the NotFound exceptions raised by the objects used
+        # with the API and transform them into webob.exc.HTTPNotFound.
         except exception.NotFound as exc:
             raise webob.exc.HTTPNotFound(
                 exc, json_formatter=util.json_error_formatter)
+        # Trap the HTTPNotFound that can be raised by dispatch()
+        # when no route is found. The exception is passed through to
+        # the FaultWrap middleware without causing an alarming log
+        # message.
+        except webob.exc.HTTPNotFound:
+            raise
         except Exception as exc:
             LOG.exception(_LE("Uncaught exception"))
             raise

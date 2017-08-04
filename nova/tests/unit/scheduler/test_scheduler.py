@@ -18,6 +18,7 @@ Tests For Scheduler
 """
 
 import mock
+import testtools
 
 from nova import context
 from nova import objects
@@ -50,7 +51,7 @@ class SchedulerManagerInitTestCase(test.NoDBTestCase):
     def test_init_using_chance_schedulerdriver(self,
                                                mock_init_agg,
                                                mock_init_inst):
-        self.flags(scheduler_driver='chance_scheduler')
+        self.flags(driver='chance_scheduler', group='scheduler')
         driver = self.manager_cls().driver
         self.assertIsInstance(driver, chance.ChanceScheduler)
 
@@ -59,7 +60,7 @@ class SchedulerManagerInitTestCase(test.NoDBTestCase):
     def test_init_using_caching_schedulerdriver(self,
                                                 mock_init_agg,
                                                 mock_init_inst):
-        self.flags(scheduler_driver='caching_scheduler')
+        self.flags(driver='caching_scheduler', group='scheduler')
         driver = self.manager_cls().driver
         self.assertIsInstance(driver, caching_scheduler.CachingScheduler)
 
@@ -68,25 +69,8 @@ class SchedulerManagerInitTestCase(test.NoDBTestCase):
     def test_init_nonexist_schedulerdriver(self,
                                            mock_init_agg,
                                            mock_init_inst):
-        self.flags(scheduler_driver='nonexist_scheduler')
-        self.assertRaises(RuntimeError, self.manager_cls)
-
-    # NOTE(Yingxin): Loading full class path is deprecated and should be
-    # removed in the N release.
-    @mock.patch.object(manager.LOG, 'warning')
-    @mock.patch.object(host_manager.HostManager, '_init_instance_info')
-    @mock.patch.object(host_manager.HostManager, '_init_aggregates')
-    def test_init_using_classpath_to_schedulerdriver(self,
-                                                     mock_init_agg,
-                                                     mock_init_inst,
-                                                     mock_warning):
-        self.flags(
-            scheduler_driver=
-            'nova.scheduler.chance.ChanceScheduler')
-        driver = self.manager_cls().driver
-        self.assertIsInstance(driver, chance.ChanceScheduler)
-        warn_args, kwargs = mock_warning.call_args
-        self.assertIn("DEPRECATED", warn_args[0])
+        with testtools.ExpectedException(ValueError):
+            self.flags(driver='nonexist_scheduler', group='scheduler')
 
 
 class SchedulerManagerTestCase(test.NoDBTestCase):
@@ -100,7 +84,7 @@ class SchedulerManagerTestCase(test.NoDBTestCase):
     @mock.patch.object(host_manager.HostManager, '_init_aggregates')
     def setUp(self, mock_init_agg, mock_init_inst):
         super(SchedulerManagerTestCase, self).setUp()
-        self.flags(scheduler_driver=self.driver_plugin_name)
+        self.flags(driver=self.driver_plugin_name, group='scheduler')
         with mock.patch.object(host_manager.HostManager, '_init_aggregates'):
             self.manager = self.manager_cls()
         self.context = context.RequestContext('fake_user', 'fake_project')
@@ -196,7 +180,7 @@ class SchedulerInitTestCase(test.NoDBTestCase):
     def test_init_using_ironic_hostmanager(self,
                                            mock_init_agg,
                                            mock_init_inst):
-        self.flags(scheduler_host_manager='ironic_host_manager')
+        self.flags(host_manager='ironic_host_manager', group='scheduler')
         manager = self.driver_cls().host_manager
         self.assertIsInstance(manager, ironic_host_manager.IronicHostManager)
 

@@ -475,7 +475,7 @@ def default_device_names(virt_type, context, instance, block_device_info,
 
 def get_default_ephemeral_info(instance, disk_bus, block_device_info, mapping):
     ephemerals = driver.block_device_info_get_ephemerals(block_device_info)
-    if instance.ephemeral_gb <= 0 or ephemerals:
+    if not instance.ephemeral_gb or instance.ephemeral_gb <= 0 or ephemerals:
         return None
     else:
         info = get_next_disk_info(mapping, disk_bus)
@@ -521,6 +521,18 @@ def get_disk_mapping(virt_type, instance,
         os_info = get_next_disk_info(mapping,
                                      disk_bus)
         mapping['disk'] = os_info
+
+        if configdrive.required_by(instance):
+            device_type = get_config_drive_type()
+            disk_bus = get_disk_bus_for_device_type(instance,
+                                                    virt_type,
+                                                    image_meta,
+                                                    device_type)
+            config_info = get_next_disk_info(mapping,
+                                             disk_bus,
+                                             device_type,
+                                             last_device=True)
+            mapping['disk.config.rescue'] = config_info
 
         return mapping
 

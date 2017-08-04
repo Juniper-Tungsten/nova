@@ -1484,6 +1484,20 @@ class _TestInstanceObject(object):
             self.context, uuid, expected_attrs=['pci_requests'])
         self.assertTrue(inst.obj_attr_is_set('pci_requests'))
 
+    def test_obj_clone(self):
+        # Make sure clone shows no changes when no metadata is set
+        inst1 = objects.Instance(uuid=uuids.instance)
+        inst1.obj_reset_changes()
+        inst1 = inst1.obj_clone()
+        self.assertEqual(len(inst1.obj_what_changed()), 0)
+        # Make sure clone shows no changes when metadata is set
+        inst1 = objects.Instance(uuid=uuids.instance)
+        inst1.metadata = dict(key1='val1')
+        inst1.system_metadata = dict(key1='val1')
+        inst1.obj_reset_changes()
+        inst1 = inst1.obj_clone()
+        self.assertEqual(len(inst1.obj_what_changed()), 0)
+
 
 class TestInstanceObject(test_objects._LocalTest,
                          _TestInstanceObject):
@@ -1876,6 +1890,18 @@ class TestInstanceObjectMisc(test.TestCase):
         self.assertEqual(['metadata', 'extra', 'extra.numa_topology'],
                          instance._expected_cols(['metadata',
                                                   'numa_topology']))
+
+    def test_expected_cols_no_duplicates(self):
+        expected_attr = ['metadata', 'system_metadata', 'info_cache',
+                         'security_groups', 'info_cache', 'metadata',
+                         'pci_devices', 'tags', 'extra', 'flavor']
+
+        result_list = instance._expected_cols(expected_attr)
+
+        self.assertEqual(len(result_list), len(set(expected_attr)))
+        self.assertEqual(['metadata', 'system_metadata', 'info_cache',
+                         'security_groups', 'pci_devices', 'tags', 'extra',
+                         'extra.flavor'], result_list)
 
     def test_migrate_instance_keypairs(self):
         ctxt = context.RequestContext('foo', 'bar')

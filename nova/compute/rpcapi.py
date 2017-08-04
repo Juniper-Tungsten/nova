@@ -697,7 +697,7 @@ class ComputeAPI(object):
         version = '4.0'
         cctxt = self.router.by_host(ctxt, host).prepare(
                 server=host, version=version)
-        cctxt.cast(ctxt, 'post_live_migration_at_destination',
+        return cctxt.call(ctxt, 'post_live_migration_at_destination',
             instance=instance, block_migration=block_migration)
 
     def pre_live_migration(self, ctxt, instance, block_migration, disk,
@@ -1049,10 +1049,10 @@ class ComputeAPI(object):
                    volume_id=volume_id, snapshot_id=snapshot_id,
                    delete_info=delete_info)
 
-    def external_instance_event(self, ctxt, instances, events):
+    def external_instance_event(self, ctxt, instances, events, host=None):
         instance = instances[0]
         cctxt = self.router.by_instance(ctxt, instance).prepare(
-            server=_compute_host(None, instance),
+            server=_compute_host(host, instance),
             version='4.0')
         cctxt.cast(ctxt, 'external_instance_event', instances=instances,
                    events=events)

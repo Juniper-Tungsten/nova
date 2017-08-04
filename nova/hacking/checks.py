@@ -58,10 +58,6 @@ asse_equal_in_end_with_true_or_false_re = re.compile(r"assertEqual\("
                     r"(\w|[][.'\"])+ in (\w|[][.'\", ])+, (True|False)\)")
 asse_equal_in_start_with_true_or_false_re = re.compile(r"assertEqual\("
                     r"(True|False), (\w|[][.'\"])+ in (\w|[][.'\", ])+\)")
-asse_equal_end_with_none_re = re.compile(
-                           r"assertEqual\(.*?,\s+None\)$")
-asse_equal_start_with_none_re = re.compile(
-                           r"assertEqual\(None,")
 # NOTE(snikitin): Next two regexes weren't united to one for more readability.
 #                 asse_true_false_with_in_or_not_in regex checks
 #                 assertTrue/False(A in B) cases where B argument has no spaces
@@ -107,6 +103,11 @@ spawn_re = re.compile(
 contextlib_nested = re.compile(r"^with (contextlib\.)?nested\(")
 doubled_words_re = re.compile(
     r"\b(then?|[iao]n|i[fst]|but|f?or|at|and|[dt]o)\s+\1\b")
+log_remove_context = re.compile(
+    r"(.)*LOG\.(.*)\(.*(context=[_a-zA-Z0-9].*)+.*\)")
+log_string_interpolation = re.compile(r".*LOG\.(error|warning|info"
+                                      r"|critical|exception|debug)"
+                                      r"\([^,]*%[^,]*[,)]")
 
 
 class BaseASTChecker(ast.NodeVisitor):
@@ -283,11 +284,26 @@ def assert_equal_none(logical_line):
 
     N318
     """
-    res = (asse_equal_start_with_none_re.search(logical_line) or
-           asse_equal_end_with_none_re.search(logical_line))
-    if res:
+    _start_re = re.compile(r"assertEqual\(.*?,\s+None\)$")
+    _end_re = re.compile(r"assertEqual\(None,")
+
+    if _start_re.search(logical_line) or _end_re.search(logical_line):
         yield (0, "N318: assertEqual(A, None) or assertEqual(None, A) "
-               "sentences not allowed")
+               "sentences not allowed. Use assertIsNone(A) instead.")
+
+    _start_re = re.compile(r"assertIs(Not)?\(None,")
+    _end_re = re.compile(r"assertIs(Not)?\(.*,\s+None\)$")
+
+    if _start_re.search(logical_line) or _end_re.search(logical_line):
+        yield (0, "N318: assertIsNot(A, None) or assertIsNot(None, A) must "
+               "not be used. Use assertIsNone(A) or assertIsNotNone(A) "
+               "instead.")
+
+
+def check_python3_xrange(logical_line):
+    if re.search(r"\bxrange\s*\(", logical_line):
+        yield(0, "N327: Do not use xrange(). 'xrange()' is not compatible "
+              "with Python 3. Use range() or six.moves.range() instead.")
 
 
 def no_translate_debug_logs(logical_line, filename):
@@ -647,17 +663,21 @@ def check_config_option_in_central_place(logical_line, filename):
     # That's the correct location
     if "nova/conf/" in filename:
         return
-    # TODO(markus_z) This is just temporary until all config options are
-    # moved to the central place. To avoid that a once cleaned up place
-    # introduces new config options, we do a check here. This array will
-    # get quite huge over the time, but will be removed at the end of the
-    # reorganization.
-    # You can add the full path to a module or folder. It's just a substring
-    # check, which makes it flexible enough.
-    cleaned_up = ["nova/console/serial.py",
-                  "nova/cmd/serialproxy.py",
-                  ]
-    if not any(c in filename for c in cleaned_up):
+
+    # (macsz) All config options (with exceptions that are clarified
+    # in the list below) were moved to the central place. List below is for
+    # all options that were impossible to move without doing a major impact
+    # on code. Add full path to a module or folder.
+    conf_exceptions = [
+        # CLI opts are allowed to be outside of nova/conf directory
+        'nova/cmd/manage.py',
+        'nova/cmd/policy_check.py',
+        # config options should not be declared in tests, but there is
+        # another checker for it (N320)
+        'nova/tests',
+    ]
+
+    if any(f in filename for f in conf_exceptions):
         return
 
     if cfg_opt_re.match(logical_line):
@@ -758,6 +778,84 @@ def no_log_warn(logical_line):
         yield (0, msg)
 
 
+def check_context_log(logical_line, physical_line, filename):
+    """check whether context is being passed to the logs
+
+    Not correct: LOG.info(_LI("Rebooting instance"), context=context)
+    Correct:  LOG.info(_LI("Rebooting instance"))
+    https://bugs.launchpad.net/nova/+bug/1500896
+
+    N353
+    """
+    if "nova/tests" in filename:
+        return
+
+    if pep8.noqa(physical_line):
+        return
+
+    if log_remove_context.match(logical_line):
+        yield(0,
+              "N353: Nova is using oslo.context's RequestContext "
+              "which means the context object is in scope when "
+              "doing logging using oslo.log, so no need to pass it as"
+              "kwarg.")
+
+
+def check_delayed_string_interpolation(logical_line, physical_line, filename):
+    """Check whether string interpolation is delayed at logging calls
+
+    Not correct: LOG.debug('Example: %s' % 'bad')
+    Correct:     LOG.debug('Example: %s', 'good')
+
+    N354
+    """
+    if "nova/tests" in filename:
+        return
+
+    if pep8.noqa(physical_line):
+        return
+
+    if log_string_interpolation.match(logical_line):
+        yield(logical_line.index('%'),
+              "N354: String interpolation should be delayed to be "
+              "handled by the logging code, rather than being done "
+              "at the point of the logging call. "
+              "Use ',' instead of '%'.")
+
+
+def no_assert_equal_true_false(logical_line):
+    """Enforce use of assertTrue/assertFalse.
+
+    Prevent use of assertEqual(A, True|False), assertEqual(True|False, A),
+    assertNotEqual(A, True|False), and assertNotEqual(True|False, A).
+
+    N355
+    """
+    _start_re = re.compile(r'assert(Not)?Equal\((True|False),')
+    _end_re = re.compile(r'assert(Not)?Equal\(.*,\s+(True|False)\)$')
+
+    if _start_re.search(logical_line) or _end_re.search(logical_line):
+        yield (0, "N355: assertEqual(A, True|False), "
+               "assertEqual(True|False, A), assertNotEqual(A, True|False), "
+               "or assertEqual(True|False, A) sentences must not be used. "
+               "Use assertTrue(A) or assertFalse(A) instead")
+
+
+def no_assert_true_false_is_not(logical_line):
+    """Enforce use of assertIs/assertIsNot.
+
+    Prevent use of assertTrue(A is|is not B) and assertFalse(A is|is not B).
+
+    N356
+    """
+    _re = re.compile(r'assert(True|False)\(.+\s+is\s+(not\s+)?.+\)$')
+
+    if _re.search(logical_line):
+        yield (0, "N356: assertTrue(A is|is not B) or "
+               "assertFalse(A is|is not B) sentences must not be used. "
+               "Use assertIs(A, B) or assertIsNot(A, B) instead")
+
+
 def factory(register):
     register(import_no_db_in_virt)
     register(no_db_session_in_public_api)
@@ -793,6 +891,11 @@ def factory(register):
     register(check_python3_no_iteritems)
     register(check_python3_no_iterkeys)
     register(check_python3_no_itervalues)
+    register(check_python3_xrange)
     register(no_os_popen)
     register(no_log_warn)
     register(CheckForUncalledTestClosure)
+    register(check_context_log)
+    register(check_delayed_string_interpolation)
+    register(no_assert_equal_true_false)
+    register(no_assert_true_false_is_not)

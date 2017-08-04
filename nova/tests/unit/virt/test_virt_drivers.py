@@ -20,6 +20,7 @@ import traceback
 import fixtures
 import mock
 import netaddr
+import os_vif
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
@@ -90,33 +91,18 @@ class _FakeDriverBackendTestCase(object):
         import nova.tests.unit.virt.libvirt.fake_os_brick_connector as \
             fake_os_brick_connector
 
-        sys.modules['libvirt'] = fakelibvirt
-        import nova.virt.libvirt.driver
-        import nova.virt.libvirt.firewall
-        import nova.virt.libvirt.host
-
         self.useFixture(fake_imagebackend.ImageBackendFixture())
-        self.useFixture(fixtures.MonkeyPatch(
-            'nova.virt.libvirt.driver.libvirt',
-            fakelibvirt))
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
         self.useFixture(fixtures.MonkeyPatch(
             'nova.virt.libvirt.driver.libvirt_utils',
             fake_libvirt_utils))
         self.useFixture(fixtures.MonkeyPatch(
-            'nova.virt.libvirt.host.libvirt',
-            fakelibvirt))
-        self.useFixture(fixtures.MonkeyPatch(
             'nova.virt.libvirt.imagebackend.libvirt_utils',
             fake_libvirt_utils))
-        self.useFixture(fixtures.MonkeyPatch(
-            'nova.virt.libvirt.firewall.libvirt',
-            fakelibvirt))
 
         self.useFixture(fixtures.MonkeyPatch(
             'nova.virt.libvirt.driver.connector',
             fake_os_brick_connector))
-
-        fakelibvirt.disable_event_thread(self)
 
         self.flags(rescue_image_id="2",
                    rescue_kernel_id="3",
@@ -128,8 +114,8 @@ class _FakeDriverBackendTestCase(object):
         def fake_extend(image, size):
             pass
 
-        def fake_migrate(_self, destination, params=None, flags=0,
-                         domain_xml=None, bandwidth=0):
+        def fake_migrate(_self, destination, migrate_uri=None, params=None,
+                         flags=0, domain_xml=None, bandwidth=0):
             pass
 
         def fake_make_drive(_self, _path):
@@ -157,6 +143,8 @@ class _FakeDriverBackendTestCase(object):
                                 persistent=persistent,
                                 live=live)
             return fake_wait
+
+        import nova.virt.libvirt.driver
 
         self.stubs.Set(nova.virt.libvirt.driver.LibvirtDriver,
                        '_get_instance_disk_info',
@@ -250,6 +238,7 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
         # here; we test it in test_imagebackend.py
         self.stubs.Set(imagebackend.Image, 'resolve_driver_format',
                        imagebackend.Image._get_driver_format)
+        os_vif.initialize()
 
     def _get_running_instance(self, obj=True):
         instance_ref = test_utils.get_test_instance(obj=obj)
@@ -330,8 +319,8 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
     def test_inject_file(self):
         instance_ref, network_info = self._get_running_instance()
         self.connection.inject_file(instance_ref,
-                                    base64.b64encode('/testfile'),
-                                    base64.b64encode('testcontents'))
+                                    base64.b64encode(b'/testfile'),
+                                    base64.b64encode(b'testcontents'))
 
     @catch_notimplementederror
     def test_resume_state_on_host_boot(self):

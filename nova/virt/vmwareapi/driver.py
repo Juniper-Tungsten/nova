@@ -127,15 +127,22 @@ class VMwareVCDriver(driver.ComputeDriver):
 
     def _check_min_version(self):
         min_version = v_utils.convert_version_to_int(constants.MIN_VC_VERSION)
+        next_min_ver = v_utils.convert_version_to_int(
+            constants.NEXT_MIN_VC_VERSION)
         vc_version = vim_util.get_vc_version(self._session)
         LOG.info(_LI("VMware vCenter version: %s"), vc_version)
-        if min_version > v_utils.convert_version_to_int(vc_version):
-            # TODO(garyk): enforce this from M
+        if v_utils.convert_version_to_int(vc_version) < min_version:
+            raise exception.NovaException(
+                _('Detected vCenter version %(version)s. Nova requires VMware '
+                  'vCenter version %(min_version)s or greater.') % {
+                      'version': vc_version,
+                      'min_version': constants.MIN_VC_VERSION})
+        elif v_utils.convert_version_to_int(vc_version) < next_min_ver:
             LOG.warning(_LW('Running Nova with a VMware vCenter version less '
                             'than %(version)s is deprecated. The required '
                             'minimum version of vCenter will be raised to '
-                            '%(version)s in the 13.0.0 release.'),
-                        {'version': constants.MIN_VC_VERSION})
+                            '%(version)s in the 16.0.0 release.'),
+                        {'version': constants.NEXT_MIN_VC_VERSION})
 
     @property
     def need_legacy_block_device_info(self):
@@ -485,13 +492,13 @@ class VMwareVCDriver(driver.ComputeDriver):
         """Efficient override of base instance_exists method."""
         return self._vmops.instance_exists(instance)
 
-    def attach_interface(self, instance, image_meta, vif):
+    def attach_interface(self, context, instance, image_meta, vif):
         """Attach an interface to the instance."""
-        self._vmops.attach_interface(instance, image_meta, vif)
+        self._vmops.attach_interface(context, instance, image_meta, vif)
 
-    def detach_interface(self, instance, vif):
+    def detach_interface(self, context, instance, vif):
         """Detach an interface from the instance."""
-        self._vmops.detach_interface(instance, vif)
+        self._vmops.detach_interface(context, instance, vif)
 
 
 class VMwareAPISession(api.VMwareAPISession):
@@ -515,7 +522,6 @@ class VMwareAPISession(api.VMwareAPISession):
                 task_poll_interval=CONF.vmware.task_poll_interval,
                 scheme=scheme,
                 create_session=True,
-                wsdl_loc=CONF.vmware.wsdl_location,
                 cacert=cacert,
                 insecure=insecure)
 

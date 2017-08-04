@@ -8,28 +8,15 @@ tag_location:
   type: string
   min_version: 2.26
 x-openstack-request-id:
-  description: >
+  description: |
     A unique ID for tracking the request. The request ID associated with the request
     appears in the log lines for that request. By default, the middleware configuration
     ensures that the request ID appears in the log files.
   in: header
   required: true
   type: string
-x-openstack-request-id_1:
-  description: |
-    A unique request ID that provides tracking for the request. Provider must configure
-    middleware to return a request ID header in a response.
-  in: header
-  required: false
-  type: string
 
 # variables in path
-admin_tenant_id:
-  description: |
-    The UUID of the administrative tenant.
-  in: path
-  required: true
-  type: string
 agent_build_id:
   description: |
     The id of the agent build.
@@ -74,21 +61,15 @@ cell_id:
   in: path
   required: true
   type: string
-certificate_id:
-  description: |
-    The certificate ID, as a string. The only valid value is ``root``.
-  in: path
-  required: true
-  type: string
-class_id:
-  description: |
-    The UUID of the quota class.
-  in: path
-  required: true
-  type: string
 console_id:
   description: |
     The UUID of the console.
+  in: path
+  required: true
+  type: string
+console_token:
+  description: |
+    Console authentication token.
   in: path
   required: true
   type: string
@@ -182,12 +163,12 @@ keypair_name_path:
   in: path
   required: true
   type: string
-name_1:
+migration_id_path:
   description: |
-    The name of the DNS entry.
+    The ID of the server migration.
   in: path
   required: true
-  type: string
+  type: integer
 network_id:
   description: |
     The UUID of the network.
@@ -276,12 +257,6 @@ tenant_id:
 volume_id_path:
   description: |
     The unique ID for a volume.
-  in: path
-  required: true
-  type: string
-volume_type_id:
-  description: |
-    The unique ID for a volume type.
   in: path
   required: true
   type: string
@@ -425,14 +400,6 @@ flavor_query:
   description: |
     Filters the response by a flavor, as a UUID. A flavor is a combination of memory,
     disk size, and CPUs.
-  in: query
-  required: false
-  type: string
-host_query:
-  description: |
-    Filters the response by a host name, as a string. This query parameter is typically
-    available to only administrative users. If you are a non-administrative user,
-    the API ignores this parameter.
   in: query
   required: false
   type: string
@@ -734,12 +701,6 @@ tags_query:
     all tags in this list will be returned. Boolean expression in this
     case is 't1 AND t2'. Tags in query must be separated by comma.
   min_version: 2.26
-user_id_1:
-  description: |
-    Filters the response by a user, by ID.
-  in: query
-  required: false
-  type: string
 user_id_query_quota:
   description: |
     ID of user to list the quotas for.
@@ -819,10 +780,11 @@ addFixedIp:
   type: string
 addFloatingIp:
   description: |
-    The action.
+    The action. Contains required floating IP ``address`` and optional
+    ``fixed_address``.
   in: body
   required: true
-  type: string
+  type: object
 address:
   description: |
     The floating IP address.
@@ -834,8 +796,9 @@ addresses:
     The addresses for the server.  Addresses information is hidden for any server
     in a state set in the ``osapi_hide_server_address_states`` configuration option.
     By default, servers in ``building`` state hide their addresses information.
-    See ``nova.conf`` configuration options
-    <http://docs.openstack.org/liberty/config-reference/content/list-of-compute-config-options.html>`_.
+    See ``nova.conf`` `configuration options
+    <http://docs.openstack.org/liberty/config-reference/content/list-of-compute-config-options.html>`_
+    for more information.
   in: body
   required: true
   type: object
@@ -1421,9 +1384,9 @@ data:
 delete_on_termination:
   description: |
     To delete the boot volume when the server is destroyed, specify ``true``.
-    Otherwise, specify ``false``.
+    Otherwise, specify ``false``. Default: ``false``
   in: body
-  required: true
+  required: false
   type: string
 deleted:
   description: |
@@ -1451,12 +1414,6 @@ deleted_at:
 description:
   description: |
     Security group description.
-  in: body
-  required: true
-  type: string
-description_2:
-  description: |
-    The security group description.
   in: body
   required: true
   type: string
@@ -1824,7 +1781,10 @@ flavor_disk:
   description: |
     The size of the root disk that will be created in GiB. If 0 the
     root disk will be set to exactly the size of the image used to
-    deploy the instance.
+    deploy the instance. However in this case filter scheduler cannot
+    select the compute host based on the virtual image size. Therefore
+    0 should only be used for volume booted instances or for testing
+    purposes.
 flavor_ephem_disk:
   in: body
   required: true
@@ -1900,7 +1860,7 @@ flavor_ram:
   type: integer
 flavor_rxtx_factor:
   description: |
-    The receive / transimit factor (as a float) that will be set on
+    The receive / transmit factor (as a float) that will be set on
     ports if the network backend supports the QOS extension.
     Otherwise it will be ignored. It defaults to 1.0.
   in: body
@@ -1908,7 +1868,7 @@ flavor_rxtx_factor:
   type: float
 flavor_rxtx_factor_in:
   description: |
-    The receive / transimit factor (as a float) that will be set on
+    The receive / transmit factor (as a float) that will be set on
     ports if the network backend supports the QOS extension.
     Otherwise it will be ignored. It defaults to 1.0.
   in: body
@@ -2019,6 +1979,13 @@ force_live_migrate:
   required: false
   type: boolean
   min_version: 2.30
+force_migration_complete:
+  description: |
+    The action.
+  in: body
+  required: true
+  type: string
+  min_version: 2.22
 force_snapshot:
   description: |
     Indicates whether to create a snapshot, even if the volume is attached.
@@ -2272,6 +2239,16 @@ hypervisor_id_body:
   in: body
   required: true
   type: integer
+hypervisor_links:
+  description: |
+    Links to the hypervisors resource. See `API Guide / Links and
+    References
+    <http://developer.openstack.org/api-guide/compute/links_and_references.html>`_
+    for more info.
+  in: body
+  type: array
+  min_version: 2.33
+  required: false
 hypervisor_service:
   description: |
     The hypervisor service object.
@@ -2338,42 +2315,6 @@ id:
   in: body
   required: true
   type: string
-id_1:
-  description: |
-    The security group ID.
-  in: body
-  required: true
-  type: string
-id_2:
-  description: |
-    The ID of the security group.
-  in: body
-  required: true
-  type: integer
-id_4:
-  description: |
-    The snapshot ID.
-  in: body
-  required: true
-  type: string
-id_5:
-  description: |
-    The ID of the quota set.
-  in: body
-  required: true
-  type: string
-id_6:
-  description: |
-    The UUID of the security group.
-  in: body
-  required: true
-  type: string
-id_9:
-  description: |
-    The ID of the quota set.
-  in: body
-  required: false
-  type: string
 image:
   description: |
     The UUID and links for the image for your server instance. The ``image`` object
@@ -2435,25 +2376,12 @@ imageRef:
   in: body
   required: true
   type: string
-imageRef_1:
-  description: |
-    The image reference, as an ID or full URL, for the image for your server instance.
-    Required if you define a block device mapping.
-  in: body
-  required: false
-  type: string
 images:
   description: |
     An array of Image objects.
   in: body
   required: true
   type: array
-in_use:
-  description: |
-    The in-use quota value.
-  in: body
-  required: true
-  type: integer
 injected_file_content_bytes:
   description: |
     The number of allowed bytes of content for each injected file.
@@ -2708,6 +2636,16 @@ keypair_fingerprint:
   type: string
   description: |
     The fingerprint for the keypair.
+keypair_links:
+  description: |
+    Links pertaining to keypair. See `API Guide / Links and
+    References
+    <http://developer.openstack.org/api-guide/compute/links_and_references.html>`_
+    for more info.
+  in: body
+  type: array
+  required: false
+  min_version: 2.35
 keypair_name:
   in: body
   required: true
@@ -2743,13 +2681,14 @@ keypair_type:
   description: |
     The type of the keypair. Allowed values are ``ssh`` or ``x509``
   min_version: 2.2
+# NOTE(mriedem): This is the user_id description for the keypair create/show
+# response which has always been returned.
 keypair_userid:
   in: body
   required: true
   type: string
   description: |
     The user_id for a keypair.
-  min_version: 2.10
 keypair_userid_in:
   in: body
   required: false
@@ -2771,12 +2710,6 @@ length:
   in: body
   required: false
   type: string
-limit_1:
-  description: |
-    The maximum limit for the quota.
-  in: body
-  required: true
-  type: integer
 limits:
   description: |
     Data structure that contains both absolute limits within a deployment.
@@ -2789,12 +2722,6 @@ limits_absolutes:
   in: body
   required: true
   type: object
-limits_rate_regex:
-  description: |
-    A regular expression defining the URI path to apply the limit to.
-  in: body
-  required: true
-  type: string
 limits_rate_uri:
   description: |
     A human readable URI that is used as a friendly description of where the api rate limit is applied.
@@ -2917,12 +2844,6 @@ metadata:
   in: body
   required: false
   type: object
-metadata_1:
-  description: |
-    One or more metadata key and value pairs to associate with the volume.
-  in: body
-  required: false
-  type: object
 metadata_compat:
   description: |
     A dictionary of metadata key-and-value pairs, which is maintained for backward
@@ -2983,6 +2904,96 @@ migrate:
   in: body
   required: true
   type: string
+migrate_dest_compute:
+  description: |
+    The target compute for a migration.
+  in: body
+  required: true
+  type: string
+migrate_dest_host:
+  description: |
+    The target host for a migration.
+  in: body
+  required: true
+  type: string
+migrate_dest_node:
+  description: |
+    The target node for a migration.
+  in: body
+  required: true
+  type: string
+migrate_disk_processed_bytes:
+  description: |
+    The amount of disk, in bytes, that has been processed during the migration.
+  in: body
+  required: true
+  type: integer
+migrate_disk_remaining_bytes:
+  description: |
+    The amount of disk, in bytes, that still needs to be migrated.
+  in: body
+  required: true
+  type: integer
+migrate_disk_total_bytes:
+  description: |
+    The total amount of disk, in bytes, that needs to be migrated.
+  in: body
+  required: true
+  type: integer
+migrate_memory_processed_bytes:
+  description: |
+    The amount of memory, in bytes, that has been processed during the migration.
+  in: body
+  required: true
+  type: integer
+migrate_memory_remaining_bytes:
+  description: |
+    The amount of memory, in bytes, that still needs to be migrated.
+  in: body
+  required: true
+  type: integer
+migrate_memory_total_bytes:
+  description: |
+    The total amount of memory, in bytes, that needs to be migrated.
+  in: body
+  required: true
+  type: integer
+migrate_source_compute:
+  description: |
+    The source compute for a migration.
+  in: body
+  required: true
+  type: string
+migrate_source_node:
+  description: |
+    The source node for a migration.
+  in: body
+  required: true
+  type: string
+migrate_status:
+  description: |
+    The current status of the migration.
+  in: body
+  required: true
+  type: string
+migration:
+  description: |
+    The server migration object.
+  in: body
+  required: true
+  type: object
+migration_id:
+  description: |
+    The ID of the server migration.
+  in: body
+  required: true
+  type: integer
+migrations:
+  description: |
+    The list of server migration objects.
+  in: body
+  required: true
+  type: array
 minDisk_body:
   description: |
     The minimum amount of disk space an image requires to boot, in GiB. For example, ``100``.
@@ -3000,31 +3011,6 @@ name:
     The security group name.
   in: body
   required: true
-  type: string
-name_3:
-  description: |
-    The name to associate with the keypair.
-  in: body
-  required: true
-  type: string
-name_4:
-  description: |
-    The source security group name.
-  in: body
-  required: true
-  type: string
-name_5:
-  description: |
-    The server group name. A non-empty string with no leading or trailing spaces.
-    Maximum length is 255 characters.
-  in: body
-  required: true
-  type: string
-name_9:
-  description: |
-    The name of floating IP pools.
-  in: body
-  required: false
   type: string
 name_server_group:
   description: |
@@ -3053,6 +3039,13 @@ net_id_resp:
   in: body
   required: true
   type: string
+net_id_resp_2_12:
+  description: |
+    The network ID.
+  in: body
+  required: true
+  type: string
+  min_version: 2.12
 network_label_body:
   description: |
     The network label, such as ``public`` or ``private``.
@@ -3105,13 +3098,6 @@ new_file:
     image for the VM.
   in: body
   required: true
-  type: string
-next:
-  description: |
-    Moves to the next metadata item.
-  format: uri
-  in: body
-  required: false
   type: string
 on_shared_storage:
   description: |
@@ -3195,7 +3181,14 @@ OS-EXT-SRV-ATTR:instance_name:
   type: string
 OS-EXT-STS:power_state:
   description: |
-    The power state of the instance.
+    The power state of the instance. This is an enum value that is mapped as::
+
+      0: NOSTATE
+      1: RUNNING
+      3: PAUSED
+      4: SHUTDOWN
+      6: CRASHED
+      7: SUSPENDED
   in: body
   required: true
   type: integer
@@ -3403,7 +3396,7 @@ period_ending:
 personality:
   description: |
     The file path and contents, text only, to inject into the server at launch. The
-    maximum size of the file path data is 255 bytes. The maximum limit is The number
+    maximum size of the file path data is 255 bytes. The maximum limit is the number
     of allowed bytes in the decoded, rather than encoded, data.
   in: body
   required: false
@@ -3415,12 +3408,6 @@ policies:
     , ``affinity``, ``soft-anti-affinity`` and ``soft-affinity``, the latter two were
     added in microversion 2.15.  Each policy name must be a non-empty string with
     no leading or trailing spaces. Maximum length is 255 characters.
-  in: body
-  required: true
-  type: array
-policies_1:
-  description: |
-    A list of policies for the server group.
   in: body
   required: true
   type: array
@@ -3458,6 +3445,12 @@ port_id_resp:
   in: body
   required: true
   type: string
+port_number:
+  description: |
+    The port number.
+  in: body
+  required: true
+  type: integer
 port_state:
   description: |
     The port state.
@@ -3623,6 +3616,13 @@ reserved:
   in: body
   required: true
   type: integer
+reserved_fixedip:
+  description: |
+    True if the fixed ip is reserved, otherwise False.
+  in: body
+  required: true
+  type: boolean
+  min_version: 2.4
 resetNetwork:
   description: |
     The action.
@@ -3666,12 +3666,6 @@ rules:
   in: body
   required: true
   type: array
-rules_1:
-  description: |
-    A rules object.
-  in: body
-  required: true
-  type: string
 running_vms:
   description: |
     The number of running vms on this hypervisor.
@@ -3720,12 +3714,6 @@ security_group:
   in: body
   required: true
   type: string
-security_group_1:
-  description: |
-    Security group object.
-  in: body
-  required: true
-  type: string
 security_group_default_rule:
   description: |
     A ``security_group_default_rule`` object.
@@ -3737,7 +3725,7 @@ security_group_default_rules:
     A list of the ``security_group_default_rule`` object.
   in: body
   required: true
-  type: object
+  type: array
 security_group_rule:
   description: |
     A ``security_group_rule`` object.
@@ -3802,12 +3790,6 @@ server:
   in: body
   required: true
   type: object
-server_2:
-  description: |
-    A ``server`` object.
-  in: body
-  required: true
-  type: object
 server_description:
   type: string
   in: body
@@ -3842,12 +3824,6 @@ server_groups:
   in: body
   required: true
   type: integer
-server_groups_1:
-  description: |
-    A ``server_groups`` object.
-  in: body
-  required: true
-  type: array
 server_groups_list:
   description: |
     The list of existing server groups.
@@ -3896,7 +3872,7 @@ server_kernel_id:
 server_launch_index:
   in: body
   required: true
-  type: int
+  type: integer
   description: |
     When servers are launched via multiple create, this is the
     sequence in which the servers were launched.
@@ -4062,6 +4038,18 @@ snapshot:
   in: body
   required: true
   type: object
+snapshot_description:
+  description: |
+    The snapshot description.
+  in: body
+  required: true
+  type: string
+snapshot_description_optional:
+  description: |
+    The snapshot description.
+  in: body
+  required: false
+  type: string
 snapshot_id:
   description: |
     The UUID for a snapshot.
@@ -4071,6 +4059,18 @@ snapshot_id:
 snapshot_id_optional:
   description: |
     The UUID for a snapshot.
+  in: body
+  required: false
+  type: string
+snapshot_name:
+  description: |
+    The snapshot name.
+  in: body
+  required: true
+  type: string
+snapshot_name_optional:
+  description: |
+    The snapshot name.
   in: body
   required: false
   type: string
@@ -4446,7 +4446,7 @@ virtual_interface_id_optional:
   type: string
 virtual_interfaces:
   description: |
-    A ``virtual_interfaces`` object.
+    An array of virtual interfaces.
   in: body
   required: true
   type: array

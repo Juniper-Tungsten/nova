@@ -33,6 +33,7 @@ from nova.i18n import _LW
 from nova.network import model as network_model
 from nova import notifications
 from nova.notifications.objects import base as notification_base
+from nova.notifications.objects import exception as notification_exception
 from nova.notifications.objects import instance as instance_notification
 from nova import objects
 from nova.objects import fields
@@ -321,15 +322,7 @@ def notify_about_instance_usage(notifier, context, instance, event_suffix,
     method(context, 'compute.instance.%s' % event_suffix, usage_info)
 
 
-def notify_about_instance_action(context, instance, host, action, phase=None,
-                                 binary='nova-compute'):
-    """Send versioned notification about the action made on the instance
-    :param instance: the instance which the action performed on
-    :param host: the host emitting the notification
-    :param action: the name of the action
-    :param phase: the phase of the action
-    :param binary: the binary emitting the notification
-    """
+def _get_instance_ips(instance):
     network_info = get_nw_info_for_instance(instance)
     ips = []
     if network_info is not None:
@@ -343,6 +336,20 @@ def notify_about_instance_action(context, instance, host, action, phase=None,
                     version=ip["version"],
                     address=ip["address"],
                     device_name=vif["devname"]))
+    return ips
+
+
+def notify_about_instance_action(context, instance, host, action, phase=None,
+                                 binary='nova-compute'):
+    """Send versioned notification about the action made on the instance
+    :param instance: the instance which the action performed on
+    :param host: the host emitting the notification
+    :param action: the name of the action
+    :param phase: the phase of the action
+    :param binary: the binary emitting the notification
+    """
+    ips = _get_instance_ips(instance)
+
     flavor = instance_notification.FlavorPayload(instance=instance)
     # TODO(gibi): handle fault during the transformation of the first error
     # notifications
@@ -362,6 +369,50 @@ def notify_about_instance_action(context, instance, host, action, phase=None,
                     phase=phase),
             payload=payload)
     notification.emit(context)
+
+
+def notify_about_volume_swap(context, instance, host, action, phase,
+                             old_volume_id, new_volume_id, exception=None):
+    """Send versioned notification about the volume swap action
+       on the instance
+
+    :param context: the request context
+    :param instance: the instance which the action performed on
+    :param host: the host emitting the notification
+    :param action: the name of the action
+    :param phase: the phase of the action
+    :param old_volume_id: the ID of the volume that is copied from and detached
+    :param new_volume_id: the ID of the volume that is copied to and attached
+    :param exception: an exception
+    """
+    ips = _get_instance_ips(instance)
+
+    flavor = instance_notification.FlavorPayload(instance=instance)
+
+    if exception:
+        priority = fields.NotificationPriority.ERROR
+        fault = notification_exception.ExceptionPayload.from_exception(
+            exception)
+    else:
+        priority = fields.NotificationPriority.INFO
+        fault = None
+
+    payload = instance_notification.InstanceActionVolumeSwapPayload(
+        instance=instance,
+        fault=fault,
+        ip_addresses=ips,
+        flavor=flavor,
+        old_volume_id=old_volume_id,
+        new_volume_id=new_volume_id)
+
+    instance_notification.InstanceActionVolumeSwapNotification(
+        context=context,
+        priority=priority,
+        publisher=notification_base.NotificationPublisher(
+            context=context, host=host, binary='nova-compute'),
+        event_type=notification_base.EventType(
+            object='instance', action=action, phase=phase),
+        payload=payload).emit(context)
 
 
 def notify_about_server_group_update(context, event_suffix, sg_payload):

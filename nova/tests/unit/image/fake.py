@@ -18,9 +18,9 @@
 
 import copy
 import datetime
-import uuid
 
 from oslo_log import log as logging
+from oslo_utils import uuidutils
 
 from nova.compute import arch
 import nova.conf
@@ -158,7 +158,7 @@ class _FakeImageService(object):
     # TODO(bcwaldon): implement optional kwargs such as limit, sort_dir
     def detail(self, context, **kwargs):
         """Return list of detailed image information."""
-        return copy.deepcopy(self.images.values())
+        return copy.deepcopy(list(self.images.values()))
 
     def download(self, context, image_id, dst_path=None, data=None):
         self.show(context, image_id)
@@ -188,7 +188,7 @@ class _FakeImageService(object):
         :raises: Duplicate if the image already exist.
 
         """
-        image_id = str(metadata.get('id', uuid.uuid4()))
+        image_id = str(metadata.get('id', uuidutils.generate_uuid()))
         metadata['id'] = image_id
         if image_id in self.images:
             raise exception.CouldNotUploadImage(image_id=image_id)

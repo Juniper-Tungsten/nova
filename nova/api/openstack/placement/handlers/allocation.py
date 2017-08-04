@@ -240,18 +240,11 @@ def set_allocations(req):
 
         resources = allocation['resources']
         for resource_class in resources:
-            try:
-                allocation = objects.Allocation(
-                    resource_provider=resource_provider,
-                    consumer_id=consumer_uuid,
-                    resource_class=resource_class,
-                    used=resources[resource_class])
-            except ValueError as exc:
-                raise webob.exc.HTTPBadRequest(
-                    _("Allocation of class '%(class)s' for "
-                      "resource provider '%(rp_uuid)s' invalid: %(error)s") %
-                    {'class': resource_class, 'rp_uuid':
-                     resource_provider_uuid, 'error': exc})
+            allocation = objects.Allocation(
+                resource_provider=resource_provider,
+                consumer_id=consumer_uuid,
+                resource_class=resource_class,
+                used=resources[resource_class])
             allocation_objects.append(allocation)
 
     allocations = objects.AllocationList(context, objects=allocation_objects)
@@ -262,6 +255,11 @@ def set_allocations(req):
     # InvalidInventory is a parent for several exceptions that
     # indicate either that Inventory is not present, or that
     # capacity limits have been exceeded.
+    except exception.NotFound as exc:
+        raise webob.exc.HTTPBadRequest(
+                _("Unable to allocate inventory for resource provider "
+                  "%(rp_uuid)s: %(error)s") %
+            {'rp_uuid': resource_provider_uuid, 'error': exc})
     except exception.InvalidInventory as exc:
         LOG.exception(_LE("Bad inventory"))
         raise webob.exc.HTTPConflict(
@@ -286,12 +284,23 @@ def delete_allocations(req):
 
     allocations = objects.AllocationList.get_all_by_consumer_id(
         context, consumer_uuid)
-    if not allocations:
+    if allocations:
+        try:
+            allocations.delete_all()
+        # NOTE(pumaranikar): Following NotFound exception added in the case
+        # when allocation is deleted from allocations list by some other
+        # activity. In that case, delete_all() will throw a NotFound exception.
+        except exception.NotFound as exc:
+            raise webob.exc.HTPPNotFound(
+                  _("Allocation for consumer with id %(id)s not found."
+                    "error: %(error)s") %
+                  {'id': consumer_uuid, 'error': exc},
+                  json_formatter=util.json_error_formatter)
+    else:
         raise webob.exc.HTTPNotFound(
             _("No allocations for consumer '%(consumer_uuid)s'") %
             {'consumer_uuid': consumer_uuid},
             json_formatter=util.json_error_formatter)
-    allocations.delete_all()
     LOG.debug("Successfully deleted allocations %s", allocations)
 
     req.response.status = 204

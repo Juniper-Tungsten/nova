@@ -51,7 +51,6 @@ A fake XenAPI SDK.
 import base64
 import pickle
 import random
-import uuid
 from xml.sax import saxutils
 import zlib
 
@@ -59,6 +58,7 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 from oslo_utils import units
+from oslo_utils import uuidutils
 import six
 
 from nova import exception
@@ -350,8 +350,8 @@ def _create_local_pif(host_ref):
 
 
 def _create_object(table, obj):
-    ref = str(uuid.uuid4())
-    obj['uuid'] = str(uuid.uuid4())
+    ref = uuidutils.generate_uuid()
+    obj['uuid'] = uuidutils.generate_uuid()
     _db_content[table][ref] = obj
     return ref
 
@@ -776,19 +776,21 @@ class SessionBase(object):
         dom_id = args["dom_id"]
         if dom_id == 0:
             raise Failure('Guest does not have a console')
-        return base64.b64encode(zlib.compress("dom_id: %s" % dom_id))
+        return base64.b64encode(
+            zlib.compress(("dom_id: %s" % dom_id).encode('utf-8')))
 
     def _plugin_nova_plugin_version_get_version(self, method, args):
-        return pickle.dumps("1.7")
+        return pickle.dumps("1.8")
 
     def _plugin_xenhost_query_gc(self, method, args):
         return pickle.dumps("False")
 
-    def _plugin_partition_utils_dot_py_make_partition(self, method, args):
+    def _plugin_partition_utils_make_partition(self, method, args):
         return pickle.dumps(None)
 
     def host_call_plugin(self, _1, _2, plugin, method, args):
-        plugin = plugin.replace('.', '_dot_')
+        plugin = plugin.rstrip('.py')
+
         func = getattr(self, '_plugin_%s_%s' % (plugin, method), None)
         if not func:
             raise Exception('No simulation in host_call_plugin for %s,%s' %
@@ -874,8 +876,8 @@ class SessionBase(object):
             return meth(*full_params)
 
     def _login(self, method, params):
-        self._session = str(uuid.uuid4())
-        _session_info = {'uuid': str(uuid.uuid4()),
+        self._session = uuidutils.generate_uuid()
+        _session_info = {'uuid': uuidutils.generate_uuid(),
                          'this_host': list(_db_content['host'])[0]}
         _db_content['session'][self._session] = _session_info
 

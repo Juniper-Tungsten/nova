@@ -223,6 +223,7 @@ Related options:
                 deprecated_for_removal=True,
                 deprecated_reason="This option is being replaced by the "
                                   "'pointer_model' option.",
+                deprecated_since='14.0.0',
                 help="""
 Enable a mouse cursor within a graphical VNC or SPICE sessions.
 
@@ -507,31 +508,34 @@ libvirt_imagecache_opts = [
     cfg.StrOpt('image_info_filename_pattern',
                default='$instances_path/$image_cache_subdirectory_name/'
                        '%(image)s.info',
-               help='Allows image information files to be stored in '
-                    'non-standard locations',
                deprecated_for_removal=True,
+               deprecated_since='14.0.0',
                deprecated_reason='Image info files are no longer used by the '
-                                 'image cache'),
+                                 'image cache',
+               help='Allows image information files to be stored in '
+                    'non-standard locations'),
     cfg.IntOpt('remove_unused_resized_minimum_age_seconds',
                default=3600,
                help='Unused resized base images younger than this will not be '
                     'removed'),
     cfg.BoolOpt('checksum_base_images',
                 default=False,
-                help='Write a checksum for files in _base to disk',
                 deprecated_for_removal=True,
+                deprecated_since='14.0.0',
                 deprecated_reason='The image cache no longer periodically '
                                   'calculates checksums of stored images. '
                                   'Data integrity can be checked at the block '
-                                  'or filesystem level.'),
+                                  'or filesystem level.',
+                help='Write a checksum for files in _base to disk'),
     cfg.IntOpt('checksum_interval_seconds',
                default=3600,
-               help='How frequently to checksum base images',
                deprecated_for_removal=True,
+               deprecated_since='14.0.0',
                deprecated_reason='The image cache no longer periodically '
                                  'calculates checksums of stored images. '
                                  'Data integrity can be checked at the block '
-                                 'or filesystem level.'),
+                                 'or filesystem level.',
+               help='How frequently to checksum base images'),
 ]
 
 libvirt_lvm_opts = [
@@ -564,8 +568,8 @@ libvirt_volume_opts = [
                      'from QEMU. Currently supported protocols: [gluster]'),
     cfg.BoolOpt('volume_use_multipath',
                 default=False,
-                help='Use multipath connection of the iSCSI or FC volume',
-                deprecated_name='iscsi_use_multipath'),
+                deprecated_name='iscsi_use_multipath',
+                help='Use multipath connection of the iSCSI or FC volume')
 ]
 
 libvirt_volume_aoe_opts = [
@@ -611,49 +615,105 @@ libvirt_volume_iser_opts = [
 
 libvirt_volume_net_opts = [
     cfg.StrOpt('rbd_user',
-               help='The RADOS client name for accessing rbd volumes'),
+               help="""
+The RADOS client name for accessing rbd(RADOS Block Devices) volumes.
+
+Libvirt will refer to this user when connecting and authenticating with
+the Ceph RBD server.
+"""),
     cfg.StrOpt('rbd_secret_uuid',
-               help='The libvirt UUID of the secret for the rbd_user'
-                    'volumes'),
+               help="""
+The libvirt UUID of the secret for the rbd_user volumes.
+"""),
 ]
 
 libvirt_volume_nfs_opts = [
     cfg.StrOpt('nfs_mount_point_base',
                default=paths.state_path_def('mnt'),
-               help='Directory where the NFS volume is mounted on the'
-                    ' compute node'),
+               help="""
+Directory where the NFS volume is mounted on the compute node.
+The default is 'mnt' directory of the location where nova's Python module
+is installed.
+
+NFS provides shared storage for the OpenStack Block Storage service.
+
+Possible values:
+
+* A string representing absolute path of mount point.
+"""),
     cfg.StrOpt('nfs_mount_options',
-               help='Mount options passed to the NFS client. See section '
-                    'of the nfs man page for details'),
+               help="""
+Mount options passed to the NFS client. See section of the nfs man page
+for details.
+
+Mount options controls the way the filesystem is mounted and how the
+NFS client behaves when accessing files on this mount point.
+
+Possible values:
+
+* Any string representing mount options seperated by commas.
+* Example string: vers=3,lookupcache=pos
+"""),
 ]
 
 libvirt_volume_quobyte_opts = [
     cfg.StrOpt('quobyte_mount_point_base',
                default=paths.state_path_def('mnt'),
-               help='Directory where the Quobyte volume is mounted on the '
-                    'compute node'),
+               help="""
+Directory where the Quobyte volume is mounted on the compute node.
+
+Nova supports Quobyte volume driver that enables storing Block Storage
+service volumes on a Quobyte storage back end. This Option sepcifies the
+path of the directory where Quobyte volume is mounted.
+
+Possible values:
+
+* A string representing absolute path of mount point.
+"""),
     cfg.StrOpt('quobyte_client_cfg',
                help='Path to a Quobyte Client configuration file.'),
 ]
 
 libvirt_volume_scality_opts = [
     cfg.StrOpt('scality_sofs_config',
-               help='Path or URL to Scality SOFS configuration file'),
+               help="""
+Path or URL to Scality SOFS(Scale-Out File Server) configuration file.
+
+The Scality SOFS provides OpenStack users the option of storing their
+data on a high capacity, replicated, highly available Scality Ring object
+storage cluster.
+"""),
     cfg.StrOpt('scality_sofs_mount_point',
                default='$state_path/scality',
-               help='Base dir where Scality SOFS shall be mounted'),
+               help="""
+Base dir where Scality SOFS shall be mounted.
+
+The Scality volume driver in Nova mounts SOFS and lets the hypervisor access
+the volumes.
+
+Possible values:
+
+* $state_path/scality where state_path is a config option that specifies
+  the top-level directory for maintaining nova's state or Any string
+  containing the full directory path.
+"""),
 ]
 
 libvirt_volume_smbfs_opts = [
     cfg.StrOpt('smbfs_mount_point_base',
                default=paths.state_path_def('mnt'),
-               help='Directory where the SMBFS shares are mounted on the '
-                    'compute node'),
+               help="""
+Directory where the SMBFS shares are mounted on the compute node.
+"""),
     cfg.StrOpt('smbfs_mount_options',
                default='',
-               help='Mount options passed to the SMBFS client. See '
-                    'mount.cifs man page for details. Note that the '
-                    'libvirt-qemu uid and gid must be specified.'),
+               help="""
+Mount options passed to the SMBFS client.
+
+Provide SMBFS options as a single string containing all parameters.
+See mount.cifs man page for  details. Note that the libvirt-qemu ``uid``
+and ``gid`` must be specified.
+"""),
 ]
 
 libvirt_remotefs_opts = [

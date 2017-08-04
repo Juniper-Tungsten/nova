@@ -19,7 +19,6 @@ and storage repositories
 """
 
 import re
-import string
 import uuid
 
 from eventlet import greenthread
@@ -290,7 +289,7 @@ def _mountpoint_to_number(mountpoint):
     elif re.match('^x?vd[a-p]$', mountpoint):
         return (ord(mountpoint[-1]) - ord('a'))
     elif re.match('^[0-9]+$', mountpoint):
-        return string.atoi(mountpoint, 10)
+        return int(mountpoint, 10)
     else:
         LOG.warning(_LW('Mountpoint cannot be translated: %s'), mountpoint)
         return -1
@@ -364,8 +363,8 @@ def _stream_to_vdi(conn, vdi_import_path, file_size, file_obj):
                'Content-Length': '%s' % file_size}
 
     CHUNK_SIZE = 16 * 1024
-    LOG.debug('Initialising PUT request to %s (Headers: %s)' % (
-        vdi_import_path, headers))
+    LOG.debug('Initialising PUT request to %s (Headers: %s)',
+              vdi_import_path, headers)
     conn.request('PUT', vdi_import_path, headers=headers)
     remain_size = file_size
     while remain_size >= CHUNK_SIZE:

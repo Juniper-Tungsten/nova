@@ -28,8 +28,9 @@ _DEFAULT_SQL_CONNECTION = 'sqlite:///' + paths.state_path_def('nova.sqlite')
 db_driver_opt = cfg.StrOpt(
         'db_driver',
         default='nova.db',
-        help='DEPRECATED: The driver to use for database access',
-        deprecated_for_removal=True)
+        deprecated_for_removal=True,
+        deprecated_since='13.0.0',
+        help='The driver to use for database access')
 
 
 # NOTE(markus_z): We cannot simply do:
@@ -140,7 +141,6 @@ the start.
 # also apply here
 placement_db_opts = [
     cfg.StrOpt('connection',
-               default=None,
                help='',
                secret=True),
     cfg.BoolOpt('sqlite_synchronous',
@@ -177,8 +177,7 @@ placement_db_opts = [
 
 
 def register_opts(conf):
-    oslo_db_options.set_defaults(conf, connection=_DEFAULT_SQL_CONNECTION,
-                                 sqlite_db='nova.sqlite')
+    oslo_db_options.set_defaults(conf, connection=_DEFAULT_SQL_CONNECTION)
     conf.register_opt(db_driver_opt)
     conf.register_opts(api_db_opts, group=api_db_group)
     conf.register_opts(placement_db_opts, group=placement_db_group)

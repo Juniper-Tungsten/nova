@@ -32,9 +32,6 @@ from nova.virt.libvirt import driver as libvirt_driver
 from nova.virt.libvirt import guest as libvirt_guest
 from nova.virt.libvirt import host
 
-host.libvirt = fakelibvirt
-libvirt_guest.libvirt = fakelibvirt
-
 
 class FakeVirtDomain(object):
 
@@ -869,9 +866,24 @@ Active:          8381604 kB
 
     @mock.patch.object(fakelibvirt.virConnect, "defineXML")
     def test_write_instance_config(self, mock_defineXML):
-        xml = "<x><name>foo</name></x>"
-        self.host.write_instance_config(xml)
-        mock_defineXML.assert_called_once_with(xml)
+        fake_dom_xml = """
+                <domain type='kvm'>
+                  <uuid>cef19ce0-0ca2-11df-855d-b19fbce37686</uuid>
+                  <devices>
+                    <disk type='file'>
+                      <source file='filename'/>
+                    </disk>
+                  </devices>
+                </domain>
+            """
+        conn = self.host.get_connection()
+        dom = fakelibvirt.Domain(conn,
+                                 fake_dom_xml,
+                                 False)
+        mock_defineXML.return_value = dom
+        guest = self.host.write_instance_config(fake_dom_xml)
+        mock_defineXML.assert_called_once_with(fake_dom_xml)
+        self.assertIsInstance(guest, libvirt_guest.Guest)
 
     @mock.patch.object(fakelibvirt.virConnect, "nodeDeviceLookupByName")
     def test_device_lookup_by_name(self, mock_nodeDeviceLookupByName):

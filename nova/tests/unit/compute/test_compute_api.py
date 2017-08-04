@@ -43,6 +43,7 @@ from nova.objects import base as obj_base
 from nova.objects import block_device as block_device_obj
 from nova.objects import fields as fields_obj
 from nova.objects import quotas as quotas_obj
+from nova.objects import security_group as secgroup_obj
 from nova import quota
 from nova import test
 from nova.tests import fixtures
@@ -168,10 +169,11 @@ class _ComputeAPIUnitTestMixIn(object):
     @mock.patch('nova.conductor.conductor_api.ComputeTaskAPI.build_instances')
     @mock.patch('nova.compute.api.API._record_action_start')
     @mock.patch('nova.compute.api.API._check_requested_networks')
+    @mock.patch('nova.quota.QUOTAS.limit_check')
     @mock.patch('nova.compute.api.API._get_image')
     @mock.patch('nova.compute.api.API._provision_instances')
     def test_create_with_networks_max_count_none(self, provision_instances,
-                                                 get_image,
+                                                 get_image, check_limit,
                                                  check_requested_networks,
                                                  record_action_start,
                                                  build_instances):
@@ -240,7 +242,8 @@ class _ComputeAPIUnitTestMixIn(object):
             mock.patch.object(self.compute_api, '_check_auto_disk_config'),
             mock.patch.object(self.compute_api,
                               '_validate_and_build_base_options',
-                              return_value=({}, max_net_count, None))
+                              return_value=({}, max_net_count, None,
+                                            ['default']))
         ) as (
             get_image,
             check_auto_disk_config,
@@ -1157,6 +1160,7 @@ class _ComputeAPIUnitTestMixIn(object):
             self._test_delete('force_delete', vm_state=vm_state)
 
     def test_delete_fast_if_host_not_set(self):
+        self.useFixture(fixtures.AllServicesCurrent())
         inst = self._create_instance_obj()
         inst.host = ''
         quotas = quotas_obj.Quotas(self.context)
@@ -2498,6 +2502,66 @@ class _ComputeAPIUnitTestMixIn(object):
                           self.compute_api.snapshot,
                           self.context, instance, 'fake-name')
 
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch.object(compute_api.API, '_create_image')
+    @mock.patch.object(compute_rpcapi.ComputeAPI,
+                       'snapshot_instance')
+    def test_vm_deleting_while_creating_snapshot(self,
+                                                snapshot_instance,
+                                                _create_image, save):
+        instance = self._create_instance_obj()
+        save.side_effect = exception.UnexpectedDeletingTaskStateError(
+            "Exception")
+        _create_image.return_value = dict(id='fake-image-id')
+        with mock.patch.object(self.compute_api.image_api,
+                               'delete') as image_delete:
+            self.assertRaises(exception.InstanceInvalidState,
+                              self.compute_api.snapshot,
+                              self.context,
+                              instance, 'fake-image')
+            image_delete.assert_called_once_with(self.context,
+                                                 'fake-image-id')
+
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch.object(compute_api.API, '_create_image')
+    @mock.patch.object(compute_rpcapi.ComputeAPI,
+                       'snapshot_instance')
+    def test_vm_deleted_while_creating_snapshot(self,
+                                                snapshot_instance,
+                                                _create_image, save):
+        instance = self._create_instance_obj()
+        save.side_effect = exception.InstanceNotFound(
+            "Exception")
+        _create_image.return_value = dict(id='fake-image-id')
+        with mock.patch.object(self.compute_api.image_api,
+                               'delete') as image_delete:
+            self.assertRaises(exception.InstanceInvalidState,
+                              self.compute_api.snapshot,
+                              self.context,
+                              instance, 'fake-image')
+            image_delete.assert_called_once_with(self.context,
+                                                 'fake-image-id')
+
+    @mock.patch.object(objects.Instance, 'save')
+    @mock.patch.object(compute_api.API, '_create_image')
+    @mock.patch.object(compute_rpcapi.ComputeAPI,
+                       'snapshot_instance')
+    def test_vm_deleted_while_snapshot_and_snapshot_delete_failed(self,
+                                                        snapshot_instance,
+                                                        _create_image, save):
+        instance = self._create_instance_obj()
+        save.side_effect = exception.InstanceNotFound(instance_id='fake')
+        _create_image.return_value = dict(id='fake-image-id')
+        with mock.patch.object(self.compute_api.image_api,
+                               'delete') as image_delete:
+            image_delete.side_effect = test.TestingException()
+            self.assertRaises(exception.InstanceInvalidState,
+                              self.compute_api.snapshot,
+                              self.context,
+                              instance, 'fake-image')
+            image_delete.assert_called_once_with(self.context,
+                                                 'fake-image-id')
+
     def test_snapshot_with_base_image_ref(self):
         self._test_snapshot_and_backup(with_base_ref=True)
 
@@ -3125,9 +3189,12 @@ class _ComputeAPIUnitTestMixIn(object):
 
     def test_external_instance_event(self):
         instances = [
-            objects.Instance(uuid=uuids.instance_1, host='host1'),
-            objects.Instance(uuid=uuids.instance_2, host='host1'),
-            objects.Instance(uuid=uuids.instance_3, host='host2'),
+            objects.Instance(uuid=uuids.instance_1, host='host1',
+                             migration_context=None),
+            objects.Instance(uuid=uuids.instance_2, host='host1',
+                             migration_context=None),
+            objects.Instance(uuid=uuids.instance_3, host='host2',
+                             migration_context=None),
             ]
         events = [
             objects.InstanceExternalEvent(
@@ -3141,9 +3208,60 @@ class _ComputeAPIUnitTestMixIn(object):
         self.compute_api.external_instance_event(self.context,
                                                  instances, events)
         method = self.compute_api.compute_rpcapi.external_instance_event
-        method.assert_any_call(self.context, instances[0:2], events[0:2])
-        method.assert_any_call(self.context, instances[2:], events[2:])
+        method.assert_any_call(self.context, instances[0:2], events[0:2],
+                               host='host1')
+        method.assert_any_call(self.context, instances[2:], events[2:],
+                               host='host2')
         self.assertEqual(2, method.call_count)
+
+    def test_external_instance_event_evacuating_instance(self):
+        # Since we're patching the db's migration_get(), use a dict here so
+        # that we can validate the id is making its way correctly to the db api
+        migrations = {}
+        migrations[42] = {'id': 42, 'source_compute': 'host1',
+                          'dest_compute': 'host2', 'source_node': None,
+                          'dest_node': None, 'dest_host': None,
+                          'old_instance_type_id': None,
+                          'new_instance_type_id': None,
+                          'instance_uuid': uuids.instance_2, 'status': None,
+                          'migration_type': 'evacuation', 'memory_total': None,
+                          'memory_processed': None, 'memory_remaining': None,
+                          'disk_total': None, 'disk_processed': None,
+                          'disk_remaining': None, 'deleted': False,
+                          'hidden': False, 'created_at': None,
+                          'updated_at': None, 'deleted_at': None}
+
+        def migration_get(context, id):
+            return migrations[id]
+
+        instances = [
+            objects.Instance(uuid=uuids.instance_1, host='host1',
+                             migration_context=None),
+            objects.Instance(uuid=uuids.instance_2, host='host1',
+                             migration_context=objects.MigrationContext(
+                                 migration_id=42)),
+            objects.Instance(uuid=uuids.instance_3, host='host2',
+                             migration_context=None)
+            ]
+        events = [
+            objects.InstanceExternalEvent(
+                instance_uuid=uuids.instance_1),
+            objects.InstanceExternalEvent(
+                instance_uuid=uuids.instance_2),
+            objects.InstanceExternalEvent(
+                instance_uuid=uuids.instance_3),
+            ]
+
+        with mock.patch('nova.db.sqlalchemy.api.migration_get', migration_get):
+            self.compute_api.compute_rpcapi = mock.MagicMock()
+            self.compute_api.external_instance_event(self.context,
+                                                     instances, events)
+            method = self.compute_api.compute_rpcapi.external_instance_event
+            method.assert_any_call(self.context, instances[0:2], events[0:2],
+                                   host='host1')
+            method.assert_any_call(self.context, instances[1:], events[1:],
+                                   host='host2')
+            self.assertEqual(2, method.call_count)
 
     def test_volume_ops_invalid_task_state(self):
         instance = self._create_instance_obj()
@@ -3867,9 +3985,11 @@ class _ComputeAPIUnitTestMixIn(object):
         self.assertEqual(swap_size, bdms[1].volume_size)
         self.assertEqual(ephemeral_size, bdms[2].volume_size)
 
+    @mock.patch.object(objects.BuildRequestList, 'get_by_filters')
     @mock.patch.object(compute_api.API, '_get_instances_by_filters')
     @mock.patch.object(objects.CellMapping, 'get_by_uuid')
-    def test_tenant_to_project_conversion(self, mock_cell_map_get, mock_get):
+    def test_tenant_to_project_conversion(self, mock_cell_map_get, mock_get,
+                                          mock_buildreq_get):
         mock_cell_map_get.side_effect = exception.CellMappingNotFound(
                                                                 uuid='fake')
         mock_get.return_value = objects.InstanceList(objects=[])
@@ -4599,6 +4719,23 @@ class _ComputeAPIUnitTestMixIn(object):
                           self.compute_api.update_instance,
                           self.context, instance, updates)
 
+    def test_populate_instance_for_create_neutron_secgroups(self):
+        """Tests that a list of security groups passed in do not actually get
+        stored on with the instance when using neutron.
+        """
+        self.flags(use_neutron=True)
+        flavor = self._create_flavor()
+        params = {'display_name': 'fake-instance'}
+        instance = self._create_instance_obj(params, flavor)
+        security_groups = objects.SecurityGroupList()
+        security_groups.objects = [
+            secgroup_obj.SecurityGroup(uuid=uuids.secgroup_id)
+        ]
+        instance = self.compute_api._populate_instance_for_create(
+            self.context, instance, {}, 0, security_groups, flavor, 1,
+            False)
+        self.assertEqual(0, len(instance.security_groups))
+
 
 class ComputeAPIUnitTestCase(_ComputeAPIUnitTestMixIn, test.NoDBTestCase):
     def setUp(self):
@@ -4609,6 +4746,43 @@ class ComputeAPIUnitTestCase(_ComputeAPIUnitTestMixIn, test.NoDBTestCase):
     def test_resize_same_flavor_fails(self):
         self.assertRaises(exception.CannotResizeToSameFlavor,
                           self._test_resize, same_flavor=True)
+
+    def test_validate_and_build_base_options_translate_neutron_secgroup(self):
+        """Tests that _check_requested_secgroups will return a uuid for a
+        requested Neutron security group and that will be returned from
+        _validate_and_build_base_options
+        """
+        instance_type = objects.Flavor(**test_flavor.fake_api_flavor)
+        boot_meta = metadata = {}
+        kernel_id = ramdisk_id = key_name = key_data = user_data = \
+            access_ip_v4 = access_ip_v6 = config_drive = \
+                auto_disk_config = reservation_id = None
+        # This tests that 'default' is unchanged, but 'fake-security-group'
+        # will be translated to a uuid for Neutron.
+        requested_secgroups = ['default', 'fake-security-group']
+        # This will short-circuit _check_requested_networks
+        requested_networks = objects.NetworkRequestList(objects=[
+            objects.NetworkRequest(network_id='none')])
+        max_count = 1
+        with mock.patch.object(
+                self.compute_api.security_group_api, 'get',
+                return_value={'id': uuids.secgroup_uuid}) as scget:
+            base_options, max_network_count, key_pair, security_groups = (
+                self.compute_api._validate_and_build_base_options(
+                    self.context, instance_type, boot_meta, uuids.image_href,
+                    mock.sentinel.image_id, kernel_id, ramdisk_id,
+                    'fake-display-name', 'fake-description', key_name,
+                    key_data, requested_secgroups, 'fake-az', user_data,
+                    metadata, access_ip_v4, access_ip_v6, requested_networks,
+                    config_drive, auto_disk_config, reservation_id, max_count
+                )
+            )
+        # Assert the neutron security group API get method was called once
+        # and only for the non-default security group name.
+        scget.assert_called_once_with(self.context, 'fake-security-group')
+        # Assert we translated the non-default secgroup name to uuid.
+        self.assertItemsEqual(['default', uuids.secgroup_uuid],
+                              security_groups)
 
 
 class ComputeAPIAPICellUnitTestCase(_ComputeAPIUnitTestMixIn,
@@ -4677,6 +4851,20 @@ class ComputeAPIAPICellUnitTestCase(_ComputeAPIUnitTestMixIn,
         count = self.compute_api._check_requested_networks(
             self.context, requested_networks, 5)
         self.assertEqual(5, count)
+
+    def _test_shelve(self, vm_state=vm_states.ACTIVE,
+                     boot_from_volume=False, clean_shutdown=True):
+        params = dict(task_state=None, vm_state=vm_state,
+                      display_name='fake-name')
+        instance = self._create_instance_obj(params=params)
+        with mock.patch.object(self.compute_api,
+                               '_cast_to_cells') as cast_to_cells:
+            self.compute_api.shelve(self.context, instance,
+                                    clean_shutdown=clean_shutdown)
+            cast_to_cells.assert_called_once_with(self.context,
+                                                  instance, 'shelve',
+                                                  clean_shutdown=clean_shutdown
+                                                  )
 
 
 class ComputeAPIComputeCellUnitTestCase(_ComputeAPIUnitTestMixIn,

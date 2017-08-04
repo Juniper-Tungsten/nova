@@ -17,12 +17,18 @@ import mock
 from nova import exception
 from nova import objects
 from nova.objects import fields
+from nova.objects import resource_provider
 from nova.tests.unit.objects import test_objects
 from nova.tests import uuidsentinel as uuids
 
 
 _RESOURCE_CLASS_NAME = 'DISK_GB'
 _RESOURCE_CLASS_ID = 2
+IPV4_ADDRESS_ID = objects.fields.ResourceClass.STANDARD.index(
+    fields.ResourceClass.IPV4_ADDRESS)
+VCPU_ID = objects.fields.ResourceClass.STANDARD.index(
+    fields.ResourceClass.VCPU)
+
 _RESOURCE_PROVIDER_ID = 1
 _RESOURCE_PROVIDER_UUID = uuids.resource_provider
 _RESOURCE_PROVIDER_NAME = uuids.resource_name
@@ -52,6 +58,12 @@ _ALLOCATION_DB = {
     'consumer_id': uuids.fake_instance,
     'used': 8,
 }
+
+
+def _fake_ensure_cache(ctxt):
+    cache = resource_provider._RC_CACHE = mock.MagicMock()
+    cache.string_from_id.return_value = _RESOURCE_CLASS_NAME
+    cache.id_from_string.return_value = _RESOURCE_CLASS_ID
 
 
 class _TestResourceProviderNoDB(object):
@@ -137,9 +149,11 @@ class TestResourceProvider(test_objects._LocalTest):
 
 
 class _TestInventoryNoDB(object):
+    @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
+            side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.Inventory._create_in_db',
                 return_value=_INVENTORY_DB)
-    def test_create(self, mock_db_create):
+    def test_create(self, mock_db_create, mock_ensure_cache):
         rp = objects.ResourceProvider(id=_RESOURCE_PROVIDER_ID,
                                       uuid=_RESOURCE_PROVIDER_UUID)
         obj = objects.Inventory(context=self.context,
@@ -157,9 +171,11 @@ class _TestInventoryNoDB(object):
         expected.pop('id')
         mock_db_create.assert_called_once_with(self.context, expected)
 
+    @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
+            side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.Inventory._update_in_db',
                 return_value=_INVENTORY_DB)
-    def test_save(self, mock_db_save):
+    def test_save(self, mock_db_save, mock_ensure_cache):
         obj = objects.Inventory(context=self.context,
                                 id=_INVENTORY_ID,
                                 reserved=4)
@@ -168,8 +184,10 @@ class _TestInventoryNoDB(object):
                                              _INVENTORY_ID,
                                              {'reserved': 4})
 
+    @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
+            side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.InventoryList._get_all_by_resource_provider')
-    def test_get_all_by_resource_provider(self, mock_get):
+    def test_get_all_by_resource_provider(self, mock_get, mock_ensure_cache):
         expected = [dict(_INVENTORY_DB,
                          resource_provider=dict(_RESOURCE_PROVIDER_DB)),
                     dict(_INVENTORY_DB,
@@ -312,9 +330,6 @@ class TestInventory(test_objects._LocalTest):
                                         {'total': 32})
 
         # Create IPV4_ADDRESS resources for each provider.
-        IPV4_ADDRESS_ID = objects.fields.ResourceClass.index(
-            objects.fields.ResourceClass.IPV4_ADDRESS)
-
         self._create_inventory_in_db(db_rp1.id,
                                      resource_provider_id=db_rp1.id,
                                      resource_class_id=IPV4_ADDRESS_ID,
@@ -430,22 +445,40 @@ class TestInventory(test_objects._LocalTest):
         self.assertIsNone(found)
 
         # Try an integer resource class identifier...
-        found = inv_list.find(fields.ResourceClass.index(
-            fields.ResourceClass.VCPU))
-        self.assertIsNotNone(found)
-        self.assertEqual(24, found.total)
+        self.assertRaises(ValueError, inv_list.find, VCPU_ID)
 
         # Use an invalid string...
-        error = self.assertRaises(exception.NotFound,
-                                  inv_list.find,
-                                  'HOUSE')
-        self.assertIn('No such resource class', str(error))
+        self.assertIsNone(inv_list.find('HOUSE'))
+
+    def test_custom_resource_raises(self):
+        """Ensure that if we send an inventory object to a backversioned 1.0
+        receiver, that we raise ValueError if the inventory record contains a
+        custom (non-standardized) resource class.
+        """
+        values = {
+            # NOTE(danms): We don't include an actual resource provider
+            # here because chained backporting of that is handled by
+            # the infrastructure and requires us to have a manifest
+            'resource_class': 'custom_resource',
+            'total': 1,
+            'reserved': 0,
+            'min_unit': 1,
+            'max_unit': 1,
+            'step_size': 1,
+            'allocation_ratio': 1.0,
+        }
+        bdm = objects.Inventory(context=self.context, **values)
+        self.assertRaises(ValueError,
+                          bdm.obj_to_primitive,
+                          target_version='1.0')
 
 
 class _TestAllocationNoDB(object):
+    @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
+            side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.Allocation._create_in_db',
                 return_value=_ALLOCATION_DB)
-    def test_create(self, mock_db_create):
+    def test_create(self, mock_db_create, mock_ensure_cache):
         rp = objects.ResourceProvider(id=_RESOURCE_PROVIDER_ID,
                                       uuid=uuids.resource_provider)
         obj = objects.Allocation(context=self.context,
@@ -470,6 +503,24 @@ class _TestAllocationNoDB(object):
                                  used=8)
         self.assertRaises(exception.ObjectActionError, obj.create)
 
+    def test_custom_resource_raises(self):
+        """Ensure that if we send an inventory object to a backversioned 1.0
+        receiver, that we raise ValueError if the inventory record contains a
+        custom (non-standardized) resource class.
+        """
+        values = {
+            # NOTE(danms): We don't include an actual resource provider
+            # here because chained backporting of that is handled by
+            # the infrastructure and requires us to have a manifest
+            'resource_class': 'custom_resource',
+            'consumer_id': uuids.consumer_id,
+            'used': 1,
+        }
+        bdm = objects.Allocation(context=self.context, **values)
+        self.assertRaises(ValueError,
+                          bdm.obj_to_primitive,
+                          target_version='1.0')
+
 
 class TestAllocationNoDB(test_objects._LocalTest,
                          _TestAllocationNoDB):
@@ -483,9 +534,12 @@ class TestRemoteAllocationNoDB(test_objects._RemoteTest,
 
 class _TestAllocationListNoDB(object):
 
+    @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
+            side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.AllocationList._get_allocations_from_db',
                 return_value=[_ALLOCATION_DB])
-    def test_get_allocations(self, mock_get_allocations_from_db):
+    def test_get_allocations(self, mock_get_allocations_from_db,
+            mock_ensure_cache):
         rp = objects.ResourceProvider(id=_RESOURCE_PROVIDER_ID,
                                       uuid=uuids.resource_provider)
         allocations = objects.AllocationList.get_all_by_resource_provider_uuid(
@@ -505,3 +559,13 @@ class TestAllocationListNoDB(test_objects._LocalTest,
 class TestRemoteAllocationListNoDB(test_objects._RemoteTest,
                                _TestAllocationListNoDB):
     USES_DB = False
+
+
+class TestUsageNoDB(test_objects._LocalTest):
+    USES_DB = False
+
+    def test_v1_1_resource_class(self):
+        usage = objects.Usage(resource_class='foo')
+        self.assertRaises(ValueError,
+                          usage.obj_to_primitive,
+                          target_version='1.0')

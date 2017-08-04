@@ -181,6 +181,11 @@ class HostState(object):
 
     def _update_from_compute_node(self, compute):
         """Update information about a host from a ComputeNode object."""
+        # NOTE(jichenjc): if the compute record is just created but not updated
+        # some field such as free_disk_gb can be None
+        if compute.updated_at is None:
+            return
+
         if (self.updated and compute.updated_at
                 and self.updated > compute.updated_at):
             return
@@ -330,13 +335,13 @@ class HostManager(object):
         self.host_state_map = {}
         self.filter_handler = filters.HostFilterHandler()
         filter_classes = self.filter_handler.get_matching_classes(
-                CONF.scheduler_available_filters)
+                CONF.filter_scheduler.available_filters)
         self.filter_cls_map = {cls.__name__: cls for cls in filter_classes}
         self.filter_obj_map = {}
-        self.default_filters = self._choose_host_filters(self._load_filters())
+        self.enabled_filters = self._choose_host_filters(self._load_filters())
         self.weight_handler = weights.HostWeightHandler()
         weigher_classes = self.weight_handler.get_matching_classes(
-                CONF.scheduler_weight_classes)
+                CONF.filter_scheduler.weight_classes)
         self.weighers = [cls() for cls in weigher_classes]
         # Dict of aggregates keyed by their ID
         self.aggs_by_id = {}
@@ -344,14 +349,15 @@ class HostManager(object):
         # to those aggregates
         self.host_aggregates_map = collections.defaultdict(set)
         self._init_aggregates()
-        self.tracks_instance_changes = CONF.scheduler_tracks_instance_changes
+        self.track_instance_changes = (
+                CONF.filter_scheduler.track_instance_changes)
         # Dict of instances and status, keyed by host
         self._instance_info = {}
-        if self.tracks_instance_changes:
+        if self.track_instance_changes:
             self._init_instance_info()
 
     def _load_filters(self):
-        return CONF.scheduler_default_filters
+        return CONF.filter_scheduler.enabled_filters
 
     def _init_aggregates(self):
         elevated = context_module.get_admin_context()
@@ -494,7 +500,7 @@ class HostManager(object):
                 forced_hosts_str = ', '.join(hosts_to_force)
                 msg = _LI("No hosts matched due to not matching "
                           "'force_hosts' value of '%s'")
-            LOG.info(msg % forced_hosts_str)
+            LOG.info(msg, forced_hosts_str)
 
         def _match_forced_nodes(host_map, nodes_to_force):
             forced_nodes = []
@@ -510,7 +516,7 @@ class HostManager(object):
                 forced_nodes_str = ', '.join(nodes_to_force)
                 msg = _LI("No nodes matched due to not matching "
                           "'force_nodes' value of '%s'")
-            LOG.info(msg % forced_nodes_str)
+            LOG.info(msg, forced_nodes_str)
 
         def _get_hosts_matching_request(hosts, requested_destination):
             (host, node) = (requested_destination.host,
@@ -519,14 +525,14 @@ class HostManager(object):
                                if x.host == host and x.nodename == node]
             if requested_nodes:
                 LOG.info(_LI('Host filter only checking host %(host)s and '
-                             'node %(node)s') % {'host': host, 'node': node})
+                             'node %(node)s'), {'host': host, 'node': node})
             else:
                 # NOTE(sbauza): The API level should prevent the user from
                 # providing a wrong destination but let's make sure a wrong
                 # destination doesn't trample the scheduler still.
                 LOG.info(_LI('No hosts matched due to not matching requested '
-                             'destination (%(host)s, %(node)s)'
-                             ) % {'host': host, 'node': node})
+                             'destination (%(host)s, %(node)s)'),
+                         {'host': host, 'node': node})
             return iter(requested_nodes)
 
         ignore_hosts = spec_obj.ignore_hosts or []
@@ -560,7 +566,7 @@ class HostManager(object):
                     return []
             hosts = six.itervalues(name_to_cls_map)
 
-        return self.filter_handler.get_filtered_objects(self.default_filters,
+        return self.filter_handler.get_filtered_objects(self.enabled_filters,
                 hosts, spec_obj, index)
 
     def get_weighed_hosts(self, hosts, spec_obj):

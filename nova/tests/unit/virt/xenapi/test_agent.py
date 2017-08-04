@@ -165,8 +165,8 @@ class FileInjectionTestCase(AgentTestCaseBase):
         instance = _get_fake_instance()
         agent = self._create_agent(instance)
 
-        b64_path = base64.b64encode('path')
-        b64_contents = base64.b64encode('contents')
+        b64_path = base64.b64encode(b'path')
+        b64_contents = base64.b64encode(b'contents')
 
         agent.inject_file("path", "contents")
         mock_call_agent.assert_called_once_with('inject_file',
@@ -362,9 +362,9 @@ class CallAgentTestCase(AgentTestCaseBase):
             'timeout': '300',
         }
         expected_args.update(addl_args)
-        session.VM.get_domid.assert_called_once_with("vm_ref")
-        session.call_plugin.assert_called_once_with("agent", "method",
+        session.call_plugin.assert_called_once_with("agent.py", "method",
                                                     expected_args)
+        session.VM.get_domid.assert_called_once_with("vm_ref")
 
     def _call_agent_setup(self, session, mock_uuid,
                           returncode='0', success_codes=None,
@@ -389,7 +389,7 @@ class CallAgentTestCase(AgentTestCaseBase):
             'dom_id': '42',
             'timeout': '30',
         }
-        session.call_plugin.assert_called_once_with("agent", "method",
+        session.call_plugin.assert_called_once_with("agent.py", "method",
                                                     expected_args)
         session.VM.get_domid.assert_called_once_with("vm_ref")
 

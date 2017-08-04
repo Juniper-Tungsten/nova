@@ -312,8 +312,8 @@ class _TestRequestSpecObject(object):
                 filter_properties, instance_group, instance.availability_zone)
         # Make sure that all fields are set using that helper method
         for field in [f for f in spec.obj_fields if f != 'id']:
-            self.assertEqual(True, spec.obj_attr_is_set(field),
-                             'Field: %s is not set' % field)
+            self.assertTrue(spec.obj_attr_is_set(field),
+                            'Field: %s is not set' % field)
         # just making sure that the context is set by the method
         self.assertEqual(ctxt, spec._context)
 
@@ -499,7 +499,7 @@ class _TestRequestSpecObject(object):
         # object fields
         for field in ['image', 'numa_topology', 'pci_requests', 'flavor',
                 'retry', 'limits', 'instance_group']:
-            self.assertDictEqual(
+            self.assertEqual(
                     getattr(req_obj, field).obj_to_primitive(),
                     getattr(serialized_obj, field).obj_to_primitive())
 
@@ -534,6 +534,14 @@ class _TestRequestSpecObject(object):
         with mock.patch.object(request_spec.RequestSpec, '_save_in_db',
                 _test_save_args):
             req_obj.save()
+
+    @mock.patch.object(request_spec.RequestSpec, '_destroy_in_db')
+    def test_destroy(self, destroy_in_db):
+        req_obj = fake_request_spec.fake_spec_obj()
+        req_obj.destroy()
+
+        destroy_in_db.assert_called_once_with(req_obj._context,
+                                              req_obj.instance_uuid)
 
     def test_reset_forced_destinations(self):
         req_obj = fake_request_spec.fake_spec_obj()

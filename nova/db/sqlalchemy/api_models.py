@@ -14,6 +14,7 @@
 from oslo_db.sqlalchemy import models
 from sqlalchemy import Boolean
 from sqlalchemy import Column
+from sqlalchemy import DateTime
 from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy import Enum
 from sqlalchemy.ext.declarative import declarative_base
@@ -240,7 +241,7 @@ class BuildRequest(API_BASE):
     id = Column(Integer, primary_key=True)
     instance_uuid = Column(String(36))
     project_id = Column(String(255), nullable=False)
-    instance = Column(Text)
+    instance = Column(MediumText())
     block_device_mappings = Column(MediumText())
     # TODO(alaski): Drop these from the db in Ocata
     # columns_to_drop = ['request_spec_id', 'user_id', 'display_name',
@@ -268,6 +269,17 @@ class KeyPair(API_BASE):
     public_key = Column(Text())
     type = Column(Enum('ssh', 'x509', name='keypair_types'),
                   nullable=False, server_default='ssh')
+
+
+class ResourceClass(API_BASE):
+    """Represents the type of resource for an inventory or allocation."""
+    __tablename__ = 'resource_classes'
+    __table_args__ = (
+        schema.UniqueConstraint("name", name="uniq_resource_classes0name"),
+    )
+
+    id = Column(Integer, primary_key=True, nullable=False)
+    name = Column(String(255), nullable=False)
 
 
 class ResourceProvider(API_BASE):
@@ -359,6 +371,17 @@ class ResourceProviderAggregate(API_BASE):
     aggregate_id = Column(Integer, primary_key=True, nullable=False)
 
 
+class PlacementAggregate(API_BASE):
+    """A grouping of resource providers."""
+    __tablename__ = 'placement_aggregates'
+    __table_args__ = (
+        schema.UniqueConstraint("uuid", name="uniq_placement_aggregates0uuid"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    uuid = Column(String(36), index=True)
+
+
 class InstanceGroupMember(API_BASE):
     """Represents the members for an instance group."""
     __tablename__ = 'instance_group_member'
@@ -412,3 +435,121 @@ class InstanceGroup(API_BASE):
     @property
     def members(self):
         return [m.instance_uuid for m in self._members]
+
+
+class Quota(API_BASE):
+    """Represents a single quota override for a project.
+
+    If there is no row for a given project id and resource, then the
+    default for the quota class is used.  If there is no row for a
+    given quota class and resource, then the default for the
+    deployment is used. If the row is present but the hard limit is
+    Null, then the resource is unlimited.
+    """
+
+    __tablename__ = 'quotas'
+    __table_args__ = (
+        schema.UniqueConstraint("project_id", "resource",
+        name="uniq_quotas0project_id0resource"
+        ),
+    )
+    id = Column(Integer, primary_key=True)
+
+    project_id = Column(String(255))
+
+    resource = Column(String(255), nullable=False)
+    hard_limit = Column(Integer)
+
+
+class ProjectUserQuota(API_BASE):
+    """Represents a single quota override for a user with in a project."""
+
+    __tablename__ = 'project_user_quotas'
+    uniq_name = "uniq_project_user_quotas0user_id0project_id0resource"
+    __table_args__ = (
+        schema.UniqueConstraint("user_id", "project_id", "resource",
+                                name=uniq_name),
+        Index('project_user_quotas_project_id_idx',
+              'project_id'),
+        Index('project_user_quotas_user_id_idx',
+              'user_id',)
+    )
+    id = Column(Integer, primary_key=True, nullable=False)
+
+    project_id = Column(String(255), nullable=False)
+    user_id = Column(String(255), nullable=False)
+
+    resource = Column(String(255), nullable=False)
+    hard_limit = Column(Integer)
+
+
+class QuotaClass(API_BASE):
+    """Represents a single quota override for a quota class.
+
+    If there is no row for a given quota class and resource, then the
+    default for the deployment is used.  If the row is present but the
+    hard limit is Null, then the resource is unlimited.
+    """
+
+    __tablename__ = 'quota_classes'
+    __table_args__ = (
+        Index('quota_classes_class_name_idx', 'class_name'),
+    )
+    id = Column(Integer, primary_key=True)
+
+    class_name = Column(String(255))
+
+    resource = Column(String(255))
+    hard_limit = Column(Integer)
+
+
+class QuotaUsage(API_BASE):
+    """Represents the current usage for a given resource."""
+
+    __tablename__ = 'quota_usages'
+    __table_args__ = (
+        Index('quota_usages_project_id_idx', 'project_id'),
+        Index('quota_usages_user_id_idx', 'user_id'),
+    )
+    id = Column(Integer, primary_key=True)
+
+    project_id = Column(String(255))
+    user_id = Column(String(255))
+    resource = Column(String(255), nullable=False)
+
+    in_use = Column(Integer, nullable=False)
+    reserved = Column(Integer, nullable=False)
+
+    @property
+    def total(self):
+        return self.in_use + self.reserved
+
+    until_refresh = Column(Integer)
+
+
+class Reservation(API_BASE):
+    """Represents a resource reservation for quotas."""
+
+    __tablename__ = 'reservations'
+    __table_args__ = (
+        Index('reservations_project_id_idx', 'project_id'),
+        Index('reservations_uuid_idx', 'uuid'),
+        Index('reservations_expire_idx', 'expire'),
+        Index('reservations_user_id_idx', 'user_id'),
+    )
+    id = Column(Integer, primary_key=True, nullable=False)
+    uuid = Column(String(36), nullable=False)
+
+    usage_id = Column(Integer, ForeignKey('quota_usages.id'), nullable=False)
+
+    project_id = Column(String(255))
+    user_id = Column(String(255))
+    resource = Column(String(255))
+
+    delta = Column(Integer, nullable=False)
+    expire = Column(DateTime)
+
+    usage = orm.relationship(
+        "QuotaUsage",
+        foreign_keys=usage_id,
+        primaryjoin='Reservation.usage_id == QuotaUsage.id')

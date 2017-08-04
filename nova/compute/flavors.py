@@ -19,9 +19,9 @@
 """Built-in instance properties."""
 
 import re
-import uuid
 
 from oslo_utils import strutils
+from oslo_utils import uuidutils
 import six
 
 from nova.api.validation import parameter_types
@@ -72,7 +72,7 @@ def create(name, memory, vcpus, root_gb, ephemeral_gb=0, flavorid=None,
            swap=0, rxtx_factor=1.0, is_public=True):
     """Creates flavors."""
     if not flavorid:
-        flavorid = uuid.uuid4()
+        flavorid = uuidutils.generate_uuid()
 
     kwargs = {
         'memory_mb': memory,
@@ -153,18 +153,6 @@ def create(name, memory, vcpus, root_gb, ephemeral_gb=0, flavorid=None,
     flavor = objects.Flavor(context=context.get_admin_context(), **kwargs)
     flavor.create()
     return flavor
-
-
-def get_all_flavors_sorted_list(ctxt=None, filters=None, sort_key='flavorid',
-                                sort_dir='asc', limit=None, marker=None):
-    """Get all non-deleted flavors as a sorted list.
-    """
-    if ctxt is None:
-        ctxt = context.get_admin_context()
-
-    return objects.FlavorList.get_all(ctxt, filters=filters, sort_key=sort_key,
-                                      sort_dir=sort_dir, limit=limit,
-                                      marker=marker)
 
 
 def get_default_flavor():

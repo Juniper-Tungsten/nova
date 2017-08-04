@@ -29,7 +29,6 @@ import datetime
 import functools
 import math
 import re
-import uuid
 
 import netaddr
 from oslo_log import log as logging
@@ -274,7 +273,7 @@ class NetworkManager(manager.Manager):
             network_ref = objects.Network._from_db_object(
                 context, objects.Network(), network_ref)
         LOG.debug('Setting host %s for network %s', self.host,
-                  network_ref.uuid, context=context)
+                  network_ref.uuid)
         network_ref.host = self.host
         network_ref.save()
         return self.host
@@ -403,7 +402,7 @@ class NetworkManager(manager.Manager):
         networks_list = [self._get_network_dict(network)
                                  for network in networks]
         LOG.debug('Networks retrieved for instance: |%s|',
-                  networks_list, context=context, instance_uuid=instance_uuid)
+                  networks_list, instance_uuid=instance_uuid)
 
         try:
             self._allocate_mac_addresses(admin_context, instance_uuid,
@@ -426,8 +425,7 @@ class NetworkManager(manager.Manager):
         net_info = self.get_instance_nw_info(admin_context, instance_uuid,
                                              rxtx_factor, host)
         LOG.info(_LI("Allocated network: '%s' for instance"), net_info,
-                 instance_uuid=instance_uuid,
-                 context=context)
+                 instance_uuid=instance_uuid)
         return net_info
 
     def deallocate_for_instance(self, context, **kwargs):
@@ -476,7 +474,7 @@ class NetworkManager(manager.Manager):
             network_ids = set([])
             fixed_ips = []
         LOG.debug("Network deallocation for instance",
-                  context=context, instance_uuid=instance_uuid)
+                  instance_uuid=instance_uuid)
         # deallocate fixed ips
         for fixed_ip in fixed_ips:
             self.deallocate_fixed_ip(context, fixed_ip, host=host,
@@ -489,7 +487,7 @@ class NetworkManager(manager.Manager):
         objects.VirtualInterface.delete_by_instance_uuid(
                 read_deleted_context, instance_uuid)
         LOG.info(_LI("Network deallocated for instance (fixed IPs: '%s')"),
-                 fixed_ips, context=context, instance_uuid=instance_uuid)
+                 fixed_ips, instance_uuid=instance_uuid)
 
     @messaging.expected_exceptions(exception.InstanceNotFound)
     def get_instance_nw_info(self, context, instance_id, rxtx_factor,
@@ -702,7 +700,7 @@ class NetworkManager(manager.Manager):
                 vif.address = mac or utils.generate_mac_address()
                 vif.instance_uuid = instance_uuid
                 vif.network_id = network_id
-                vif.uuid = str(uuid.uuid4())
+                vif.uuid = uuidutils.generate_uuid()
                 vif.tag = tag
                 vif.create()
                 return vif
@@ -835,7 +833,7 @@ class NetworkManager(manager.Manager):
                 if address:
                     LOG.debug('Associating instance with specified fixed IP '
                               '%(address)s in network %(network)s on subnet '
-                              '%(cidr)s.' %
+                              '%(cidr)s.',
                               {'address': address, 'network': network['id'],
                                'cidr': network['cidr']},
                               instance=instance)
@@ -844,7 +842,7 @@ class NetworkManager(manager.Manager):
                             vif_id=vif.id)
                 else:
                     LOG.debug('Associating instance with fixed IP from pool '
-                              'in network %(network)s on subnet %(cidr)s.' %
+                              'in network %(network)s on subnet %(cidr)s.',
                               {'network': network['id'],
                                'cidr': network['cidr']},
                               instance=instance)
@@ -881,7 +879,7 @@ class NetworkManager(manager.Manager):
                         self.instance_dns_manager.delete_entry,
                         instance_id, self.instance_dns_domain))
 
-            LOG.debug('Setting up network %(network)s on host %(host)s.' %
+            LOG.debug('Setting up network %(network)s on host %(host)s.',
                       {'network': network['id'], 'host': self.host},
                       instance=instance)
             self._setup_network_on_host(context, network)
@@ -1030,31 +1028,29 @@ class NetworkManager(manager.Manager):
 
     def lease_fixed_ip(self, context, address):
         """Called by dhcp-bridge when IP is leased."""
-        LOG.debug('Leased IP |%s|', address, context=context)
+        LOG.debug('Leased IP |%s|', address)
         fixed_ip = objects.FixedIP.get_by_address(context, address)
 
         if fixed_ip.instance_uuid is None:
-            LOG.warning(_LW('IP %s leased that is not associated'), fixed_ip,
-                        context=context)
+            LOG.warning(_LW('IP %s leased that is not associated'), fixed_ip)
             return
         fixed_ip.leased = True
         fixed_ip.save()
         if not fixed_ip.allocated:
             LOG.warning(_LW('IP |%s| leased that isn\'t allocated'), fixed_ip,
-                        context=context, instance_uuid=fixed_ip.instance_uuid)
+                        instance_uuid=fixed_ip.instance_uuid)
 
     def release_fixed_ip(self, context, address, mac=None):
         """Called by dhcp-bridge when IP is released."""
-        LOG.debug('Released IP |%s|', address, context=context)
+        LOG.debug('Released IP |%s|', address)
         fixed_ip = objects.FixedIP.get_by_address(context, address)
 
         if fixed_ip.instance_uuid is None:
-            LOG.warning(_LW('IP %s released that is not associated'), fixed_ip,
-                        context=context)
+            LOG.warning(_LW('IP %s released that is not associated'), fixed_ip)
             return
         if not fixed_ip.leased:
             LOG.warning(_LW('IP %s released that was not leased'), fixed_ip,
-                        context=context, instance_uuid=fixed_ip.instance_uuid)
+                        instance_uuid=fixed_ip.instance_uuid)
         else:
             fixed_ip.leased = False
             fixed_ip.save()

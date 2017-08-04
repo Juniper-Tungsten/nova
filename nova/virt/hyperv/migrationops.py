@@ -72,12 +72,10 @@ class MigrationOps(object):
             self._pathutils.makedirs(dest_path)
 
             for disk_file in disk_files:
-                # Skip the config drive as the instance is already configured
-                if os.path.basename(disk_file).lower() != 'configdrive.vhd':
-                    LOG.debug('Copying disk "%(disk_file)s" to '
-                              '"%(dest_path)s"',
-                              {'disk_file': disk_file, 'dest_path': dest_path})
-                    self._pathutils.copy(disk_file, dest_path)
+                LOG.debug('Copying disk "%(disk_file)s" to '
+                          '"%(dest_path)s"',
+                          {'disk_file': disk_file, 'dest_path': dest_path})
+                self._pathutils.copy(disk_file, dest_path)
 
             self._pathutils.move_folder_files(instance_path, revert_path)
 
@@ -186,7 +184,7 @@ class MigrationOps(object):
         self._check_ephemeral_disks(instance, ephemerals)
 
         self._vmops.create_instance(instance, network_info, root_device,
-                                    block_device_info, vm_gen)
+                                    block_device_info, vm_gen, image_meta)
 
         self._check_and_attach_config_drive(instance, vm_gen)
 
@@ -295,7 +293,7 @@ class MigrationOps(object):
         self._check_ephemeral_disks(instance, ephemerals, resize_instance)
 
         self._vmops.create_instance(instance, network_info, root_device,
-                                    block_device_info, vm_gen)
+                                    block_device_info, vm_gen, image_meta)
 
         self._check_and_attach_config_drive(instance, vm_gen)
 

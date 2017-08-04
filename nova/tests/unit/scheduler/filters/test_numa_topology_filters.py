@@ -11,13 +11,13 @@
 #    under the License.
 
 import itertools
-import uuid
 
 from nova import objects
 from nova.objects import fields
 from nova.scheduler.filters import numa_topology_filter
 from nova import test
 from nova.tests.unit.scheduler import fakes
+from nova.tests import uuidsentinel as uuids
 
 
 class TestNUMATopologyFilter(test.NoDBTestCase):
@@ -30,7 +30,7 @@ class TestNUMATopologyFilter(test.NoDBTestCase):
         image_meta = objects.ImageMeta(properties=objects.ImageMetaProps())
         spec_obj = objects.RequestSpec(numa_topology=numa_topology,
                                        pci_requests=None,
-                                       instance_uuid=str(uuid.uuid4()),
+                                       instance_uuid=uuids.fake,
                                        flavor=objects.Flavor(extra_specs={}),
                                        image=image_meta)
         return spec_obj
@@ -129,7 +129,7 @@ class TestNUMATopologyFilter(test.NoDBTestCase):
                ])
         spec_obj = objects.RequestSpec(numa_topology=instance_topology,
                                        pci_requests=None,
-                                       instance_uuid=str(uuid.uuid4()))
+                                       instance_uuid=uuids.fake)
 
         extra_specs = [
             {},
@@ -178,10 +178,10 @@ class TestNUMATopologyFilter(test.NoDBTestCase):
     def test_numa_topology_filter_pass_cpu_thread_policy_require(self):
         cpu_policy = fields.CPUAllocationPolicy.DEDICATED
         cpu_thread_policy = fields.CPUThreadAllocationPolicy.REQUIRE
-        numa_topology = fakes.NUMA_TOPOLOGY_W_HT
 
-        self._do_test_numa_topology_filter_cpu_policy(
-            numa_topology, cpu_policy, cpu_thread_policy, True)
+        for numa_topology in fakes.NUMA_TOPOLOGIES_W_HT:
+            self._do_test_numa_topology_filter_cpu_policy(
+                numa_topology, cpu_policy, cpu_thread_policy, True)
 
     def test_numa_topology_filter_pass_cpu_thread_policy_others(self):
         cpu_policy = fields.CPUAllocationPolicy.DEDICATED

@@ -102,6 +102,7 @@ CONF = nova.conf.CONF
 FAKE_IMAGE_REF = uuids.image_ref
 
 NODENAME = 'fakenode1'
+NODENAME2 = 'fakenode2'
 
 
 def fake_not_implemented(*args, **kwargs):
@@ -149,8 +150,7 @@ class BaseTestCase(test.TestCase):
     def setUp(self):
         super(BaseTestCase, self).setUp()
         self.flags(network_manager='nova.network.manager.FlatManager')
-        fake.set_nodes([NODENAME])
-        self.flags(use_local=True, group='conductor')
+        fake.set_nodes([NODENAME, NODENAME2])
 
         fake_notifier.stub_notifier(self)
         self.addCleanup(fake_notifier.reset)
@@ -330,13 +330,6 @@ class BaseTestCase(test.TestCase):
                   'user_id': self.user_id,
                   'project_id': self.project_id}
         return db.security_group_create(self.context, values)
-
-    def _stub_migrate_server(self):
-        def _fake_migrate_server(*args, **kwargs):
-            pass
-
-        self.stub_out('nova.conductor.manager.ComputeTaskManager'
-                      '.migrate_server', _fake_migrate_server)
 
     def _init_aggregate_with_host(self, aggr, aggr_name, zone, host):
         if not aggr:
@@ -2051,7 +2044,8 @@ class ComputeTestCase(BaseTestCase):
         instance = db.instance_get_by_uuid(self.context, instance['uuid'])
         self.assertEqual(instance['vm_state'], vm_states.ERROR)
 
-    def test_stop(self):
+    @mock.patch('nova.compute.utils.notify_about_instance_action')
+    def test_stop(self, mock_notify):
         # Ensure instance can be stopped.
         instance = self._create_fake_instance_obj()
         self.compute.build_and_run_instance(self.context, instance, {}, {},
@@ -2065,6 +2059,11 @@ class ComputeTestCase(BaseTestCase):
                                                 expected_attrs=extra)
         self.compute.stop_instance(self.context, instance=inst_obj,
                                    clean_shutdown=True)
+        mock_notify.assert_has_calls([
+            mock.call(self.context, inst_obj, 'fake-mini', action='power_off',
+                      phase='start'),
+            mock.call(self.context, inst_obj, 'fake-mini', action='power_off',
+                      phase='end')])
         self.compute.terminate_instance(self.context, instance, [], [])
 
     @mock.patch('nova.compute.utils.notify_about_instance_action')
@@ -2423,6 +2422,7 @@ class ComputeTestCase(BaseTestCase):
                          'compute.instance.pause.end')
         instance.task_state = task_states.UNPAUSING
         instance.save()
+        mock_notify.reset_mock()
         fake_notifier.NOTIFICATIONS = []
         self.compute.unpause_instance(self.context, instance=instance)
         self.assertEqual(len(fake_notifier.NOTIFICATIONS), 2)
@@ -2432,6 +2432,11 @@ class ComputeTestCase(BaseTestCase):
         msg = fake_notifier.NOTIFICATIONS[1]
         self.assertEqual(msg.event_type,
                          'compute.instance.unpause.end')
+        mock_notify.assert_has_calls([
+            mock.call(ctxt, instance, 'fake-mini',
+                      action='unpause', phase='start'),
+            mock.call(ctxt, instance, 'fake-mini',
+                      action='unpause', phase='end')])
         self.compute.terminate_instance(self.context, instance, [], [])
 
     @mock.patch('nova.compute.utils.notify_about_instance_action')
@@ -2518,8 +2523,12 @@ class ComputeTestCase(BaseTestCase):
 
         self.compute.terminate_instance(self.context, instance, [], [])
 
-    def test_resume_notifications(self):
+    @mock.patch.object(nova.compute.utils, 'notify_about_instance_action')
+    @mock.patch('nova.context.RequestContext.elevated')
+    def test_resume_notifications(self, mock_context, mock_notify):
         # ensure instance can be suspended and resumed.
+        context = self.context
+        mock_context.return_value = context
         instance = self._create_fake_instance_obj()
         self.compute.build_and_run_instance(self.context, instance, {}, {}, {},
                                             block_device_mapping=[])
@@ -2536,6 +2545,11 @@ class ComputeTestCase(BaseTestCase):
         msg = fake_notifier.NOTIFICATIONS[5]
         self.assertEqual(msg.event_type,
                          'compute.instance.resume.end')
+        mock_notify.assert_has_calls([
+            mock.call(context, instance, 'fake-mini',
+                      action='resume', phase='start'),
+            mock.call(context, instance, 'fake-mini',
+                      action='resume', phase='end')])
         self.compute.terminate_instance(self.context, instance, [], [])
 
     def test_resume_no_old_state(self):
@@ -4061,29 +4075,6 @@ class ComputeTestCase(BaseTestCase):
                 bind_host_id=self.compute.host)
         mock_mac.assert_called_once_with(test.MatchType(instance_obj.Instance))
 
-    def _create_server_group(self, policies, instance_host):
-        group_instance = self._create_fake_instance_obj(
-                params=dict(host=instance_host))
-
-        instance_group = objects.InstanceGroup(self.context)
-        instance_group.user_id = self.user_id
-        instance_group.project_id = self.project_id
-        instance_group.name = 'messi'
-        instance_group.uuid = str(uuid.uuid4())
-        instance_group.members = [group_instance.uuid]
-        instance_group.policies = policies
-        fake_notifier.NOTIFICATIONS = []
-        instance_group.create()
-        self.assertEqual(1, len(fake_notifier.NOTIFICATIONS))
-        msg = fake_notifier.NOTIFICATIONS[0]
-        self.assertEqual(instance_group.name, msg.payload['name'])
-        self.assertEqual(instance_group.members, msg.payload['members'])
-        self.assertEqual(instance_group.policies, msg.payload['policies'])
-        self.assertEqual(instance_group.project_id, msg.payload['project_id'])
-        self.assertEqual(instance_group.uuid, msg.payload['uuid'])
-        self.assertEqual('servergroup.create', msg.event_type)
-        return instance_group
-
     def test_instance_set_to_error_on_uncaught_exception(self):
         # Test that instance is set to error state when exception is raised.
         instance = self._create_fake_instance_obj()
@@ -5461,6 +5452,10 @@ class ComputeTestCase(BaseTestCase):
             self.context.elevated(), instance.uuid)
         self.assertIsInstance(migration_context.old_numa_topology,
                               numa_topology.__class__)
+        source_compute = migration.source_compute
+        migration.dest_compute = NODENAME2
+        migration.dest_node = NODENAME2
+        migration.save()
 
         # NOTE(mriedem): ensure prep_resize set old_vm_state in system_metadata
         sys_meta = instance.system_metadata
@@ -5501,6 +5496,12 @@ class ComputeTestCase(BaseTestCase):
             instance.system_metadata = sys_meta
             instance.save()
 
+        # NOTE(hanrong): Prove that we pass the right value to the
+        # "self.network_api.migrate_instance_finish".
+        def fake_migrate_instance_finish(cls, context, instance, migration):
+            self.assertEqual(source_compute, migration['dest_compute'])
+        self.stub_out('nova.network.api.API.migrate_instance_finish',
+                      fake_migrate_instance_finish)
         self.compute.finish_revert_resize(self.context,
                 migration=migration,
                 instance=instance, reservations=reservations)
@@ -5511,7 +5512,10 @@ class ComputeTestCase(BaseTestCase):
                                           instance['instance_type_id'])
         self.assertEqual(flavor.flavorid, '1')
         self.assertEqual(instance.host, migration.source_compute)
-        self.assertEqual(migration.dest_compute, migration.source_compute)
+        self.assertNotEqual(migration.dest_compute, migration.source_compute)
+        self.assertNotEqual(migration.dest_node, migration.source_node)
+        self.assertEqual(NODENAME2, migration.dest_compute)
+        self.assertEqual(NODENAME2, migration.dest_node)
         self.assertIsInstance(instance.numa_topology, numa_topology.__class__)
 
         if remove_old_vm_state:
@@ -5870,6 +5874,57 @@ class ComputeTestCase(BaseTestCase):
             self.assertEqual('completed', migration_obj.status)
             mig_save.assert_called_once_with()
 
+    def test_post_live_migration_exc_on_dest_works_correctly(self):
+        """Confirm that post_live_migration() completes successfully
+        even after post_live_migration_at_destination() raises an exception.
+        """
+        dest = 'desthost'
+        srchost = self.compute.host
+
+        # creating testdata
+        c = context.get_admin_context()
+        instance = self._create_fake_instance_obj({
+                                        'host': srchost,
+                                        'state_description': 'migrating',
+                                        'state': power_state.PAUSED},
+                                                  context=c)
+
+        instance.update({'task_state': task_states.MIGRATING,
+                        'power_state': power_state.PAUSED})
+        instance.save()
+
+        migration_obj = objects.Migration()
+        migrate_data = migrate_data_obj.LiveMigrateData(
+            migration=migration_obj)
+
+        # creating mocks
+        with test.nested(
+            mock.patch.object(self.compute.driver, 'post_live_migration'),
+            mock.patch.object(self.compute.driver, 'unfilter_instance'),
+            mock.patch.object(self.compute.network_api,
+                              'migrate_instance_start'),
+            mock.patch.object(self.compute.compute_rpcapi,
+                              'post_live_migration_at_destination',
+                              side_effect=Exception),
+            mock.patch.object(self.compute.driver,
+                              'post_live_migration_at_source'),
+            mock.patch.object(self.compute.network_api,
+                              'setup_networks_on_host'),
+            mock.patch.object(self.compute.instance_events,
+                              'clear_events_for_instance'),
+            mock.patch.object(self.compute, 'update_available_resource'),
+            mock.patch.object(migration_obj, 'save'),
+        ) as (
+            post_live_migration, unfilter_instance,
+            migrate_instance_start, post_live_migration_at_destination,
+            post_live_migration_at_source, setup_networks_on_host,
+            clear_events, update_available_resource, mig_save
+        ):
+            self.compute._post_live_migration(c, instance, dest,
+                                              migrate_data=migrate_data)
+            update_available_resource.assert_has_calls([mock.call(c)])
+            self.assertEqual('completed', migration_obj.status)
+
     def test_post_live_migration_terminate_volume_connections(self):
         c = context.get_admin_context()
         instance = self._create_fake_instance_obj({
@@ -5933,7 +5988,6 @@ class ComputeTestCase(BaseTestCase):
         def _test(mock_nw_api, mock_lmcf):
             mock_lmcf.return_value = False, False
             self.compute._rollback_live_migration(c, instance, 'foo',
-                                                  False,
                                                   migrate_data=migrate_data)
             mock_nw_api.setup_networks_on_host.assert_called_once_with(
                 c, instance, self.compute.host)
@@ -5957,7 +6011,6 @@ class ComputeTestCase(BaseTestCase):
         def _test(mock_nw_api, mock_lmcf):
             mock_lmcf.return_value = False, False
             self.compute._rollback_live_migration(c, instance, 'foo',
-                                                  False,
                                                   migrate_data=migrate_data,
                                                   migration_status='fake')
             mock_nw_api.setup_networks_on_host.assert_called_once_with(
@@ -7753,7 +7806,7 @@ class ComputeAPITestCase(BaseTestCase):
                 self.context,
                 instance_type=flavors.get_default_flavor(),
                 image_href=uuids.image_href_id,
-                security_group=['testgroup'])
+                security_groups=['testgroup'])
 
         groups_for_instance = db.security_group_get_by_instance(
                          self.context, ref[0]['uuid'])
@@ -7773,7 +7826,7 @@ class ComputeAPITestCase(BaseTestCase):
                           self.context,
                           instance_type=instance_type,
                           image_href=None,
-                          security_group=['this_is_a_fake_sec_group'])
+                          security_groups=['this_is_a_fake_sec_group'])
         self.assertEqual(pre_build_len,
                          len(db.instance_get_all(self.context)))
 
@@ -7869,7 +7922,8 @@ class ComputeAPITestCase(BaseTestCase):
 
             self.assertEqual(ref[0]['hostname'], hostname)
 
-    def test_instance_create_adds_to_instance_group(self):
+    @mock.patch('nova.compute.api.API._get_requested_instance_group')
+    def test_instance_create_adds_to_instance_group(self, get_group_mock):
         self.stub_out('nova.tests.unit.image.fake._FakeImageService.show',
                       self.fake_show)
 
@@ -7878,11 +7932,13 @@ class ComputeAPITestCase(BaseTestCase):
         group.project_id = self.context.project_id
         group.user_id = self.context.user_id
         group.create()
+        get_group_mock.return_value = group
 
         inst_type = flavors.get_default_flavor()
         (refs, resv_id) = self.compute_api.create(
             self.context, inst_type, self.fake_image['id'],
             scheduler_hints={'group': group.uuid})
+        self.assertEqual(len(refs), len(group.members))
 
         group = objects.InstanceGroup.get_by_uuid(self.context, group.uuid)
         self.assertIn(refs[0]['uuid'], group.members)
@@ -7909,7 +7965,7 @@ class ComputeAPITestCase(BaseTestCase):
                 self.context,
                 instance_type=flavors.get_default_flavor(),
                 image_href=uuids.image_href_id,
-                security_group=['testgroup'])
+                security_groups=['testgroup'])
 
         db.instance_destroy(self.context, ref[0]['uuid'])
         group = db.security_group_get(self.context, group['id'],
@@ -7924,7 +7980,7 @@ class ComputeAPITestCase(BaseTestCase):
                 self.context,
                 instance_type=flavors.get_default_flavor(),
                 image_href=uuids.image_href_id,
-                security_group=['testgroup'])
+                security_groups=['testgroup'])
 
         db.security_group_destroy(self.context, group['id'])
         admin_deleted_context = context.get_admin_context(
@@ -10256,9 +10312,11 @@ class ComputeAPIIpFilterTestCase(test.NoDBTestCase):
                 expected_ids = expected_ids[:expected_len]
             self.assertEqual(expected_ids, [inst.id for inst in insts])
 
+    @mock.patch.object(objects.BuildRequestList, 'get_by_filters')
     @mock.patch.object(objects.CellMapping, 'get_by_uuid',
                        side_effect=exception.CellMappingNotFound(uuid='fake'))
-    def test_ip_filtering_no_limit_to_db(self, _mock_cell_map_get):
+    def test_ip_filtering_no_limit_to_db(self, _mock_cell_map_get,
+                                         mock_buildreq_get):
         c = context.get_admin_context()
         # Limit is not supplied to the DB when using an IP filter
         with mock.patch('nova.objects.InstanceList.get_by_filters') as m_get:
@@ -10268,9 +10326,11 @@ class ComputeAPIIpFilterTestCase(test.NoDBTestCase):
             kwargs = m_get.call_args[1]
             self.assertIsNone(kwargs['limit'])
 
+    @mock.patch.object(objects.BuildRequestList, 'get_by_filters')
     @mock.patch.object(objects.CellMapping, 'get_by_uuid',
                        side_effect=exception.CellMappingNotFound(uuid='fake'))
-    def test_ip_filtering_pass_limit_to_db(self, _mock_cell_map_get):
+    def test_ip_filtering_pass_limit_to_db(self, _mock_cell_map_get,
+                                           mock_buildreq_get):
         c = context.get_admin_context()
         # No IP filter, verify that the limit is passed
         with mock.patch('nova.objects.InstanceList.get_by_filters') as m_get:
@@ -10994,8 +11054,8 @@ class DisabledInstanceTypesTestCase(BaseTestCase):
         self.stub_out('nova.compute.flavors.get_flavor_by_flavor_id',
                        fake_get_flavor_by_flavor_id)
 
-        self._stub_migrate_server()
-        self.compute_api.resize(self.context, instance, '4')
+        with mock.patch('nova.conductor.api.ComputeTaskAPI.resize_instance'):
+            self.compute_api.resize(self.context, instance, '4')
 
     def test_cannot_resize_to_disabled_instance_type(self):
         instance = self._create_fake_instance_obj()

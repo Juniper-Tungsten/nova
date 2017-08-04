@@ -397,7 +397,8 @@ class VMwareVMOps(object):
             host, cookies = self._get_esx_host_and_cookies(vi.datastore,
                 dc_path, image_ds_loc.rel_path)
         except Exception as e:
-            LOG.warning(_LW("Get esx cookies failed: %s"), e)
+            LOG.warning(_LW("Get esx cookies failed: %s"), e,
+                        instance=vi.instance)
             dc_path = vutil.get_inventory_path(session.vim, vi.dc_info.ref)
 
             host = self._session._host
@@ -1083,7 +1084,7 @@ class VMwareVMOps(object):
             except Exception as excep:
                 LOG.warning(_LW("In vmwareapi:vmops:_destroy_instance, got "
                                 "this exception while un-registering the VM: "
-                                "%s"), excep)
+                                "%s"), excep, instance=instance)
             # Delete the folder holding the VM related content on
             # the datastore.
             if destroy_disks and vm_ds_path:
@@ -1106,7 +1107,8 @@ class VMwareVMOps(object):
                 except Exception:
                     LOG.warning(_LW("In vmwareapi:vmops:_destroy_instance, "
                                     "exception while deleting the VM contents "
-                                    "from the disk"), exc_info=True)
+                                    "from the disk"),
+                                exc_info=True, instance=instance)
         except exception.InstanceNotFound:
             LOG.warning(_LW('Instance does not exist on backend'),
                         instance=instance)
@@ -1741,7 +1743,7 @@ class VMwareVMOps(object):
         except exception.InstanceNotFound:
             return False
 
-    def attach_interface(self, instance, image_meta, vif):
+    def attach_interface(self, context, instance, image_meta, vif):
         """Attach an interface to the instance."""
         vif_model = image_meta.properties.get('hw_vif_model',
                                               constants.DEFAULT_VIF_MODEL)
@@ -1771,13 +1773,12 @@ class VMwareVMOps(object):
                 raise exception.InterfaceAttachFailed(
                         instance_uuid=instance.uuid)
 
-            context = nova_context.get_admin_context()
             self._network_api.update_instance_vnic_index(
                 context, instance, vif, port_index)
 
         LOG.debug("Reconfigured VM to attach interface", instance=instance)
 
-    def detach_interface(self, instance, vif):
+    def detach_interface(self, context, instance, vif):
         """Detach an interface from the instance."""
         vm_ref = vm_util.get_vm_ref(self._session, instance)
         # Ensure that there is not a race with the port index management
@@ -1803,7 +1804,6 @@ class VMwareVMOps(object):
                         "VM") % vif['address']
                 raise exception.NotFound(msg)
 
-            context = nova_context.get_admin_context()
             self._network_api.update_instance_vnic_index(
                 context, instance, vif, None)
 
@@ -1888,7 +1888,8 @@ class VMwareVMOps(object):
                             str(sized_disk_ds_loc))
                 except Exception as e:
                     LOG.warning(_LW("Root disk file creation "
-                                    "failed - %s"), e)
+                                    "failed - %s"),
+                                e, instance=vi.instance)
                     with excutils.save_and_reraise_exception():
                         LOG.error(_LE('Failed to copy cached '
                                       'image %(source)s to '
@@ -1896,7 +1897,8 @@ class VMwareVMOps(object):
                                       '%(error)s'),
                                   {'source': vi.cache_image_path,
                                    'dest': sized_disk_ds_loc,
-                                   'error': e})
+                                   'error': e},
+                                  instance=vi.instance)
                         try:
                             ds_util.file_delete(self._session,
                                                 sized_disk_ds_loc,

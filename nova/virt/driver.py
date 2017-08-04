@@ -35,17 +35,6 @@ CONF = nova.conf.CONF
 LOG = logging.getLogger(__name__)
 
 
-def driver_dict_from_config(named_driver_config, *args, **kwargs):
-    driver_registry = dict()
-
-    for driver_str in named_driver_config:
-        driver_type, _sep, driver = driver_str.partition('=')
-        driver_class = importutils.import_class(driver)
-        driver_registry[driver_type] = driver_class(*args, **kwargs)
-
-    return driver_registry
-
-
 def get_block_device_info(instance, block_device_mapping):
     """Converts block device mappings for an instance to driver format.
 
@@ -489,11 +478,12 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def attach_interface(self, instance, image_meta, vif):
+    def attach_interface(self, context, instance, image_meta, vif):
         """Use hotplug to add a network interface to a running instance.
 
         The counter action to this is :func:`detach_interface`.
 
+        :param context: The request context.
         :param nova.objects.instance.Instance instance:
             The instance which will get an additional network interface.
         :param nova.objects.ImageMeta image_meta:
@@ -507,11 +497,12 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
-    def detach_interface(self, instance, vif):
+    def detach_interface(self, context, instance, vif):
         """Use hotunplug to remove a network interface from a running instance.
 
         The counter action to this is :func:`attach_interface`.
 
+        :param context: The request context.
         :param nova.objects.instance.Instance instance:
             The instance which gets a network interface removed.
         :param nova.network.model.NetworkInfo vif:
@@ -557,6 +548,12 @@ class ComputeDriver(object):
         :param instance: nova.objects.instance.Instance
         :param image_id: Reference to a pre-created image that will
                          hold the snapshot.
+        :param update_task_state: Callback function to update the task_state
+            on the instance while the snapshot operation progresses. The
+            function takes a task_state argument and an optional
+            expected_task_state kwarg which defaults to
+            nova.compute.task_states.IMAGE_SNAPSHOT. See
+            nova.objects.instance.Instance.save for expected_task_state usage.
         """
         raise NotImplementedError()
 

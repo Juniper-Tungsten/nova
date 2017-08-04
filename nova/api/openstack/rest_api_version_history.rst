@@ -104,8 +104,8 @@ user documentation.
 2.9
 ---
 
-  Add a new ``locked`` attribute to the detailed view of
-  servers. ``locked`` will be ``true`` if anyone is currently holding
+  Add a new ``locked`` attribute to the detailed view, update,
+  and rebuild action. ``locked`` will be ``true`` if anyone is currently holding
   a lock on the server, ``false`` otherwise.
 
 2.10
@@ -406,8 +406,8 @@ user documentation.
   Also, the ``uuid`` field in the ``networks`` object in the server create
   request is now strictly enforced to be in UUID format.
 
-2.38
-----
+2.38 (Maximum in Newton)
+------------------------
 
   Before version 2.38, the command ``nova list --status invalid_status`` was
   returning empty list for non admin user and 500 InternalServerError for admin

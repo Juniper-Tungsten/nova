@@ -139,13 +139,8 @@ A config option should be checked for:
   (e.g. timeouts or so) describe the unit which is used (seconds, megabyte,
   mebibyte, ...).
 
-* A long description which shows the impact and scope. The operators should
+* A long description which explains the impact and scope. The operators should
   know the expected change in the behavior of Nova if they tweak this.
-
-* Hints which services will consume this config option. Operators/Deployers
-  should not be forced to read the code to know which one of the services will
-  change its behavior nor should they set this in every ``nova.conf`` file to
-  be sure.
 
 * Descriptions/Validations for the possible values.
 
@@ -155,8 +150,10 @@ A config option should be checked for:
     * If this is a StrOpt, list any possible regex validations, or provide a
       list of acceptable and/or prohibited values.
 
-* Interdependencies to other options. If other config options have to be
-  considered when this config option gets changed, is this described?
+Previously used sections which explained which services consume a specific
+config option and which options are related to each other got dropped
+because they are too hard to maintain:
+http://lists.openstack.org/pipermail/openstack-dev/2016-May/095538.html
 
 Third Party Tests
 =================
@@ -197,6 +194,35 @@ Please note:
   a third party test to report in a timely manner should not block others.
 * We are only talking about the testing of in-tree code. Please note the only
   public API is our REST API, see: :doc:`policies`
+
+Should I run the experimental queue jobs on this change?
+========================================================
+
+Because we can't run all CI jobs in the check and gate pipelines, some
+jobs can be executed on demand, thanks to the experimental pipeline.
+To run the experimental jobs, you need to comment your Gerrit review
+with "check experimental".
+
+The experimental jobs aim to test specific features, such as LXC containers
+or DVR with multiple nodes.  Also, it might be useful to run them when
+we want to test backward compatibility with tools that deploy OpenStack
+outside Devstack (e.g. TripleO, etc).  They can produce a non-voting
+feedback of whether the system continues to work when we deprecate
+or remove some options or features in Nova.
+
+The experimental queue can also be used to test that new CI jobs are
+correct before making them voting.
+
+Database Schema
+===============
+
+* Use the ``utf8`` charset only where necessary. Some string fields, such as
+  hex-stringified UUID values, MD5 fingerprints, SHA1 hashes or base64-encoded
+  data, are always interpreted using ASCII encoding. A hex-stringified UUID
+  value in ``latin1`` is 1/3 the size of the same field in ``utf8``, impacting
+  performance without bringing any benefit. If there are no string type columns
+  in the table, or the string type columns contain **only** the data described
+  above, then stick with ``latin1``.
 
 Microversion API
 ================

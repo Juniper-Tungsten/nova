@@ -65,8 +65,11 @@ class ServerExternalEventsController(wsgi.Controller):
             instance = instances.get(event.instance_uuid)
             if not instance:
                 try:
+                    # Load migration_context here in a single DB operation
+                    # because we need it later on
                     instance = objects.Instance.get_by_uuid(
-                        context, event.instance_uuid)
+                        context, event.instance_uuid,
+                        expected_attrs='migration_context')
                     instances[event.instance_uuid] = instance
                 except exception.InstanceNotFound:
                     LOG.debug('Dropping event %(name)s:%(tag)s for unknown '
@@ -85,9 +88,10 @@ class ServerExternalEventsController(wsgi.Controller):
                     accepted_events.append(event)
                     accepted_instances.add(instance)
                     LOG.info(_LI('Creating event %(name)s:%(tag)s for '
-                                 'instance %(instance_uuid)s'),
+                                 'instance %(instance_uuid)s on %(host)s'),
                               {'name': event.name, 'tag': event.tag,
-                               'instance_uuid': event.instance_uuid})
+                               'instance_uuid': event.instance_uuid,
+                               'host': instance.host})
                     # NOTE: as the event is processed asynchronously verify
                     # whether 202 is a more suitable response code than 200
                     _event['status'] = 'completed'

@@ -762,7 +762,7 @@ class Host(object):
 
         xml = secret_conf.to_xml()
         try:
-            LOG.debug('Secret XML: %s' % xml)
+            LOG.debug('Secret XML: %s', xml)
             conn = self.get_connection()
             secret = conn.secretDefineXML(xml)
             if password is not None:
@@ -855,9 +855,10 @@ class Host(object):
 
         :param xml: XML domain definition of the guest.
 
-        :returns: a virDomain instance
+        :returns: an instance of Guest
         """
-        return self.get_connection().defineXML(xml)
+        domain = self.get_connection().defineXML(xml)
+        return libvirt_guest.Guest(domain)
 
     def device_lookup_by_name(self, name):
         """Lookup a node device by its name.
@@ -894,10 +895,3 @@ class Host(object):
                 return False
         except IOError:
             return False
-
-    def is_migratable_xml_flag(self):
-        """Determines whether libvirt is supporting dump XML suitable for
-        migration.
-        """
-        return getattr(libvirt, 'VIR_DOMAIN_XML_MIGRATABLE',
-                       None) is not None

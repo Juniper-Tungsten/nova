@@ -12,10 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import mock
 import os
 import time
 
+import mock
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 from oslo_utils import fixture as utils_fixture
@@ -69,7 +69,7 @@ class NotificationSampleTestBase(test.TestCase,
 
         self.useFixture(utils_fixture.TimeFixture(test_services.fake_utcnow()))
 
-        self.flags(scheduler_driver='nova.scheduler.chance.ChanceScheduler')
+        self.flags(driver='chance_scheduler', group='scheduler')
         # the image fake backend needed for image discovery
         nova.tests.unit.image.fake.stub_out_image_service(self)
         self.addCleanup(nova.tests.unit.image.fake.FakeImageService_reset)
@@ -152,9 +152,8 @@ class NotificationSampleTestBase(test.TestCase,
             image_uuid='155d900f-4e14-4e4c-a73d-069cbf4541e6',
             flavor_id=flavor_id)
 
-        extra_params['return_reservation_id'] = True
-
         if extra_params:
+            extra_params['return_reservation_id'] = True
             server.update(extra_params)
 
         post = {'server': server}

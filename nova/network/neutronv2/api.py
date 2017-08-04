@@ -16,7 +16,6 @@
 #
 
 import time
-import uuid
 
 from keystoneauth1 import loading as ks_loading
 from neutronclient.common import exceptions as neutron_client_exc
@@ -225,18 +224,6 @@ def _filter_hypervisor_macs(instance, ports, hypervisor_macs):
     return available_macs
 
 
-def get_pci_device_profile(pci_dev):
-    dev_spec = pci_whitelist.get_pci_device_devspec(pci_dev)
-    if dev_spec:
-        return {'pci_vendor_info': "%s:%s" %
-                    (pci_dev.vendor_id, pci_dev.product_id),
-                'pci_slot': pci_dev.address,
-                'physical_network':
-                    dev_spec.get_tags().get('physical_network')}
-    raise exception.PciDeviceNotFound(node_id=pci_dev.compute_node_id,
-                                      address=pci_dev.address)
-
-
 class API(base_api.NetworkAPI):
     """API for interacting with the neutron 2.x API."""
 
@@ -244,6 +231,8 @@ class API(base_api.NetworkAPI):
         super(API, self).__init__()
         self.last_neutron_extension_sync = None
         self.extensions = {}
+        self.pci_whitelist = pci_whitelist.Whitelist(
+            CONF.pci.passthrough_whitelist)
 
     def _update_port_with_migration_profile(
             self, instance, port_id, port_profile, admin_client):
@@ -1026,8 +1015,18 @@ class API(base_api.NetworkAPI):
             self._refresh_neutron_extensions_cache(context, neutron=neutron)
         return constants.AUTO_ALLOCATE_TOPO_EXT in self.extensions
 
-    @staticmethod
-    def _populate_neutron_binding_profile(instance, pci_request_id,
+    def _get_pci_device_profile(self, pci_dev):
+        dev_spec = self.pci_whitelist.get_devspec(pci_dev)
+        if dev_spec:
+            return {'pci_vendor_info': "%s:%s" %
+                        (pci_dev.vendor_id, pci_dev.product_id),
+                    'pci_slot': pci_dev.address,
+                    'physical_network':
+                        dev_spec.get_tags().get('physical_network')}
+        raise exception.PciDeviceNotFound(node_id=pci_dev.compute_node_id,
+                                          address=pci_dev.address)
+
+    def _populate_neutron_binding_profile(self, instance, pci_request_id,
                                           port_req_body):
         """Populate neutron binding:profile.
 
@@ -1036,7 +1035,7 @@ class API(base_api.NetworkAPI):
         if pci_request_id:
             pci_dev = pci_manager.get_instance_pci_devs(
                 instance, pci_request_id).pop()
-            profile = get_pci_device_profile(pci_dev)
+            profile = self._get_pci_device_profile(pci_dev)
             port_req_body['port']['binding:profile'] = profile
 
     @staticmethod
@@ -1444,7 +1443,7 @@ class API(base_api.NetworkAPI):
                 request = objects.InstancePCIRequest(
                     count=1,
                     spec=[spec],
-                    request_id=str(uuid.uuid4()))
+                    request_id=uuidutils.generate_uuid())
                 pci_requests.requests.append(request)
                 pci_request_id = request.request_id
 
@@ -2353,9 +2352,9 @@ class API(base_api.NetworkAPI):
         if old_pci_devices and new_pci_devices:
             LOG.debug("Determining PCI devices mapping using migration"
                       "context: old_pci_devices: %(old)s, "
-                      "new_pci_devices: %(new)s" %
+                      "new_pci_devices: %(new)s",
                       {'old': [dev for dev in old_pci_devices],
-                      'new': [dev for dev in new_pci_devices]})
+                       'new': [dev for dev in new_pci_devices]})
             return {old.address: new
                     for old in old_pci_devices
                         for new in new_pci_devices
@@ -2399,7 +2398,8 @@ class API(base_api.NetworkAPI):
                 pci_slot = binding_profile.get('pci_slot')
                 new_dev = pci_mapping.get(pci_slot)
                 if new_dev:
-                    binding_profile.update(get_pci_device_profile(new_dev))
+                    binding_profile.update(
+                        self._get_pci_device_profile(new_dev))
                     updates[BINDING_PROFILE] = binding_profile
                 else:
                     raise exception.PortUpdateFailed(port_id=p['id'],

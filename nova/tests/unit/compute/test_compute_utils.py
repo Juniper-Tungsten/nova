@@ -38,6 +38,7 @@ from nova.network import model
 from nova import objects
 from nova.objects import base
 from nova.objects import block_device as block_device_obj
+from nova.objects import fields
 from nova import rpc
 from nova import test
 from nova.tests.unit import fake_block_device
@@ -397,7 +398,6 @@ class UsageInfoTestCase(test.TestCase):
         fake_notifier.stub_notifier(self)
         self.addCleanup(fake_notifier.reset)
 
-        self.flags(use_local=True, group='conductor')
         self.flags(compute_driver='fake.FakeDriver',
                    network_manager='nova.network.manager.FlatManager')
         self.compute = importutils.import_object(CONF.compute_manager)
@@ -518,6 +518,96 @@ class UsageInfoTestCase(test.TestCase):
             self.assertIn(attr, payload, "Key %s not in payload" % attr)
 
         self.assertEqual(payload['image_uuid'], uuids.fake_image_ref)
+
+    def test_notify_about_volume_swap(self):
+        instance = create_instance(self.context)
+
+        compute_utils.notify_about_volume_swap(
+            self.context, instance, 'fake-compute',
+            fields.NotificationAction.VOLUME_SWAP,
+            fields.NotificationPhase.START,
+            uuids.old_volume_id, uuids.new_volume_id)
+
+        self.assertEqual(len(fake_notifier.VERSIONED_NOTIFICATIONS), 1)
+        notification = fake_notifier.VERSIONED_NOTIFICATIONS[0]
+
+        self.assertEqual('INFO', notification['priority'])
+        self.assertEqual('instance.%s.%s' %
+                         (fields.NotificationAction.VOLUME_SWAP,
+                          fields.NotificationPhase.START),
+                         notification['event_type'])
+        self.assertEqual('nova-compute:fake-compute',
+                         notification['publisher_id'])
+
+        payload = notification['payload']['nova_object.data']
+        self.assertEqual(self.project_id, payload['tenant_id'])
+        self.assertEqual(self.user_id, payload['user_id'])
+        self.assertEqual(instance['uuid'], payload['uuid'])
+
+        flavorid = flavors.get_flavor_by_name('m1.tiny')['flavorid']
+        flavor = payload['flavor']['nova_object.data']
+        self.assertEqual(flavorid, str(flavor['flavorid']))
+
+        for attr in ('display_name', 'created_at', 'launched_at',
+                     'state', 'task_state'):
+            self.assertIn(attr, payload)
+
+        self.assertEqual(uuids.fake_image_ref, payload['image_uuid'])
+
+        self.assertEqual(uuids.old_volume_id, payload['old_volume_id'])
+        self.assertEqual(uuids.new_volume_id, payload['new_volume_id'])
+
+    def test_notify_about_volume_swap_with_error(self):
+        instance = create_instance(self.context)
+
+        try:
+            # To get exception trace, raise and catch an exception
+            raise test.TestingException('Volume swap error.')
+        except Exception as ex:
+            compute_utils.notify_about_volume_swap(
+                self.context, instance, 'fake-compute',
+                fields.NotificationAction.VOLUME_SWAP,
+                fields.NotificationPhase.ERROR,
+                uuids.old_volume_id, uuids.new_volume_id, ex)
+
+        self.assertEqual(len(fake_notifier.VERSIONED_NOTIFICATIONS), 1)
+        notification = fake_notifier.VERSIONED_NOTIFICATIONS[0]
+
+        self.assertEqual('ERROR', notification['priority'])
+        self.assertEqual('instance.%s.%s' %
+                         (fields.NotificationAction.VOLUME_SWAP,
+                          fields.NotificationPhase.ERROR),
+                         notification['event_type'])
+        self.assertEqual('nova-compute:fake-compute',
+                         notification['publisher_id'])
+
+        payload = notification['payload']['nova_object.data']
+        self.assertEqual(self.project_id, payload['tenant_id'])
+        self.assertEqual(self.user_id, payload['user_id'])
+        self.assertEqual(instance['uuid'], payload['uuid'])
+
+        flavorid = flavors.get_flavor_by_name('m1.tiny')['flavorid']
+        flavor = payload['flavor']['nova_object.data']
+        self.assertEqual(flavorid, str(flavor['flavorid']))
+
+        for attr in ('display_name', 'created_at', 'launched_at',
+                     'state', 'task_state'):
+            self.assertIn(attr, payload)
+
+        self.assertEqual(uuids.fake_image_ref, payload['image_uuid'])
+
+        self.assertEqual(uuids.old_volume_id, payload['old_volume_id'])
+        self.assertEqual(uuids.new_volume_id, payload['new_volume_id'])
+
+        # Check ExceptionPayload
+        exception_payload = payload['fault']['nova_object.data']
+        self.assertEqual('TestingException', exception_payload['exception'])
+        self.assertEqual('Volume swap error.',
+                         exception_payload['exception_message'])
+        self.assertEqual('test_notify_about_volume_swap_with_error',
+                         exception_payload['function_name'])
+        self.assertEqual('nova.tests.unit.compute.test_compute_utils',
+                         exception_payload['module_name'])
 
     def test_notify_usage_exists_instance_not_found(self):
         # Ensure 'exists' notification generates appropriate usage data.

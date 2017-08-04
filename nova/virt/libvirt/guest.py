@@ -120,14 +120,12 @@ class Guest(object):
         :returns guest.Guest: Guest ready to be launched
         """
         try:
-            # TODO(sahid): Host.write_instance_config should return
-            # an instance of Guest
-            domain = host.write_instance_config(xml)
+            guest = host.write_instance_config(xml)
         except Exception:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE('Error defining a domain with XML: %s'),
+                LOG.error(_LE('Error defining a guest with XML: %s'),
                           encodeutils.safe_decode(xml))
-        return cls(domain)
+        return guest
 
     def launch(self, pause=False):
         """Starts a created guest.
@@ -147,7 +145,7 @@ class Guest(object):
         """Stops a running guest."""
         self._domain.destroy()
 
-    def _sync_guest_time(self):
+    def sync_guest_time(self):
         """Try to set VM time to the current value.  This is typically useful
         when clock wasn't running on the VM for some time (e.g. during
         suspension or migration), especially if the time delay exceeds NTP
@@ -192,9 +190,8 @@ class Guest(object):
         self._domain.injectNMI()
 
     def resume(self):
-        """Resumes a suspended guest."""
+        """Resumes a paused guest."""
         self._domain.resume()
-        self._sync_guest_time()
 
     def enable_hairpin(self):
         """Enables hairpin mode for this guest."""
@@ -524,11 +521,12 @@ class Guest(object):
         """
         self._domain.suspend()
 
-    def migrate(self, destination, params=None, flags=0, domain_xml=None,
-                bandwidth=0):
+    def migrate(self, destination, migrate_uri=None, params=None, flags=0,
+                domain_xml=None, bandwidth=0):
         """Migrate guest object from its current host to the destination
 
         :param destination: URI of host destination where guest will be migrate
+        :param migrate_uri: URI for invoking the migration
         :param flags: May be one of more of the following:
            VIR_MIGRATE_LIVE Do not pause the VM during migration
            VIR_MIGRATE_PEER2PEER Direct connection between source &
@@ -564,11 +562,15 @@ class Guest(object):
                 destination, flags=flags, bandwidth=bandwidth)
         else:
             if params:
+                if migrate_uri:
+                    # In migrateToURI3 this paramenter is searched in
+                    # the `params` dict
+                    params['migrate_uri'] = migrate_uri
                 self._domain.migrateToURI3(
                     destination, params=params, flags=flags)
             else:
                 self._domain.migrateToURI2(
-                    destination, dxml=domain_xml,
+                    destination, miguri=migrate_uri, dxml=domain_xml,
                     flags=flags, bandwidth=bandwidth)
 
     def abort_job(self):
@@ -647,15 +649,24 @@ class BlockDevice(object):
     def get_job_info(self):
         """Returns information about job currently running
 
-        :returns: BlockDeviceJobInfo or None
+        :returns: BlockDeviceJobInfo, or None if no job exists
+        :raises: libvirt.libvirtError on error fetching block job info
         """
+
+        # libvirt's blockJobInfo() raises libvirt.libvirtError if there was an
+        # error. It returns {} if the job no longer exists, or a fully
+        # populated dict if the job exists.
         status = self._guest._domain.blockJobInfo(self._disk, flags=0)
-        if status != -1:
-            return BlockDeviceJobInfo(
-                job=status.get("type", 0),
-                bandwidth=status.get("bandwidth", 0),
-                cur=status.get("cur", 0),
-                end=status.get("end", 0))
+
+        # The job no longer exists
+        if not status:
+            return None
+
+        return BlockDeviceJobInfo(
+            job=status['type'],
+            bandwidth=status['bandwidth'],
+            cur=status['cur'],
+            end=status['end'])
 
     def rebase(self, base, shallow=False, reuse_ext=False,
                copy=False, relative=False):
@@ -689,39 +700,41 @@ class BlockDevice(object):
         """Resizes block device to Kib size."""
         self._guest._domain.blockResize(self._disk, size_kb)
 
-    def wait_for_job(self, abort_on_error=False, wait_for_job_clean=False):
-        """Wait for libvirt block job to complete.
+    def is_job_complete(self):
+        """Return True if the job is complete, False otherwise
 
-        Libvirt may return either cur==end or an empty dict when
-        the job is complete, depending on whether the job has been
-        cleaned up by libvirt yet, or not.
-        It can also return end=0 if qemu has not yet started the block
-        operation.
-
-        :param abort_on_error: Whether to stop process and raise NovaException
-                               on error (default: False)
-        :param wait_for_job_clean: Whether to force wait to ensure job is
-                                   finished (see bug: RH Bugzilla#1119173)
-
-        :returns: True if still in progress
-                  False if completed
+        :returns: True if the job is complete, False otherwise
+        :raises: libvirt.libvirtError on error fetching block job info
         """
+        # NOTE(mdbooth): This method polls for block job completion. It returns
+        # true if either we get a status which indicates completion, or there
+        # is no longer a record of the job. Ideally this method and its
+        # callers would be rewritten to consume libvirt events from the job.
+        # This would provide a couple of advantages. Firstly, as it would no
+        # longer be polling it would notice completion immediately rather than
+        # at the next 0.5s check, and would also consume fewer resources.
+        # Secondly, with the current method we only know that 'no job'
+        # indicates completion. It does not necessarily indicate successful
+        # completion: the job could have failed, or been cancelled. When
+        # polling for block job info we have no way to detect this, so we
+        # assume success.
+
         status = self.get_job_info()
-        if not status:
-            if abort_on_error:
-                msg = _('libvirt error while requesting blockjob info.')
-                raise exception.NovaException(msg)
-            return False
 
-        if wait_for_job_clean:
-            job_ended = status.job == 0
-        else:
-            # NOTE(slaweq): because of bug in libvirt, which is described in
-            # http://www.redhat.com/archives/libvir-list/2016-September/msg00017.html
-            # if status.end == 0 job is not started yet so it is not finished
-            job_ended = status.end != 0 and status.cur == status.end
+        # If the job no longer exists, it is because it has completed
+        # NOTE(mdbooth): See comment above: it may not have succeeded.
+        if status is None:
+            return True
 
-        return not job_ended
+        # NOTE(slaweq): because of bug in libvirt, which is described in
+        # http://www.redhat.com/archives/libvir-list/2016-September/msg00017.html
+        # if status.end == 0 job is not started yet so it is not finished
+        # NOTE(mdbooth): The fix was committed upstream here:
+        #   http://libvirt.org/git/?p=libvirt.git;a=commit;h=988218c
+        # The earliest tag which contains this commit is v2.3.0-rc1, so we
+        # should be able to remove this workaround when MIN_LIBVIRT_VERSION
+        # reaches 2.3.0, or we move to handling job events instead.
+        return status.end != 0 and status.cur == status.end
 
 
 class VCPUInfo(object):

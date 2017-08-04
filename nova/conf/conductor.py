@@ -1,6 +1,3 @@
-# needs:check_deprecation_status
-
-
 # Copyright (c) 2010 OpenStack Foundation
 # All Rights Reserved.
 #
@@ -29,21 +26,16 @@ and finally, how many worker processes will be used.
 )
 
 ALL_OPTS = [
-    cfg.BoolOpt(
-        'use_local',
-        default=False,
-        deprecated_for_removal=True,
-        help="""
-Perform nova-conductor operations locally. This legacy mode was
-introduced to bridge a gap during the transition to the conductor service.
-It no longer represents a reasonable alternative for deployers.
-
-Removal may be as early as 14.0.
-"""),
-    # TODO(macsz) deprecate this option
     cfg.StrOpt(
         'topic',
         default='conductor',
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+There is no need to let users choose the RPC topic for all services - there
+is little gain from this. Furthermore, it makes it really easy to break Nova
+by using this option.
+""",
         help="""
 Topic exchange name on which conductor nodes listen.
 """),
@@ -51,6 +43,7 @@ Topic exchange name on which conductor nodes listen.
         'manager',
         default='nova.conductor.manager.ConductorManager',
         deprecated_for_removal=True,
+        deprecated_since='13.0.0',
         help="""
 Full class name for the Manager for conductor.
 

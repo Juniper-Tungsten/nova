@@ -255,7 +255,7 @@ class OSType(BaseNovaEnum):
         return super(OSType, self).coerce(obj, attr, value)
 
 
-class ResourceClass(BaseNovaEnum):
+class ResourceClass(StringField):
     """Classes of resources provided to consumers."""
 
     VCPU = 'VCPU'
@@ -271,18 +271,15 @@ class ResourceClass(BaseNovaEnum):
 
     # The ordering here is relevant. If you must add a value, only
     # append.
-    ALL = (VCPU, MEMORY_MB, DISK_GB, PCI_DEVICE, SRIOV_NET_VF, NUMA_SOCKET,
-           NUMA_CORE, NUMA_THREAD, NUMA_MEMORY_MB, IPV4_ADDRESS)
+    STANDARD = (VCPU, MEMORY_MB, DISK_GB, PCI_DEVICE, SRIOV_NET_VF,
+                NUMA_SOCKET, NUMA_CORE, NUMA_THREAD, NUMA_MEMORY_MB,
+                IPV4_ADDRESS)
 
-    @classmethod
-    def index(cls, value):
-        """Return an index into the Enum given a value."""
-        return cls.ALL.index(value)
-
-    @classmethod
-    def from_index(cls, index):
-        """Return the Enum value at a given index."""
-        return cls.ALL[index]
+    # This is the set of standard resource classes that existed before
+    # we opened up for custom resource classes in version 1.1 of various
+    # objects in nova/objects/resource_provider.py
+    V1_0 = (VCPU, MEMORY_MB, DISK_GB, PCI_DEVICE, SRIOV_NET_VF, NUMA_SOCKET,
+            NUMA_CORE, NUMA_THREAD, NUMA_MEMORY_MB, IPV4_ADDRESS)
 
 
 class RNGModel(BaseNovaEnum):
@@ -516,10 +513,39 @@ class NotificationAction(BaseNovaEnum):
     SHELVE = 'shelve'
     RESUME = 'resume'
     RESTORE = 'restore'
+    EXISTS = 'exists'
+    RESCUE = 'rescue'
+    VOLUME_ATTACH = 'volume_attach'
+    VOLUME_DETACH = 'volume_detach'
+    CREATE = 'create'
+    EVACUATE = 'evacuate'
+    RESIZE_FINISH = 'resize_finish'
+    LIVE_MIGRATION_ABORT = 'live_migration_abort'
+    LIVE_MIGRATION_POST_DEST = 'live_migration_post_dest'
+    LIVE_MIGRATION_POST = 'live_migration_post'
+    LIVE_MIGRATION_PRE = 'live_migration_pre'
+    LIVE_MIGRATION_ROLLBACK_DEST = 'live_migration_rollback_dest'
+    LIVE_MIGRATION_ROLLBACK = 'live_migration_rollback'
+    REBUILD = 'rebuild'
+    REMOVE_FIXED_IP = 'remove_fixed_ip'
+    RESIZE_CONFIRM = 'resize_confirm'
+    RESIZE_PREP = 'resize_prep'
+    RESIZE_REVERT = 'resize_revert'
+    SHELVE_OFFLOAD = 'shelve_offload'
+    SOFT_DELETE = 'soft_delete'
+    TRIGGER_CRASH_DUMP = 'trigger_crash_dump'
+    UNRESCUE = 'unrescue'
+    UNSHELVE = 'unshelve'
 
     ALL = (UPDATE, EXCEPTION, DELETE, PAUSE, UNPAUSE, RESIZE, VOLUME_SWAP,
            SUSPEND, POWER_ON, REBOOT, SHUTDOWN, SNAPSHOT, ADD_FIXED_IP,
-           POWER_OFF, SHELVE, RESUME, RESTORE)
+           POWER_OFF, SHELVE, RESUME, RESTORE, EXISTS, RESCUE, VOLUME_ATTACH,
+           VOLUME_DETACH, CREATE, EVACUATE, RESIZE_FINISH,
+           LIVE_MIGRATION_ABORT, LIVE_MIGRATION_POST_DEST, LIVE_MIGRATION_POST,
+           LIVE_MIGRATION_PRE, LIVE_MIGRATION_ROLLBACK,
+           LIVE_MIGRATION_ROLLBACK_DEST, REBUILD, REMOVE_FIXED_IP,
+           RESIZE_CONFIRM, RESIZE_PREP, RESIZE_REVERT, SHELVE_OFFLOAD,
+           SOFT_DELETE, TRIGGER_CRASH_DUMP, UNRESCUE, UNSHELVE)
 
 
 # TODO(rlrossit): These should be changed over to be a StateMachine enum from
@@ -822,16 +848,8 @@ class OSTypeField(BaseEnumField):
     AUTO_TYPE = OSType()
 
 
-class ResourceClassField(BaseEnumField):
+class ResourceClassField(AutoTypedField):
     AUTO_TYPE = ResourceClass()
-
-    def index(self, value):
-        """Return an index into the Enum given a value."""
-        return self._type.index(value)
-
-    def from_index(self, index):
-        """Return the Enum value at a given index."""
-        return self._type.from_index(index)
 
 
 class RNGModelField(BaseEnumField):

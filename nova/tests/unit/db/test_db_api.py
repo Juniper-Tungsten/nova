@@ -64,6 +64,7 @@ from nova import objects
 from nova.objects import fields
 from nova import quota
 from nova import test
+from nova.tests import fixtures as nova_fixtures
 from nova.tests.unit import fake_console_auth_token
 from nova.tests.unit import matchers
 from nova.tests import uuidsentinel
@@ -2207,6 +2208,7 @@ class SecurityGroupTestCase(test.TestCase, ModelsObjectComparatorMixin):
                           {'project_id': 'fake_proj1'})
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class InstanceTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     """Tests for db.api.instance_* methods."""
@@ -4606,6 +4608,7 @@ class InstanceTypeAccessTestCase(BaseInstanceTypeTestCase):
         self.assertEqual(0, len(db.flavor_access_get_by_flavor_id(*p)))
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class FixedIPTestCase(BaseInstanceTypeTestCase):
     def _timeout_test(self, ctxt, timeout, multi_host):
         instance = db.instance_create(ctxt, dict(host='foo'))
@@ -5268,6 +5271,7 @@ class FixedIPTestCase(BaseInstanceTypeTestCase):
         self._assertEqualObjects(param_2, fixed_ip_after_update, ignored_keys)
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def setUp(self):
@@ -6687,6 +6691,7 @@ class VirtualInterfaceTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self._assertEqualObjects(updated, updated_vif, ignored_keys)
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class NetworkTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     """Tests for db.api.network_* methods."""
@@ -9677,45 +9682,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
             db.pci_device_update(self.admin_context, v['compute_node_id'],
                                  v['address'], v)
 
-    @mock.patch.object(objects.PciDevice, 'should_migrate_data',
-                       return_value=False)
-    def test_pcidevice_online_mig_not_ready(self, mock_should_migrate):
-        self._create_fake_pci_devs_old_format()
-
-        found, done = db.pcidevice_online_data_migration(self.admin_context,
-                                                         None)
-        self.assertEqual(0, found)
-        self.assertEqual(0, done)
-
-    @mock.patch.object(objects.PciDevice, 'should_migrate_data',
-                       return_value=True)
-    def test_pcidevice_online_mig_data_migrated_limit(self,
-                                                      mock_should_migrate):
-        self._create_fake_pci_devs_old_format()
-
-        found, done = db.pcidevice_online_data_migration(self.admin_context, 1)
-        self.assertEqual(1, found)
-        self.assertEqual(1, done)
-
-    @mock.patch.object(objects.PciDevice, 'should_migrate_data',
-                       return_value=True)
-    def test_pcidevice_online_mig(self, mock_should_migrate):
-        self._create_fake_pci_devs_old_format()
-
-        found, done = db.pcidevice_online_data_migration(self.admin_context,
-                                                         50)
-        self.assertEqual(2, found)
-        self.assertEqual(2, done)
-        results = db.pci_device_get_all_by_node(self.admin_context,
-                                                self.compute_node['id'])
-        for result in results:
-            self.assertEqual('fake-phys-func', result['parent_addr'])
-
-        found, done = db.pcidevice_online_data_migration(self.admin_context,
-                                                         50)
-        self.assertEqual(0, found)
-        self.assertEqual(0, done)
-
     def test_migrate_aggregates(self):
         db.aggregate_create(self.context, {'name': 'foo'})
         db.aggregate_create(self.context, {'name': 'bar',
@@ -9730,6 +9696,7 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self.assertEqual(0, done)
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class RetryOnDeadlockTestCase(test.TestCase):
     def test_without_deadlock(self):
         @oslo_db_api.wrap_db_retry(max_retries=5,
@@ -9753,6 +9720,12 @@ class RetryOnDeadlockTestCase(test.TestCase):
 
 class TestSqlalchemyTypesRepr(test_base.DbTestCase):
     def setUp(self):
+        # NOTE(sdague): the oslo_db base test case completely
+        # invalidates our logging setup, we actually have to do that
+        # before it is called to keep this from vomitting all over our
+        # test output.
+        self.useFixture(nova_fixtures.StandardLogging())
+
         super(TestSqlalchemyTypesRepr, self).setUp()
         meta = MetaData(bind=self.engine)
         self.table = Table(
@@ -10026,6 +9999,7 @@ class TestDBInstanceTags(test.TestCase):
                           self.context, 'fake_uuid', 'tag')
 
 
+@mock.patch('time.sleep', new=lambda x: None)
 class TestInstanceInfoCache(test.TestCase):
     def setUp(self):
         super(TestInstanceInfoCache, self).setUp()

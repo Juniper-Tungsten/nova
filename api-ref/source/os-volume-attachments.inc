@@ -1,5 +1,4 @@
 .. -*- rst -*-
-.. needs:body_verification
 
 ===================================================================
  Servers with volume attachments (servers, os-volume\_attachments)
@@ -24,7 +23,6 @@ Request
 -------
 
 .. rest_parameters:: parameters.yaml
-
 
   - server_id: server_id_path
 
@@ -55,11 +53,13 @@ Normal response codes: 200
 
 Error response codes: badRequest(400), unauthorized(401), forbidden(403), itemNotFound(404), conflict(409)
 
+.. note:: From v2.20 attach a volume to an instance in SHELVED or SHELVED_OFFLOADED
+          state is allowed.
+
 Request
 -------
 
 .. rest_parameters:: parameters.yaml
-
 
   - server_id: server_id_path
   - volumeAttachment: volumeAttachment
@@ -103,7 +103,6 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-
   - server_id: server_id_path
   - attachment_id: attachment_id
 
@@ -139,7 +138,6 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-
   - server_id: server_id_path
   - attachment_id: attachment_id
   - volumeAttachment: volumeAttachment
@@ -166,11 +164,13 @@ Normal response codes: 202
 
 Error response codes: badRequest(400), unauthorized(401), forbidden(403), itemNotFound(404), conflict(409)
 
+.. note:: From v2.20 detach a volume from an instance in SHELVED or SHELVED_OFFLOADED
+          state is allowed.
+
 Request
 -------
 
 .. rest_parameters:: parameters.yaml
-
 
   - server_id: server_id_path
   - attachment_id: attachment_id
