@@ -14,13 +14,13 @@
 
 import sys
 import time
-import uuid
 
 import fixtures
 from lxml import etree
 import six
 
-from nova.compute import arch
+from nova.objects import fields as obj_fields
+from nova.tests import uuidsentinel as uuids
 from nova.virt.libvirt import config as vconfig
 
 # Allow passing None to the various connect methods
@@ -171,8 +171,8 @@ PF_SLOT = '00'
 
 class FakePciDevice(object):
     pci_dev_template = """<device>
-  <name>pci_0000_81_%(slot)s_%(dev)d</name>
-  <path>/sys/devices/pci0000:80/0000:80:01.0/0000:81:%(slot)s.%(dev)d</path>
+  <name>pci_0000_81_%(slot)02x_%(dev)d</name>
+  <path>/sys/devices/pci0000:80/0000:80:01.0/0000:81:%(slot)02x.%(dev)d</path>
   <parent>pci_0000_80_01_0</parent>
   <driver>
     <name>%(driver)s</name>
@@ -180,7 +180,7 @@ class FakePciDevice(object):
   <capability type='pci'>
     <domain>0</domain>
     <bus>129</bus>
-    <slot>0</slot>
+    <slot>%(slot)d</slot>
     <function>%(dev)d</function>
     <product id='0x%(prod)d'>%(prod_name)s</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
@@ -188,9 +188,9 @@ class FakePciDevice(object):
     %(functions)s
     </capability>
     <iommuGroup number='%(group_id)d'>
- <address domain='0x0000' bus='0x81' slot='0x%(slot)s' function='0x%(dev)d'/>
+ <address domain='0x0000' bus='0x81' slot='%(slot)#02x' function='0x%(dev)d'/>
     </iommuGroup>
-    <numa node='0'/>
+    <numa node='%(numa_node)s'/>
     <pci-express>
       <link validity='cap' port='0' speed='5' width='8'/>
       <link validity='sta' speed='5' width='8'/>
@@ -198,7 +198,7 @@ class FakePciDevice(object):
   </capability>
 </device>"""
 
-    def __init__(self, dev_type, vf_ratio, group, dev, product_id):
+    def __init__(self, dev_type, vf_ratio, group, dev, product_id, numa_node):
         """Populate pci devices
 
         :param dev_type: (string) Indicates the type of the device (PF, VF)
@@ -206,6 +206,7 @@ class FakePciDevice(object):
         :param group: (int) iommu group id
         :param dev: (int) function number of the device
         :param product_id: (int) Device product ID
+        :param numa_node: (int) NUMA node of the device
         """
         addr_templ = ("  <address domain='0x0000' bus='0x81' slot='0x%(slot)s'"
                       " function='0x%(dev)d'/>")
@@ -215,19 +216,21 @@ class FakePciDevice(object):
             pf_caps = [addr_templ % {'dev': x, 'slot': VF_SLOT}
                                      for x in range(dev * vf_ratio,
                                                     (dev + 1) * vf_ratio)]
+            slot = int(str(PF_SLOT), 16)
             self.pci_dev = self.pci_dev_template % {'dev': dev,
                          'prod': product_id, 'group_id': group,
-                         'functions': '\n'.join(pf_caps), 'slot': 0,
+                         'functions': '\n'.join(pf_caps), 'slot': slot,
                          'cap_type': PF_CAP_TYPE, 'prod_name': PF_PROD_NAME,
-                         'driver': PF_DRIVER_NAME}
+                         'driver': PF_DRIVER_NAME, 'numa_node': numa_node}
         elif dev_type == 'VF':
             vf_caps = [addr_templ % {'dev': int(dev / vf_ratio),
                                      'slot': PF_SLOT}]
+            slot = int(str(VF_SLOT), 16)
             self.pci_dev = self.pci_dev_template % {'dev': dev,
                          'prod': product_id, 'group_id': group,
-                         'functions': '\n'.join(vf_caps), 'slot': VF_SLOT,
+                         'functions': '\n'.join(vf_caps), 'slot': slot,
                          'cap_type': VF_CAP_TYPE, 'prod_name': VF_PROD_NAME,
-                         'driver': VF_DRIVER_NAME}
+                         'driver': VF_DRIVER_NAME, 'numa_node': numa_node}
 
     def XMLDesc(self, flags):
         return self.pci_dev
@@ -239,7 +242,8 @@ class HostPciSRIOVDevicesInfo(object):
         self.sriov_devices = {}
 
     def create_pci_devices(self, vf_product_id=1515, pf_product_id=1528,
-                            num_pfs=2, num_vfs=8, group=47):
+                           num_pfs=2, num_vfs=8, group=47, numa_node=None,
+                           total_numa_nodes=2):
         """Populate pci devices
 
         :param vf_product_id: (int) Product ID of the Virtual Functions
@@ -247,9 +251,14 @@ class HostPciSRIOVDevicesInfo(object):
         :param num_pfs: (int) The number of the Physical Functions
         :param num_vfs: (int) The number of the Virtual Functions
         :param group: (int) Initial group id
+        :param numa_node: (int) NUMA node of the device, if set all of the
+                          device will be created in the provided node
+        :param total_numa_nodes: (int) total number of NUMA nodes
         """
+        def _calc_numa_node(dev):
+            return dev % total_numa_nodes if numa_node is None else numa_node
 
-        vf_ratio = num_vfs / num_pfs
+        vf_ratio = num_vfs // num_pfs
 
         # Generate PFs
         for dev in range(num_pfs):
@@ -258,7 +267,8 @@ class HostPciSRIOVDevicesInfo(object):
                                                              'dev': dev}
             self.sriov_devices[pci_dev_name] = FakePciDevice('PF', vf_ratio,
                                                              dev_group, dev,
-                                                             pf_product_id)
+                                                             pf_product_id,
+                                                        _calc_numa_node(dev))
 
         # Generate VFs
         for dev in range(num_vfs):
@@ -267,7 +277,8 @@ class HostPciSRIOVDevicesInfo(object):
                                                              'dev': dev}
             self.sriov_devices[pci_dev_name] = FakePciDevice('VF', vf_ratio,
                                                              dev_group, dev,
-                                                             vf_product_id)
+                                                             vf_product_id,
+                                                        _calc_numa_node(dev))
 
     def get_all_devices(self):
         return self.sriov_devices.keys()
@@ -279,7 +290,7 @@ class HostPciSRIOVDevicesInfo(object):
 
 
 class HostInfo(object):
-    def __init__(self, arch=arch.X86_64, kB_mem=4096,
+    def __init__(self, arch=obj_fields.Architecture.X86_64, kB_mem=4096,
                  cpus=2, cpu_mhz=800, cpu_nodes=1,
                  cpu_sockets=1, cpu_cores=2,
                  cpu_threads=1, cpu_model="Penryn",
@@ -563,7 +574,7 @@ class Domain(object):
         if uuid_elem is not None:
             definition['uuid'] = uuid_elem.text
         else:
-            definition['uuid'] = str(uuid.uuid4())
+            definition['uuid'] = uuids.fake
 
         vcpu = tree.find('./vcpu')
         if vcpu is not None:
@@ -1333,8 +1344,8 @@ class Connection(object):
 
         arch_node = tree.find('./arch')
         if arch_node is not None:
-            if arch_node.text not in [arch.X86_64,
-                                      arch.I686]:
+            if arch_node.text not in [obj_fields.Architecture.X86_64,
+                                      obj_fields.Architecture.I686]:
                 return VIR_CPU_COMPARE_INCOMPATIBLE
 
         model_node = tree.find('./model')
@@ -1484,6 +1495,8 @@ virConnect = Connection
 class FakeLibvirtFixture(fixtures.Fixture):
     """Performs global setup/stubbing for all libvirt tests.
     """
+    def __init__(self, stub_os_vif=True):
+        self.stub_os_vif = stub_os_vif
 
     def setUp(self):
         super(FakeLibvirtFixture, self).setUp()
@@ -1495,3 +1508,11 @@ class FakeLibvirtFixture(fixtures.Fixture):
             self.useFixture(fixtures.MonkeyPatch(i, sys.modules[__name__]))
 
         disable_event_thread(self)
+
+        if self.stub_os_vif:
+            # Make sure to never try and actually plug VIFs in os-vif unless
+            # we're explicitly testing that code and the test itself will
+            # handle the appropriate mocking.
+            self.useFixture(fixtures.MonkeyPatch(
+                'nova.virt.libvirt.vif.LibvirtGenericVIFDriver._plug_os_vif',
+                lambda *a, **kw: None))

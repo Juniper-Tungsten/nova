@@ -50,8 +50,6 @@ Related Options:
 
 * report_interval (service_down_time should not be less than report_interval)
 """),
-    # TODO(macsz) deprecate periodic_enable. Setting to False causes nova to
-    #  fail
     cfg.BoolOpt('periodic_enable',
                default=True,
                help="""
@@ -59,6 +57,10 @@ Enable periodic tasks.
 
 If set to true, this option allows services to periodically run tasks
 on the manager.
+
+In case of running multiple schedulers or conductors you may want to run
+periodic tasks on only one host - in this case disable this option for all
+hosts but one.
 """),
     cfg.IntOpt('periodic_fuzzy_delay',
                default=60,
@@ -123,11 +125,6 @@ Possible Values:
 * Any positive integer
 * None (default value)
 """),
-    cfg.StrOpt('metadata_manager',
-               default='nova.api.manager.MetadataManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help="Full class name for the service metadata manager."),
     cfg.StrOpt('metadata_listen',
                default="0.0.0.0",
                help="""
@@ -160,28 +157,6 @@ Possible Values:
 * Any positive integer
 * None (default value)
 """),
-    # NOTE(sdague): Ironic is still using this facility for their HA
-    # manager. Ensure they are sorted before removing this.
-    cfg.StrOpt('compute_manager',
-               default='nova.compute.manager.ComputeManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help='Full class name for the Manager for compute'),
-    cfg.StrOpt('console_manager',
-               default='nova.console.manager.ConsoleProxyManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help='Full class name for the Manager for console proxy'),
-    cfg.StrOpt('consoleauth_manager',
-               default='nova.consoleauth.manager.ConsoleAuthManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help='Full class name for the Manager for console auth'),
-    cfg.StrOpt('cert_manager',
-               default='nova.cert.manager.CertManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help='Full class name for the Manager for cert'),
     # NOTE(sdague): the network_manager has a bunch of different in
     # tree classes that are still legit options. In Newton we should
     # turn this into a selector.
@@ -193,11 +168,6 @@ Possible Values:
                ],
                default='nova.network.manager.VlanManager',
                help='Full class name for the Manager for network'),
-    cfg.StrOpt('scheduler_manager',
-               default='nova.scheduler.manager.SchedulerManager',
-               deprecated_for_removal=True,
-               deprecated_since='13.0.0',
-               help='Full class name for the Manager for scheduler'),
     ]
 
 

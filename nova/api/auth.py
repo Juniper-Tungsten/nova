@@ -18,7 +18,6 @@ Common Auth Middleware.
 
 from oslo_log import log as logging
 from oslo_log import versionutils
-from oslo_middleware import request_id
 from oslo_serialization import jsonutils
 import webob.dec
 import webob.exc
@@ -55,7 +54,7 @@ def pipeline_factory(loader, global_conf, **local_conf):
 
 def pipeline_factory_v21(loader, global_conf, **local_conf):
     """A paste pipeline replica that keys off of auth_strategy."""
-    return _load_pipeline(loader, local_conf[CONF.auth_strategy].split())
+    return _load_pipeline(loader, local_conf[CONF.api.auth_strategy].split())
 
 
 class InjectContext(wsgi.Middleware):
@@ -76,13 +75,9 @@ class NovaKeystoneContext(wsgi.Middleware):
 
     @webob.dec.wsgify(RequestClass=wsgi.Request)
     def __call__(self, req):
-        project_name = req.headers.get('X_TENANT_NAME')
-        user_name = req.headers.get('X_USER_NAME')
-        req_id = req.environ.get(request_id.ENV_REQUEST_ID)
-
         # Build a context, including the auth_token...
         remote_address = req.remote_addr
-        if CONF.use_forwarded_for:
+        if CONF.api.use_forwarded_for:
             remote_address = req.headers.get('X-Forwarded-For', remote_address)
 
         service_catalog = None
@@ -100,12 +95,9 @@ class NovaKeystoneContext(wsgi.Middleware):
 
         ctx = context.RequestContext.from_environ(
             req.environ,
-            user_name=user_name,
-            project_name=project_name,
             user_auth_plugin=user_auth_plugin,
             remote_address=remote_address,
-            service_catalog=service_catalog,
-            request_id=req_id)
+            service_catalog=service_catalog)
 
         if ctx.user_id is None:
             LOG.debug("Neither X_USER_ID nor X_USER found in request")

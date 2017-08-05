@@ -25,14 +25,12 @@ from oslo_utils import timeutils
 from oslo_utils import uuidutils
 
 from nova.compute import api as compute_api
-from nova.compute import arch
 from nova.compute import cells_api as compute_cells_api
 from nova.compute import flavors
 from nova.compute import instance_actions
 from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import task_states
 from nova.compute import utils as compute_utils
-from nova.compute import vm_mode
 from nova.compute import vm_states
 from nova import conductor
 from nova import context
@@ -143,7 +141,7 @@ class _ComputeAPIUnitTestMixIn(object):
         instance.vcpus = 0
         instance.root_gb = 0
         instance.ephemeral_gb = 0
-        instance.architecture = arch.X86_64
+        instance.architecture = fields_obj.Architecture.X86_64
         instance.os_type = 'Linux'
         instance.locked = False
         instance.created_at = now
@@ -180,6 +178,7 @@ class _ComputeAPIUnitTestMixIn(object):
         # Make sure max_count is checked for None, as Python3 doesn't allow
         # comparison between NoneType and Integer, something that's allowed in
         # Python 2.
+        provision_instances.return_value = []
         get_image.return_value = (None, {})
         check_requested_networks.return_value = 1
 
@@ -191,9 +190,11 @@ class _ComputeAPIUnitTestMixIn(object):
             objects=[objects.NetworkRequest(address=address,
                                             port_id=port)])
 
-        self.compute_api.create(self.context, instance_type, 'image_id',
-                                requested_networks=requested_networks,
-                                max_count=None)
+        with mock.patch.object(self.compute_api.network_api,
+                               'create_pci_requests_for_sriov_ports'):
+            self.compute_api.create(self.context, instance_type, 'image_id',
+                                    requested_networks=requested_networks,
+                                    max_count=None)
 
     def test_create_quota_exceeded_messages(self):
         image_href = "image_href"
@@ -227,9 +228,12 @@ class _ComputeAPIUnitTestMixIn(object):
 
         for min_count, message in [(20, '20-40'), (40, '40')]:
             try:
-                self.compute_api.create(self.context, instance_type,
-                                        "image_href", min_count=min_count,
-                                        max_count=40)
+                with mock.patch.object(self.compute_api.network_api,
+                                       'validate_networks',
+                                       return_value=40):
+                    self.compute_api.create(self.context, instance_type,
+                                            "image_href", min_count=min_count,
+                                            max_count=40)
             except exception.TooManyInstances as e:
                 self.assertEqual(message, e.kwargs['req'])
             else:
@@ -3013,8 +3017,10 @@ class _ComputeAPIUnitTestMixIn(object):
         get_flavor.return_value = test_flavor.fake_flavor
         flavor = instance.get_flavor()
         image_href = 'foo'
-        image = {"min_ram": 10, "min_disk": 1,
-                 "properties": {'architecture': arch.X86_64}}
+        image = {
+            "min_ram": 10, "min_disk": 1,
+            "properties": {
+                'architecture': fields_obj.Architecture.X86_64}}
         admin_pass = ''
         files_to_inject = []
         bdms = objects.BlockDeviceMappingList()
@@ -3058,13 +3064,15 @@ class _ComputeAPIUnitTestMixIn(object):
         orig_system_metadata = {}
         get_flavor.return_value = test_flavor.fake_flavor
         orig_image_href = 'orig_image'
-        orig_image = {"min_ram": 10, "min_disk": 1,
-                      "properties": {'architecture': arch.X86_64,
-                                     'vm_mode': 'hvm'}}
+        orig_image = {
+            "min_ram": 10, "min_disk": 1,
+            "properties": {'architecture': fields_obj.Architecture.X86_64,
+                           'vm_mode': 'hvm'}}
         new_image_href = 'new_image'
-        new_image = {"min_ram": 10, "min_disk": 1,
-                     "properties": {'architecture': arch.X86_64,
-                                    'vm_mode': 'xen'}}
+        new_image = {
+            "min_ram": 10, "min_disk": 1,
+             "properties": {'architecture': fields_obj.Architecture.X86_64,
+                           'vm_mode': 'xen'}}
         admin_pass = ''
         files_to_inject = []
         bdms = objects.BlockDeviceMappingList()
@@ -3075,7 +3083,7 @@ class _ComputeAPIUnitTestMixIn(object):
                 system_metadata=orig_system_metadata,
                 expected_attrs=['system_metadata'],
                 image_ref=orig_image_href,
-                vm_mode=vm_mode.HVM)
+                vm_mode=fields_obj.VMMode.HVM)
         flavor = instance.get_flavor()
 
         def get_image(context, image_href):
@@ -3105,7 +3113,7 @@ class _ComputeAPIUnitTestMixIn(object):
         _check_auto_disk_config.assert_called_once_with(image=new_image)
         _checks_for_create_and_rebuild.assert_called_once_with(self.context,
                 None, new_image, flavor, {}, [], None)
-        self.assertEqual(vm_mode.XEN, instance.vm_mode)
+        self.assertEqual(fields_obj.VMMode.XEN, instance.vm_mode)
 
     def _test_check_injected_file_quota_onset_file_limit_exceeded(self,
                                                                   side_effect):
@@ -3488,35 +3496,21 @@ class _ComputeAPIUnitTestMixIn(object):
         do_test()
 
     def test_provision_instances_creates_build_request(self):
+        @mock.patch.object(self.compute_api, 'volume_api')
         @mock.patch.object(self.compute_api, '_check_num_instances_quota')
-        @mock.patch.object(objects, 'Instance')
         @mock.patch.object(self.compute_api.security_group_api,
                 'ensure_default')
-        @mock.patch.object(self.compute_api,
-                           '_bdm_validate_set_size_and_instance')
-        @mock.patch.object(self.compute_api, '_create_block_device_mapping')
         @mock.patch.object(objects.RequestSpec, 'from_components')
-        @mock.patch.object(objects, 'BuildRequest')
+        @mock.patch.object(objects.BuildRequest, 'create')
         @mock.patch.object(objects.InstanceMapping, 'create')
         def do_test(_mock_inst_mapping_create, mock_build_req,
-                mock_req_spec_from_components, _mock_create_bdm,
-                mock_bdm_validate, _mock_ensure_default, mock_inst,
-                mock_check_num_inst_quota):
-            quota_mock = mock.MagicMock()
+                mock_req_spec_from_components, _mock_ensure_default,
+                mock_check_num_inst_quota, mock_volume):
 
             min_count = 1
             max_count = 2
+            quota_mock = mock.MagicMock()
             mock_check_num_inst_quota.return_value = (2, quota_mock)
-            req_spec_mock = mock.MagicMock()
-            mock_req_spec_from_components.return_value = req_spec_mock
-            inst_mocks = [mock.MagicMock() for i in range(max_count)]
-            for inst_mock in inst_mocks:
-                inst_mock.project_id = 'fake-project'
-            mock_inst.side_effect = inst_mocks
-            bdm_mocks = [mock.MagicMock() for i in range(max_count)]
-            mock_bdm_validate.side_effect = bdm_mocks
-            build_req_mocks = [mock.MagicMock() for i in range(max_count)]
-            mock_build_req.side_effect = build_req_mocks
 
             ctxt = context.RequestContext('fake-user', 'fake-project')
             flavor = self._create_flavor()
@@ -3542,7 +3536,7 @@ class _ComputeAPIUnitTestMixIn(object):
                             'numa_topology': None,
                             'pci_requests': None}
             security_groups = {}
-            block_device_mapping = objects.BlockDeviceMappingList(
+            block_device_mappings = objects.BlockDeviceMappingList(
                 objects=[objects.BlockDeviceMapping(
                     **fake_block_device.FakeDbBlockDeviceDict(
                     {
@@ -3559,32 +3553,20 @@ class _ComputeAPIUnitTestMixIn(object):
             filter_properties = {'scheduler_hints': None,
                     'instance_type': flavor}
 
-            instances = self.compute_api._provision_instances(ctxt, flavor,
+            instances_to_build = self.compute_api._provision_instances(
+                    ctxt, flavor,
                     min_count, max_count, base_options, boot_meta,
-                    security_groups, block_device_mapping, shutdown_terminate,
+                    security_groups, block_device_mappings, shutdown_terminate,
                     instance_group, check_server_group_quota,
                     filter_properties, None)
-            for instance in instances:
-                self.assertTrue(uuidutils.is_uuid_like(instance.uuid))
 
-            for inst_mock in inst_mocks:
-                inst_mock.create.assert_called_once_with()
-
-            build_req_calls = [
-                    mock.call(ctxt,
-                              instance=instances[0],
-                              instance_uuid=instances[0].uuid,
-                              project_id=instances[0].project_id,
-                              block_device_mappings=bdm_mocks[0]),
-                    mock.call(ctxt,
-                              instance=instances[1],
-                              instance_uuid=instances[1].uuid,
-                              project_id=instances[1].project_id,
-                              block_device_mappings=bdm_mocks[1]),
-                    ]
-            mock_build_req.assert_has_calls(build_req_calls)
-            for build_req_mock in build_req_mocks:
-                build_req_mock.create.assert_called_once_with()
+            for rs, br, im in instances_to_build:
+                self.assertIsInstance(br.instance, objects.Instance)
+                self.assertTrue(uuidutils.is_uuid_like(br.instance.uuid))
+                self.assertEqual(base_options['project_id'],
+                                 br.instance.project_id)
+                self.assertEqual(1, br.block_device_mappings[0].id)
+                br.create.assert_called_with()
 
         do_test()
 
@@ -3599,7 +3581,8 @@ class _ComputeAPIUnitTestMixIn(object):
                 new=mock.MagicMock())
         @mock.patch.object(objects.RequestSpec, 'from_components',
                 mock.MagicMock())
-        @mock.patch.object(objects, 'BuildRequest', new=mock.MagicMock())
+        @mock.patch.object(objects.BuildRequest, 'create',
+                new=mock.MagicMock())
         @mock.patch('nova.objects.InstanceMapping')
         def do_test(mock_inst_mapping, mock_check_num_inst_quota):
             quota_mock = mock.MagicMock()
@@ -3650,15 +3633,18 @@ class _ComputeAPIUnitTestMixIn(object):
             filter_properties = {'scheduler_hints': None,
                     'instance_type': flavor}
 
-            instances = self.compute_api._provision_instances(ctxt, flavor,
+            instances_to_build = (
+                self.compute_api._provision_instances(ctxt, flavor,
                     min_count, max_count, base_options, boot_meta,
                     security_groups, block_device_mapping, shutdown_terminate,
                     instance_group, check_server_group_quota,
-                    filter_properties, None)
-            self.assertTrue(uuidutils.is_uuid_like(instances[0].uuid))
+                    filter_properties, None))
+            rs, br, im = instances_to_build[0]
+            self.assertTrue(uuidutils.is_uuid_like(br.instance.uuid))
+            self.assertEqual(br.instance_uuid, im.instance_uuid)
 
-            self.assertEqual(instances[0].uuid,
-                    inst_mapping_mock.instance_uuid)
+            self.assertEqual(br.instance.uuid,
+                             inst_mapping_mock.instance_uuid)
             self.assertIsNone(inst_mapping_mock.cell_mapping)
             self.assertEqual(ctxt.project_id, inst_mapping_mock.project_id)
         do_test()
@@ -3744,8 +3730,6 @@ class _ComputeAPIUnitTestMixIn(object):
                               check_server_group_quota, filter_properties,
                               None)
             # First instance, build_req, mapping is created and destroyed
-            self.assertTrue(inst_mocks[0].create.called)
-            self.assertTrue(inst_mocks[0].destroy.called)
             self.assertTrue(build_req_mocks[0].create.called)
             self.assertTrue(build_req_mocks[0].destroy.called)
             self.assertTrue(inst_map_mocks[0].create.called)
@@ -3757,6 +3741,32 @@ class _ComputeAPIUnitTestMixIn(object):
             self.assertFalse(inst_map_mocks[1].destroy.called)
 
         do_test()
+
+    def test_provision_instances_creates_reqspec_with_secgroups(self):
+        @mock.patch.object(self.compute_api, '_check_num_instances_quota')
+        @mock.patch.object(self.compute_api, 'security_group_api')
+        @mock.patch.object(compute_api, 'objects')
+        @mock.patch.object(self.compute_api, '_create_block_device_mapping',
+                           new=mock.MagicMock())
+        @mock.patch.object(self.compute_api,
+                           'create_db_entry_for_new_instance',
+                           new=mock.MagicMock())
+        @mock.patch.object(self.compute_api,
+                           '_bdm_validate_set_size_and_instance',
+                           new=mock.MagicMock())
+        def test(mock_objects, mock_secgroup, mock_cniq):
+            ctxt = context.RequestContext('fake-user', 'fake-project')
+            mock_cniq.return_value = (1, mock.MagicMock())
+            self.compute_api._provision_instances(ctxt, None, None, None,
+                                                  mock.MagicMock(), None, None,
+                                                  [], None, None, None, None,
+                                                  None)
+            secgroups = mock_secgroup.populate_security_groups.return_value
+            mock_objects.RequestSpec.from_components.assert_called_once_with(
+                mock.ANY, mock.ANY, mock.ANY, mock.ANY, mock.ANY, mock.ANY,
+                mock.ANY, mock.ANY, mock.ANY,
+                security_groups=secgroups)
+        test()
 
     def _test_rescue(self, vm_state=vm_states.ACTIVE, rescue_password=None,
                      rescue_image=None, clean_shutdown=True):
@@ -4565,6 +4575,53 @@ class _ComputeAPIUnitTestMixIn(object):
             for i, instance in enumerate(build_req_instances +
                                          cell0_instances +
                                          cell_instances):
+                self.assertEqual(instance, instances[i])
+
+    @mock.patch.object(context, 'target_cell')
+    @mock.patch.object(objects.BuildRequestList, 'get_by_filters',
+                       return_value=objects.BuildRequestList(objects=[]))
+    @mock.patch.object(objects.CellMapping, 'get_by_uuid')
+    def test_get_all_cell0_marker_not_found(self, mock_cell_mapping_get,
+                                            mock_buildreq_get,
+                                            mock_target_cell):
+        """Tests that we handle a MarkerNotFound raised from the cell0 database
+        and continue looking for instances from the normal cell database.
+        """
+
+        cell_instances = self._list_of_instances(2)
+
+        cell_mapping = objects.CellMapping()
+        mock_cell_mapping_get.return_value = cell_mapping
+        marker = uuids.marker
+
+        with mock.patch.object(self.compute_api,
+                               '_get_instances_by_filters') as mock_inst_get:
+            # simulate calling _get_instances_by_filters twice, once for cell0
+            # which raises a MarkerNotFound and once from the cell DB which
+            # returns two instances
+            mock_inst_get.side_effect = [
+                exception.MarkerNotFound(marker=marker),
+                objects.InstanceList(self.context, objects=cell_instances)]
+
+            instances = self.compute_api.get_all(
+                self.context, search_opts={'foo': 'bar'},
+                limit=10, marker=marker, sort_keys=['baz'],
+                sort_dirs=['desc'])
+
+            mock_target_cell.assert_called_once_with(self.context,
+                                                     cell_mapping)
+            inst_get_calls = [mock.call(self.context, {'foo': 'bar'},
+                                        limit=10, marker=marker,
+                                        expected_attrs=None, sort_keys=['baz'],
+                                        sort_dirs=['desc']),
+                              mock.call(self.context, {'foo': 'bar'},
+                                        limit=10, marker=marker,
+                                        expected_attrs=None, sort_keys=['baz'],
+                                        sort_dirs=['desc'])
+                              ]
+            self.assertEqual(2, mock_inst_get.call_count)
+            mock_inst_get.assert_has_calls(inst_get_calls)
+            for i, instance in enumerate(cell_instances):
                 self.assertEqual(instance, instances[i])
 
     @mock.patch.object(objects.BuildRequest, 'get_by_instance_uuid')

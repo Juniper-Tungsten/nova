@@ -108,6 +108,7 @@ def deploy_stubs(stubs, api, original_instance=None):
 
 class CellsComputeAPITestCase(test_compute.ComputeAPITestCase):
     def setUp(self):
+        self.flags(use_neutron=False)
         super(CellsComputeAPITestCase, self).setUp()
         global ORIG_COMPUTE_API
         ORIG_COMPUTE_API = self.compute_api
@@ -492,7 +493,7 @@ class CellsConductorAPIRPCRedirect(test.NoDBTestCase):
         _get_image.return_value = (None, 'fake-image')
         _validate.return_value = ({}, 1, None, ['default'])
         _check_bdm.return_value = objects.BlockDeviceMappingList()
-        _provision.return_value = 'instances'
+        _provision.return_value = []
 
         self.compute_api.create(self.context, 'fake-flavor', 'fake-image')
 

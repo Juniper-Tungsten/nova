@@ -50,9 +50,28 @@ def graphics_listen_addrs(migrate_data):
 def serial_listen_addr(migrate_data):
     """Returns listen address serial from a LibvirtLiveMigrateData"""
     listen_addr = None
+    # NOTE (markus_z/dansmith): Our own from_legacy_dict() code can return
+    # an object with nothing set here. That can happen based on the
+    # compute RPC version pin. Until we can bump that major (which we
+    # can do just before Ocata releases), we may still get a legacy
+    # dict over the wire, converted to an object, and thus is may be unset
+    # here.
     if migrate_data.obj_attr_is_set('serial_listen_addr'):
-        listen_addr = str(migrate_data.serial_listen_addr)
+        # NOTE (markus_z): The value of 'serial_listen_addr' is either
+        # an IP address (as string type) or None. There's no need of a
+        # conversion, in fact, doing a string conversion of None leads to
+        # 'None', which is an invalid (string type) value here.
+        listen_addr = migrate_data.serial_listen_addr
     return listen_addr
+
+
+# TODO(sahid): remove me for Q*
+def serial_listen_ports(migrate_data):
+    """Returns ports serial from a LibvirtLiveMigrateData"""
+    ports = []
+    if migrate_data.obj_attr_is_set('serial_listen_ports'):
+        ports = migrate_data.serial_listen_ports
+    return ports
 
 
 def get_updated_guest_xml(guest, migrate_data, get_volume_config):
@@ -81,12 +100,31 @@ def _update_graphics_xml(xml_doc, migrate_data):
 
 def _update_serial_xml(xml_doc, migrate_data):
     listen_addr = serial_listen_addr(migrate_data)
-    for dev in xml_doc.findall("./devices/serial[@type='tcp']/source"):
-        if dev.get('host') is not None:
-            dev.set('host', listen_addr)
-    for dev in xml_doc.findall("./devices/console[@type='tcp']/source"):
-        if dev.get('host') is not None:
-            dev.set('host', listen_addr)
+    listen_ports = serial_listen_ports(migrate_data)
+
+    def set_listen_addr_and_port(source, listen_addr, serial_listen_ports):
+        # The XML nodes can be empty, which would make checks like
+        # "if source.get('host'):" different to an explicit check for
+        # None. That's why we have to check for None in this method.
+        if source.get('host') is not None:
+            source.set('host', listen_addr)
+        device = source.getparent()
+        target = device.find("target")
+        if target is not None and source.get('service') is not None:
+            port_index = int(target.get('port'))
+            # NOTE (markus_z): Previous releases might not give us the
+            # ports yet, that's why we have this check here.
+            if len(serial_listen_ports) > port_index:
+                source.set('service', str(serial_listen_ports[port_index]))
+
+    # This updates all "LibvirtConfigGuestSerial" devices
+    for source in xml_doc.findall("./devices/serial[@type='tcp']/source"):
+        set_listen_addr_and_port(source, listen_addr, listen_ports)
+
+    # This updates all "LibvirtConfigGuestConsole" devices
+    for source in xml_doc.findall("./devices/console[@type='tcp']/source"):
+        set_listen_addr_and_port(source, listen_addr, listen_ports)
+
     return xml_doc
 
 

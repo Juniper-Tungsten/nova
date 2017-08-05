@@ -94,12 +94,12 @@ class _IntegratedTestBase(test.TestCase):
         return self.start_service('scheduler')
 
     def _setup_services(self):
-        self.conductor = self.start_service('conductor',
-                                            manager=CONF.conductor.manager)
+        self.conductor = self.start_service('conductor')
         self.compute = self._setup_compute_service()
         self.consoleauth = self.start_service('consoleauth')
 
-        self.network = self.start_service('network')
+        self.network = self.start_service('network',
+                                          manager=CONF.network_manager)
         self.scheduler = self._setup_scheduler_service()
 
     def get_unused_server_name(self):

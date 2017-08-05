@@ -172,26 +172,6 @@ class TestObjToPrimitive(test.NoDBTestCase):
                          base.obj_to_primitive(obj))
 
 
-class TestObjMakeList(test.NoDBTestCase):
-
-    def test_obj_make_list(self):
-        class MyList(base.ObjectListBase, base.NovaObject):
-            fields = {
-                'objects': fields.ListOfObjectsField('MyObj'),
-            }
-
-        db_objs = [{'foo': 1, 'bar': 'baz', 'missing': 'banana'},
-                   {'foo': 2, 'bar': 'bat', 'missing': 'apple'},
-                   ]
-        mylist = base.obj_make_list('ctxt', MyList(), MyObj, db_objs)
-        self.assertEqual(2, len(mylist))
-        self.assertEqual('ctxt', mylist._context)
-        for index, item in enumerate(mylist):
-            self.assertEqual(db_objs[index]['foo'], item.foo)
-            self.assertEqual(db_objs[index]['bar'], item.bar)
-            self.assertEqual(db_objs[index]['missing'], item.missing)
-
-
 def compare_obj(test, obj, db_obj, subs=None, allow_missing=None,
                 comparators=None):
     """Compare a NovaObject and a dict-like database object.
@@ -570,23 +550,6 @@ class _TestObject(object):
         self.assertTrue(obj.obj_attr_is_set('foo'))
         self.assertFalse(obj.obj_attr_is_set('bar'))
         self.assertRaises(AttributeError, obj.obj_attr_is_set, 'bang')
-
-    def test_obj_reset_changes_recursive(self):
-        obj = MyObj(rel_object=MyOwnedObject(baz=123),
-                    rel_objects=[MyOwnedObject(baz=456)])
-        self.assertEqual(set(['rel_object', 'rel_objects']),
-                         obj.obj_what_changed())
-        obj.obj_reset_changes()
-        self.assertEqual(set(['rel_object']), obj.obj_what_changed())
-        self.assertEqual(set(['baz']), obj.rel_object.obj_what_changed())
-        self.assertEqual(set(['baz']), obj.rel_objects[0].obj_what_changed())
-        obj.obj_reset_changes(recursive=True, fields=['foo'])
-        self.assertEqual(set(['rel_object']), obj.obj_what_changed())
-        self.assertEqual(set(['baz']), obj.rel_object.obj_what_changed())
-        self.assertEqual(set(['baz']), obj.rel_objects[0].obj_what_changed())
-        obj.obj_reset_changes(recursive=True)
-        self.assertEqual(set([]), obj.rel_object.obj_what_changed())
-        self.assertEqual(set([]), obj.obj_what_changed())
 
     def test_get(self):
         obj = MyObj(foo=1)
@@ -1099,8 +1062,8 @@ object_data = {
     'AgentList': '1.0-5a7380d02c3aaf2a32fc8115ae7ca98c',
     'Aggregate': '1.3-f315cb68906307ca2d1cca84d4753585',
     'AggregateList': '1.2-fb6e19f3c3a3186b04eceb98b5dadbfa',
-    'Allocation': '1.1-27814e4c0cf1fd5ffaa3bcbc8f9734e5',
-    'AllocationList': '1.1-e43fe4a9c9cbbda7438b0e48332f099e',
+    'Allocation': '1.2-54f99dfa9651922219c205a7fba69e2f',
+    'AllocationList': '1.2-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'BandwidthUsage': '1.2-c6e4c779c7f40f2407e3d70022e3cd1c',
     'BandwidthUsageList': '1.2-5fe7475ada6fe62413cbfcc06ec70746',
     'BlockDeviceMapping': '1.17-5e094927f1251770dcada6ab05adfcdb',
@@ -1129,10 +1092,10 @@ object_data = {
     'FloatingIPList': '1.11-7f2ba670714e1b7bab462ab3290f7159',
     'HostMapping': '1.0-1a3390a696792a552ab7bd31a77ba9ac',
     'HyperVLiveMigrateData': '1.1-9987a3cec31a81abac6fba7cc722e43f',
-    'HVSpec': '1.2-db672e73304da86139086d003f3977e7',
+    'HVSpec': '1.2-e6cf4455367f301baa926e3972978d55',
     'IDEDeviceBus': '1.0-29d4c9f27ac44197f01b6ac1b7e16502',
     'ImageMeta': '1.8-642d1b2eb3e880a367f37d72dd76162d',
-    'ImageMetaProps': '1.15-d45133ec8d2d4a6456338fb0ffd0e5c2',
+    'ImageMetaProps': '1.15-070af88560aebda534a5d57e0d26e795',
     'Instance': '2.3-4f98ab23f4b0a25fabb1040c8f5edecc',
     'InstanceAction': '1.1-f9f293e526b66fca0d05c3b3a2d13914',
     'InstanceActionEvent': '1.1-e56a64fa4710e43ef7af2ad9d6028b33',
@@ -1152,8 +1115,8 @@ object_data = {
     'InstanceNUMATopology': '1.2-d944a7d6c21e1c773ffdf09c6d025954',
     'InstancePCIRequest': '1.1-b1d75ebc716cb12906d9d513890092bf',
     'InstancePCIRequests': '1.1-65e38083177726d806684cb1cc0136d2',
-    'Inventory': '1.1-a2f8c7214829d623c2a7a32714d84eba',
-    'InventoryList': '1.0-de53f0fd078c27cc1d43400f4e8bcef8',
+    'Inventory': '1.2-7f681fb6fb7b75fabceab3c4d0f8ce0c',
+    'InventoryList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'LibvirtLiveMigrateBDMInfo': '1.0-252aabb723ca79d5469fa56f64b57811',
     'LibvirtLiveMigrateData': '1.3-2795e5646ee21e8c7f1c3e64fb6c80a3',
     'KeyPair': '1.4-1244e8d1b103cc69d038ed78ab3a8cc6',
@@ -1177,13 +1140,14 @@ object_data = {
     'PciDeviceList': '1.3-52ff14355491c8c580bdc0ba34c26210',
     'PciDevicePool': '1.1-3f5ddc3ff7bfa14da7f6c7e9904cc000',
     'PciDevicePoolList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
+    'PowerVMLiveMigrateData': '1.1-ac0fdd26da685f12d7038782cabd393a',
     'Quotas': '1.2-1fe4cd50593aaf5d36a6dc5ab3f98fb3',
     'QuotasNoOp': '1.2-e041ddeb7dc8188ca71706f78aad41c1',
-    'RequestSpec': '1.7-5ff3e9df208bf25f8215f1b87624970d',
+    'RequestSpec': '1.8-35033ecef47a880f9a5e46e2269e2b97',
     'ResourceClass': '1.0-e6b367e2cf1733c5f3526f20a3286fe9',
-    'ResourceClassList': '1.0-4ee0d9efdfd681fed822da88376e04d2',
-    'ResourceProvider': '1.1-7bbcd5ea1c51782692f55489ab08dea6',
-    'ResourceProviderList': '1.0-82bd48d8d0f7913bbe7266f3835c81bf',
+    'ResourceClassList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
+    'ResourceProvider': '1.3-3539494ee3fa84930418fa6cc8eec0a9',
+    'ResourceProviderList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'S3ImageMapping': '1.0-7dd7366a890d82660ed121de9092276e',
     'SchedulerLimits': '1.0-249c4bd8e62a9b327b7026b7f19cc641',
     'SchedulerRetries': '1.1-3c9c8b16143ebbb6ad7030e999d14cc0',
@@ -1199,10 +1163,10 @@ object_data = {
     'Tag': '1.1-8b8d7d5b48887651a0e01241672e2963',
     'TagList': '1.1-55231bdb671ecf7641d6a2e9109b5d8e',
     'Usage': '1.1-b738dbebeb20e3199fc0ebca6e292a47',
-    'UsageList': '1.0-de53f0fd078c27cc1d43400f4e8bcef8',
+    'UsageList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'USBDeviceBus': '1.0-e4c7dd6032e46cd74b027df5eb2d4750',
-    'VirtCPUFeature': '1.0-3310718d8c72309259a6e39bdefe83ee',
-    'VirtCPUModel': '1.0-6a5cc9f322729fc70ddc6733bacd57d3',
+    'VirtCPUFeature': '1.0-ea2464bdd09084bd388e5f61d5d4fc86',
+    'VirtCPUModel': '1.0-5e1864af9227f698326203d7249796b5',
     'VirtCPUTopology': '1.0-fc694de72e20298f7c6bab1083fd4563',
     'VirtualInterface': '1.3-efd3ca8ebcc5ce65fff5a25f31754c54',
     'VirtualInterfaceList': '1.0-9750e2074437b3077e46359102779fc6',

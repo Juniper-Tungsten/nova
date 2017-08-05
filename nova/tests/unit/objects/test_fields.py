@@ -13,15 +13,19 @@
 #    under the License.
 
 import datetime
+import os
 
 import iso8601
+import mock
 from oslo_versionedobjects import exception as ovo_exc
 import six
 
+from nova import exception
 from nova.network import model as network_model
 from nova.objects import fields
 from nova import signature_utils
 from nova import test
+from nova.tests.unit import fake_instance
 from nova import utils
 
 
@@ -58,6 +62,14 @@ class FakeEnumAlt(fields.Enum):
     def __init__(self, **kwargs):
         super(FakeEnumAlt, self).__init__(valid_values=FakeEnumAlt.ALL,
                                           **kwargs)
+
+
+class FakeAddress(fields.AddressBase):
+    PATTERN = '[a-z]+[0-9]+'
+
+
+class FakeAddressField(fields.AutoTypedField):
+    AUTO_TYPE = FakeAddress()
 
 
 class FakeEnumField(fields.BaseEnumField):
@@ -177,6 +189,149 @@ class TestEnum(TestField):
                           fields.EnumField, [])
 
 
+class TestArchitecture(TestField):
+    @mock.patch.object(os, 'uname')
+    def test_host(self, mock_uname):
+        mock_uname.return_value = (
+            'Linux',
+            'localhost.localdomain',
+            '3.14.8-200.fc20.x86_64',
+            '#1 SMP Mon Jun 16 21:57:53 UTC 2014',
+            'i686'
+        )
+
+        self.assertEqual(fields.Architecture.I686,
+                         fields.Architecture.from_host())
+
+    def test_valid_string(self):
+        self.assertTrue(fields.Architecture.is_valid('x86_64'))
+
+    def test_valid_constant(self):
+        self.assertTrue(fields.Architecture.is_valid(
+            fields.Architecture.X86_64))
+
+    def test_valid_bogus(self):
+        self.assertFalse(fields.Architecture.is_valid('x86_64wibble'))
+
+    def test_canonicalize_i386(self):
+        self.assertEqual(fields.Architecture.I686,
+                         fields.Architecture.canonicalize('i386'))
+
+    def test_canonicalize_amd64(self):
+        self.assertEqual(fields.Architecture.X86_64,
+                         fields.Architecture.canonicalize('amd64'))
+
+    def test_canonicalize_case(self):
+        self.assertEqual(fields.Architecture.X86_64,
+                         fields.Architecture.canonicalize('X86_64'))
+
+    def test_canonicalize_compat_xen1(self):
+        self.assertEqual(fields.Architecture.I686,
+                         fields.Architecture.canonicalize('x86_32'))
+
+    def test_canonicalize_compat_xen2(self):
+        self.assertEqual(fields.Architecture.I686,
+                         fields.Architecture.canonicalize('x86_32p'))
+
+    def test_canonicalize_invalid(self):
+        self.assertRaises(exception.InvalidArchitectureName,
+                          fields.Architecture.canonicalize,
+                          'x86_64wibble')
+
+
+class TestHVType(TestField):
+    def test_valid_string(self):
+        self.assertTrue(fields.HVType.is_valid('vmware'))
+
+    def test_valid_constant(self):
+        self.assertTrue(fields.HVType.is_valid(fields.HVType.QEMU))
+
+    def test_valid_docker(self):
+        self.assertTrue(fields.HVType.is_valid('docker'))
+
+    def test_valid_lxd(self):
+        self.assertTrue(fields.HVType.is_valid('lxd'))
+
+    def test_valid_vz(self):
+        self.assertTrue(fields.HVType.is_valid(
+            fields.HVType.VIRTUOZZO))
+
+    def test_valid_bogus(self):
+        self.assertFalse(fields.HVType.is_valid('acmehypervisor'))
+
+    def test_canonicalize_none(self):
+        self.assertIsNone(fields.HVType.canonicalize(None))
+
+    def test_canonicalize_case(self):
+        self.assertEqual(fields.HVType.QEMU,
+                         fields.HVType.canonicalize('QeMu'))
+
+    def test_canonicalize_xapi(self):
+        self.assertEqual(fields.HVType.XEN,
+                         fields.HVType.canonicalize('xapi'))
+
+    def test_canonicalize_invalid(self):
+        self.assertRaises(exception.InvalidHypervisorVirtType,
+                          fields.HVType.canonicalize,
+                          'wibble')
+
+
+class TestVMMode(TestField):
+    def _fake_object(self, updates):
+        return fake_instance.fake_instance_obj(None, **updates)
+
+    def test_case(self):
+        inst = self._fake_object(dict(vm_mode='HVM'))
+        mode = fields.VMMode.get_from_instance(inst)
+        self.assertEqual(mode, 'hvm')
+
+    def test_legacy_pv(self):
+        inst = self._fake_object(dict(vm_mode='pv'))
+        mode = fields.VMMode.get_from_instance(inst)
+        self.assertEqual(mode, 'xen')
+
+    def test_legacy_hv(self):
+        inst = self._fake_object(dict(vm_mode='hv'))
+        mode = fields.VMMode.get_from_instance(inst)
+        self.assertEqual(mode, 'hvm')
+
+    def test_bogus(self):
+        inst = self._fake_object(dict(vm_mode='wibble'))
+        self.assertRaises(exception.Invalid,
+                          fields.VMMode.get_from_instance,
+                          inst)
+
+    def test_good(self):
+        inst = self._fake_object(dict(vm_mode='hvm'))
+        mode = fields.VMMode.get_from_instance(inst)
+        self.assertEqual(mode, 'hvm')
+
+    def test_canonicalize_pv_compat(self):
+        mode = fields.VMMode.canonicalize('pv')
+        self.assertEqual(fields.VMMode.XEN, mode)
+
+    def test_canonicalize_hv_compat(self):
+        mode = fields.VMMode.canonicalize('hv')
+        self.assertEqual(fields.VMMode.HVM, mode)
+
+    def test_canonicalize_baremetal_compat(self):
+        mode = fields.VMMode.canonicalize('baremetal')
+        self.assertEqual(fields.VMMode.HVM, mode)
+
+    def test_canonicalize_hvm(self):
+        mode = fields.VMMode.canonicalize('hvm')
+        self.assertEqual(fields.VMMode.HVM, mode)
+
+    def test_canonicalize_none(self):
+        mode = fields.VMMode.canonicalize(None)
+        self.assertIsNone(mode)
+
+    def test_canonicalize_invalid(self):
+        self.assertRaises(exception.InvalidVirtualMachineMode,
+                          fields.VMMode.canonicalize,
+                          'invalid')
+
+
 class TestImageSignatureTypes(TestField):
     # Ensure that the object definition is updated
     # in step with the signature_utils module
@@ -230,7 +385,7 @@ class TestInteger(TestField):
 class TestNonNegativeInteger(TestInteger):
     def setUp(self):
         super(TestNonNegativeInteger, self).setUp()
-        self.field = fields.Field(fields.NonNegativeInteger())
+        self.field = fields.NonNegativeIntegerField()
         self.coerce_bad_values.extend(['-2', '4.2'])
 
 
@@ -247,7 +402,7 @@ class TestFloat(TestField):
 class TestNonNegativeFloat(TestFloat):
     def setUp(self):
         super(TestNonNegativeFloat, self).setUp()
-        self.field = fields.Field(fields.NonNegativeFloat())
+        self.field = fields.NonNegativeFloatField()
         self.coerce_bad_values.extend(['-4.2'])
 
 
@@ -588,3 +743,11 @@ class TestSecureBoot(TestField):
 
     def test_stringify_invalid(self):
         self.assertRaises(ValueError, self.field.stringify, 'enabled')
+
+
+class TestSchemaGeneration(test.NoDBTestCase):
+    def test_address_base_get_schema(self):
+        field = FakeAddressField()
+        expected = {'type': ['string'], 'pattern': '[a-z]+[0-9]+',
+                    'readonly': False}
+        self.assertEqual(expected, field.get_schema())

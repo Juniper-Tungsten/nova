@@ -14,6 +14,7 @@
 import mock
 from oslo_db import exception as db_exc
 
+import nova
 from nova import context
 from nova import exception
 from nova import objects
@@ -521,7 +522,7 @@ class ResourceProviderListTestCase(ResourceProviderBaseCase):
             self.context)
         self.assertEqual(2, len(resource_providers))
         resource_providers = objects.ResourceProviderList.get_all_by_filters(
-            self.context, filters={'name': 'rp_name_1'})
+            self.context, filters={'name': u'rp_name_1'})
         self.assertEqual(1, len(resource_providers))
         resource_providers = objects.ResourceProviderList.get_all_by_filters(
             self.context, filters={'can_host': 1})
@@ -530,6 +531,182 @@ class ResourceProviderListTestCase(ResourceProviderBaseCase):
             self.context, filters={'uuid': getattr(uuidsentinel, 'rp_uuid_2')})
         self.assertEqual(1, len(resource_providers))
         self.assertEqual('rp_name_2', resource_providers[0].name)
+
+    def test_get_all_by_filters_with_resources(self):
+        for rp_i in ['1', '2']:
+            uuid = getattr(uuidsentinel, 'rp_uuid_' + rp_i)
+            name = 'rp_name_' + rp_i
+            rp = objects.ResourceProvider(self.context, name=name, uuid=uuid)
+            rp.create()
+            inv = objects.Inventory(
+                resource_provider=rp,
+                resource_class=fields.ResourceClass.VCPU,
+                min_unit=1,
+                max_unit=2,
+                total=2,
+                allocation_ratio=1.0)
+            inv.obj_set_defaults()
+
+            inv2 = objects.Inventory(
+                resource_provider=rp,
+                resource_class=fields.ResourceClass.DISK_GB,
+                total=1024, reserved=2,
+                min_unit=1,
+                max_unit=1024,
+                allocation_ratio=1.0)
+            inv2.obj_set_defaults()
+
+            # Write that specific inventory for testing min/max units and steps
+            inv3 = objects.Inventory(
+                resource_provider=rp,
+                resource_class=fields.ResourceClass.MEMORY_MB,
+                total=1024, reserved=2,
+                min_unit=2,
+                max_unit=4,
+                step_size=2,
+                allocation_ratio=1.0)
+            inv3.obj_set_defaults()
+
+            inv_list = objects.InventoryList(objects=[inv, inv2, inv3])
+            rp.set_inventory(inv_list)
+
+            # Create the VCPU allocation only for the first RP
+            if rp_i != '1':
+                continue
+            allocation_1 = objects.Allocation(
+                resource_provider=rp,
+                consumer_id=uuidsentinel.consumer,
+                resource_class=fields.ResourceClass.VCPU,
+                used=1)
+            allocation_list = objects.AllocationList(
+                self.context, objects=[allocation_1])
+            allocation_list.create_all()
+
+        # Both RPs should accept that request given the only current allocation
+        # for the first RP is leaving one VCPU
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.VCPU: 1}})
+        self.assertEqual(2, len(resource_providers))
+        # Now, when asking for 2 VCPUs, only the second RP should accept that
+        # given the current allocation for the first RP
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.VCPU: 2}})
+        self.assertEqual(1, len(resource_providers))
+        # Adding a second resource request should be okay for the 2nd RP
+        # given it has enough disk but we also need to make sure that the
+        # first RP is not acceptable because of the VCPU request
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.VCPU: 2,
+                                         fields.ResourceClass.DISK_GB: 1022}})
+        self.assertEqual(1, len(resource_providers))
+        # Now, we are asking for both disk and VCPU resources that all the RPs
+        # can't accept (as the 2nd RP is having a reserved size)
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.VCPU: 2,
+                                         fields.ResourceClass.DISK_GB: 1024}})
+        self.assertEqual(0, len(resource_providers))
+
+        # We also want to verify that asking for a specific RP can also be
+        # checking the resource usage.
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'name': u'rp_name_1',
+                           'resources': {fields.ResourceClass.VCPU: 1}})
+        self.assertEqual(1, len(resource_providers))
+
+        # Let's verify that the min and max units are checked too
+        # Case 1: amount is in between min and max and modulo step_size
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.MEMORY_MB: 2}})
+        self.assertEqual(2, len(resource_providers))
+        # Case 2: amount is less than min_unit
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.MEMORY_MB: 1}})
+        self.assertEqual(0, len(resource_providers))
+        # Case 3: amount is more than min_unit
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.MEMORY_MB: 5}})
+        self.assertEqual(0, len(resource_providers))
+        # Case 4: amount is not modulo step_size
+        resource_providers = objects.ResourceProviderList.get_all_by_filters(
+            self.context, {'resources': {fields.ResourceClass.MEMORY_MB: 3}})
+        self.assertEqual(0, len(resource_providers))
+
+    def test_get_all_by_filters_with_resources_not_existing(self):
+        self.assertRaises(
+            exception.ResourceClassNotFound,
+            objects.ResourceProviderList.get_all_by_filters,
+            self.context, {'resources': {'FOOBAR': 3}})
+
+
+class TestResourceProviderAggregates(test.NoDBTestCase):
+
+    USES_DB_SELF = True
+
+    def setUp(self):
+        super(TestResourceProviderAggregates, self).setUp()
+        self.useFixture(fixtures.Database(database='main'))
+        self.useFixture(fixtures.Database(database='api'))
+        self.context = context.RequestContext('fake-user', 'fake-project')
+
+    def test_set_and_get_new_aggregates(self):
+        rp = objects.ResourceProvider(
+            context=self.context,
+            uuid=uuidsentinel.rp_uuid,
+            name=uuidsentinel.rp_name
+        )
+        rp.create()
+
+        aggregate_uuids = [uuidsentinel.agg_a, uuidsentinel.agg_b]
+        rp.set_aggregates(aggregate_uuids)
+
+        read_aggregate_uuids = rp.get_aggregates()
+        self.assertItemsEqual(aggregate_uuids, read_aggregate_uuids)
+
+        # Since get_aggregates always does a new query this is
+        # mostly nonsense but is here for completeness.
+        read_rp = objects.ResourceProvider.get_by_uuid(
+            self.context, uuidsentinel.rp_uuid)
+        re_read_aggregate_uuids = read_rp.get_aggregates()
+        self.assertItemsEqual(aggregate_uuids, re_read_aggregate_uuids)
+
+    def test_set_aggregates_is_replace(self):
+        rp = objects.ResourceProvider(
+            context=self.context,
+            uuid=uuidsentinel.rp_uuid,
+            name=uuidsentinel.rp_name
+        )
+        rp.create()
+
+        start_aggregate_uuids = [uuidsentinel.agg_a, uuidsentinel.agg_b]
+        rp.set_aggregates(start_aggregate_uuids)
+        read_aggregate_uuids = rp.get_aggregates()
+        self.assertItemsEqual(start_aggregate_uuids, read_aggregate_uuids)
+
+        rp.set_aggregates([uuidsentinel.agg_a])
+        read_aggregate_uuids = rp.get_aggregates()
+        self.assertNotIn(uuidsentinel.agg_b, read_aggregate_uuids)
+        self.assertIn(uuidsentinel.agg_a, read_aggregate_uuids)
+
+        # Empty list means delete.
+        rp.set_aggregates([])
+        read_aggregate_uuids = rp.get_aggregates()
+        self.assertEqual([], read_aggregate_uuids)
+
+    def test_delete_rp_clears_aggs(self):
+        rp = objects.ResourceProvider(
+            context=self.context,
+            uuid=uuidsentinel.rp_uuid,
+            name=uuidsentinel.rp_name
+        )
+        rp.create()
+        rp_id = rp.id
+        start_aggregate_uuids = [uuidsentinel.agg_a, uuidsentinel.agg_b]
+        rp.set_aggregates(start_aggregate_uuids)
+        aggs = objects.ResourceProvider._get_aggregates(self.context, rp_id)
+        self.assertEqual(2, len(aggs))
+        rp.destroy()
+        aggs = objects.ResourceProvider._get_aggregates(self.context, rp_id)
+        self.assertEqual(0, len(aggs))
 
 
 class TestAllocation(ResourceProviderBaseCase):
@@ -1003,8 +1180,8 @@ class ResourceClassListTestCase(ResourceProviderBaseCase):
         the custom classes.
         """
         customs = [
-            ('IRON_NFV', 10001),
-            ('IRON_ENTERPRISE', 10002),
+            ('CUSTOM_IRON_NFV', 10001),
+            ('CUSTOM_IRON_ENTERPRISE', 10002),
         ]
         with self.api_db.get_engine().connect() as conn:
             for custom in customs:
@@ -1015,3 +1192,226 @@ class ResourceClassListTestCase(ResourceProviderBaseCase):
         rcs = objects.ResourceClassList.get_all(self.context)
         expected_count = len(fields.ResourceClass.STANDARD) + len(customs)
         self.assertEqual(expected_count, len(rcs))
+
+
+class ResourceClassTestCase(ResourceProviderBaseCase):
+
+    def test_get_by_name(self):
+        rc = objects.ResourceClass.get_by_name(
+            self.context,
+            fields.ResourceClass.VCPU
+        )
+        vcpu_id = fields.ResourceClass.STANDARD.index(
+            fields.ResourceClass.VCPU
+        )
+        self.assertEqual(vcpu_id, rc.id)
+        self.assertEqual(fields.ResourceClass.VCPU, rc.name)
+
+    def test_get_by_name_not_found(self):
+        self.assertRaises(exception.ResourceClassNotFound,
+                          objects.ResourceClass.get_by_name,
+                          self.context,
+                          'CUSTOM_NO_EXISTS')
+
+    def test_get_by_name_custom(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+        get_rc = objects.ResourceClass.get_by_name(
+            self.context,
+            'CUSTOM_IRON_NFV',
+        )
+        self.assertEqual(rc.id, get_rc.id)
+        self.assertEqual(rc.name, get_rc.name)
+
+    def test_create_fail_not_using_namespace(self):
+        rc = objects.ResourceClass(
+            context=self.context,
+            name='IRON_NFV',
+        )
+        exc = self.assertRaises(exception.ObjectActionError, rc.create)
+        self.assertIn('name must start with', str(exc))
+
+    def test_create_duplicate_standard(self):
+        rc = objects.ResourceClass(
+            context=self.context,
+            name=fields.ResourceClass.VCPU,
+        )
+        self.assertRaises(exception.ResourceClassExists, rc.create)
+
+    def test_create(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+        min_id = objects.ResourceClass.MIN_CUSTOM_RESOURCE_CLASS_ID
+        self.assertEqual(min_id, rc.id)
+
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_ENTERPRISE',
+        )
+        rc.create()
+        self.assertEqual(min_id + 1, rc.id)
+
+    @mock.patch.object(nova.objects.ResourceClass, "_get_next_id")
+    def test_create_duplicate_id_retry(self, mock_get):
+        # This order of ID generation will create rc1 with an ID of 42, try to
+        # create rc2 with the same ID, and then return 43 in the retry loop.
+        mock_get.side_effect = (42, 42, 43)
+        rc1 = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc1.create()
+        rc2 = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_TWO',
+        )
+        rc2.create()
+        self.assertEqual(rc1.id, 42)
+        self.assertEqual(rc2.id, 43)
+
+    @mock.patch.object(nova.objects.ResourceClass, "_get_next_id")
+    def test_create_duplicate_id_retry_failing(self, mock_get):
+        """negative case for test_create_duplicate_id_retry"""
+        # This order of ID generation will create rc1 with an ID of 44, try to
+        # create rc2 with the same ID, and then return 45 in the retry loop.
+        mock_get.side_effect = (44, 44, 44, 44)
+        rc1 = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc1.create()
+        rc2 = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_TWO',
+        )
+        rc2.RESOURCE_CREATE_RETRY_COUNT = 3
+        self.assertRaises(exception.ResourceClassExists, rc2.create)
+
+    def test_create_duplicate_custom(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+        self.assertEqual(objects.ResourceClass.MIN_CUSTOM_RESOURCE_CLASS_ID,
+                         rc.id)
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        self.assertRaises(exception.ResourceClassExists, rc.create)
+
+    def test_destroy_fail_no_id(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        self.assertRaises(exception.ObjectActionError, rc.destroy)
+
+    def test_destroy_fail_standard(self):
+        rc = objects.ResourceClass.get_by_name(
+            self.context,
+            'VCPU',
+        )
+        self.assertRaises(exception.ResourceClassCannotDeleteStandard,
+                          rc.destroy)
+
+    def test_destroy(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+        rc_list = objects.ResourceClassList.get_all(self.context)
+        rc_ids = (r.id for r in rc_list)
+        self.assertIn(rc.id, rc_ids)
+
+        rc = objects.ResourceClass.get_by_name(
+            self.context,
+            'CUSTOM_IRON_NFV',
+        )
+
+        rc.destroy()
+        rc_list = objects.ResourceClassList.get_all(self.context)
+        rc_ids = (r.id for r in rc_list)
+        self.assertNotIn(rc.id, rc_ids)
+
+        # Verify rc cache was purged of the old entry
+        self.assertRaises(exception.ResourceClassNotFound,
+                          objects.ResourceClass.get_by_name,
+                          self.context,
+                          'CUSTOM_IRON_NFV')
+
+    def test_destroy_fail_with_inventory(self):
+        """Test that we raise an exception when attempting to delete a resource
+        class that is referenced in an inventory record.
+        """
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+        rp = objects.ResourceProvider(
+            self.context,
+            name='my rp',
+            uuid=uuidsentinel.rp,
+        )
+        rp.create()
+        inv = objects.Inventory(
+            resource_provider=rp,
+            resource_class='CUSTOM_IRON_NFV',
+            total=1,
+        )
+        inv.obj_set_defaults()
+        inv_list = objects.InventoryList(objects=[inv])
+        rp.set_inventory(inv_list)
+
+        self.assertRaises(exception.ResourceClassInUse,
+                          rc.destroy)
+
+        rp.set_inventory(objects.InventoryList(objects=[]))
+        rc.destroy()
+        rc_list = objects.ResourceClassList.get_all(self.context)
+        rc_ids = (r.id for r in rc_list)
+        self.assertNotIn(rc.id, rc_ids)
+
+    def test_save_fail_no_id(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        self.assertRaises(exception.ObjectActionError, rc.save)
+
+    def test_save_fail_standard(self):
+        rc = objects.ResourceClass.get_by_name(
+            self.context,
+            'VCPU',
+        )
+        self.assertRaises(exception.ResourceClassCannotUpdateStandard,
+                          rc.save)
+
+    def test_save(self):
+        rc = objects.ResourceClass(
+            self.context,
+            name='CUSTOM_IRON_NFV',
+        )
+        rc.create()
+
+        rc = objects.ResourceClass.get_by_name(
+            self.context,
+            'CUSTOM_IRON_NFV',
+        )
+        rc.name = 'CUSTOM_IRON_SILVER'
+        rc.save()
+
+        # Verify rc cache was purged of the old entry
+        self.assertRaises(exception.NotFound,
+                          objects.ResourceClass.get_by_name,
+                          self.context,
+                          'CUSTOM_IRON_NFV')

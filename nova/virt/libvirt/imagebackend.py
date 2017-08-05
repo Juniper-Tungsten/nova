@@ -216,12 +216,6 @@ class Image(object):
         :filename: Name of the file in the image directory
         :size: Size of created image in bytes (optional)
         """
-        @utils.synchronized(filename, external=True, lock_path=self.lock_path)
-        def fetch_func_sync(target, *args, **kwargs):
-            # The image may have been fetched while a subsequent
-            # call was waiting to obtain the lock.
-            if not os.path.exists(target):
-                fetch_func(target=target, *args, **kwargs)
 
         if interpath is None:
             base_dir = os.path.join(CONF.instances_path,
@@ -233,6 +227,22 @@ class Image(object):
         if not os.path.exists(base_dir):
             fileutils.ensure_tree(base_dir)
         base = os.path.join(base_dir, filename)
+
+        @utils.synchronized(filename, external=True, lock_path=self.lock_path)
+        def fetch_func_sync(target, *args, **kwargs):
+            # NOTE(mdbooth): This method is called as a callback by the
+            # create_image() method of a specific backend. It assumes that
+            # target will be in the image cache, which is why it holds a
+            # lock, and does not overwrite an existing file. However,
+            # this is not true for all backends. Specifically Lvm writes
+            # directly to the target rather than to the image cache,
+            # and additionally it creates the target in advance.
+            # This guard is only relevant in the context of the lock if the
+            # target is in the image cache. If it isn't, we should
+            # call fetch_func. The lock we're holding is also unnecessary in
+            # that case, but it will not result in incorrect behaviour.
+            if target != base or not os.path.exists(target):
+                fetch_func(target=target, *args, **kwargs)
 
         if not self.exists() or not os.path.exists(base):
             self.create_image(fetch_func_sync, base, size,
@@ -1116,22 +1126,28 @@ class Backend(object):
             raise RuntimeError(_('Unknown image_type=%s') % image_type)
         return image
 
-    def image(self, instance, disk_name, image_type=None):
-        """Constructs image for selected backend
+    def by_name(self, instance, name, image_type=None):
+        """Return an Image object for a disk with the given name.
 
-        :instance: Instance name.
-        :name: Image name.
-        :image_type: Image type.
-                     Optional, is CONF.libvirt.images_type by default.
+        :param instance: the instance which owns this disk
+        :param name: The name of the disk
+        :param image_type: (Optional) Image type.
+                           Default is CONF.libvirt.images_type.
+        :return: An Image object for the disk with given name and instance.
+        :rtype: Image
         """
         backend = self.backend(image_type)
-        return backend(instance=instance, disk_name=disk_name)
+        return backend(instance=instance, disk_name=name)
 
-    def snapshot(self, instance, disk_path, image_type=None):
-        """Returns snapshot for given image
+    def by_libvirt_path(self, instance, path, image_type=None):
+        """Return an Image object for a disk with the given libvirt path.
 
-        :path: path to image
-        :image_type: type of image
+        :param instance: The instance which owns this disk.
+        :param path: The libvirt representation of the image's path.
+        :param image_type: (Optional) Image type.
+                           Default is CONF.libvirt.images_type.
+        :return: An Image object for the given libvirt path.
+        :rtype: Image
         """
         backend = self.backend(image_type)
-        return backend(instance=instance, path=disk_path)
+        return backend(instance=instance, path=path)

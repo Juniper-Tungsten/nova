@@ -37,9 +37,6 @@ from nova.tests.unit import utils
 from nova import wsgi
 
 test_service_opts = [
-    cfg.StrOpt("fake_manager",
-               default="nova.tests.unit.test_service.FakeManager",
-               help="Manager for testing"),
     cfg.StrOpt("test_service_listen",
                default='127.0.0.1',
                help="Host to bind test service to"),
@@ -104,7 +101,8 @@ class ServiceTestCase(test.NoDBTestCase):
         # NOTE(vish): Create was moved out of mox replay to make sure that
         #             the looping calls are created in StartService.
         app = service.Service.create(host=self.host, binary=self.binary,
-                topic=self.topic)
+                topic=self.topic,
+                manager='nova.tests.unit.test_service.FakeManager')
 
         self.assertTrue(app)
 
@@ -332,17 +330,6 @@ class TestWSGIService(test.NoDBTestCase):
         test_service = service.WSGIService("osapi_compute")
         self.assertEqual(test_service.workers, 8)
 
-    def test_workers_set_zero_user_setting(self):
-        CONF.set_override('osapi_compute_workers', 0)
-        test_service = service.WSGIService("osapi_compute")
-        # If a value less than 1 is used, defaults to number of procs available
-        self.assertEqual(test_service.workers, processutils.get_worker_count())
-
-    def test_service_start_with_illegal_workers(self):
-        CONF.set_override("osapi_compute_workers", -1)
-        self.assertRaises(exception.InvalidInput,
-                          service.WSGIService, "osapi_compute")
-
     def test_openstack_compute_api_workers_set_default(self):
         test_service = service.WSGIService("openstack_compute_api_v2")
         self.assertEqual(test_service.workers, processutils.get_worker_count())
@@ -351,17 +338,6 @@ class TestWSGIService(test.NoDBTestCase):
         CONF.set_override('osapi_compute_workers', 8)
         test_service = service.WSGIService("openstack_compute_api_v2")
         self.assertEqual(test_service.workers, 8)
-
-    def test_openstack_compute_api_workers_set_zero_user_setting(self):
-        CONF.set_override('osapi_compute_workers', 0)
-        test_service = service.WSGIService("openstack_compute_api_v2")
-        # If a value less than 1 is used, defaults to number of procs available
-        self.assertEqual(test_service.workers, processutils.get_worker_count())
-
-    def test_openstack_compute_api_service_start_with_illegal_workers(self):
-        CONF.set_override("osapi_compute_workers", -1)
-        self.assertRaises(exception.InvalidInput,
-                          service.WSGIService, "openstack_compute_api_v2")
 
     @testtools.skipIf(not utils.is_ipv6_supported(), "no ipv6 support")
     @mock.patch('nova.objects.Service.get_by_host_and_binary')

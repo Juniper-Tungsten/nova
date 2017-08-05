@@ -1208,12 +1208,16 @@ class CellCommands(object):
 class CellV2Commands(object):
     """Commands for managing cells v2."""
 
-    # TODO(melwitt): Remove this when the oslo.messaging function
-    # for assembling a transport url from ConfigOpts is available
-    @args('--transport-url', metavar='<transport url>', required=True,
-          dest='transport_url',
+    def _validate_transport_url(self, transport_url):
+        transport_url = transport_url or CONF.transport_url
+        if not transport_url:
+            print('Must specify --transport-url if [DEFAULT]/transport_url '
+                  'is not set in the configuration file.')
+        return transport_url
+
+    @args('--transport-url', metavar='<transport url>', dest='transport_url',
           help='The transport url for the cell message queue')
-    def simple_cell_setup(self, transport_url):
+    def simple_cell_setup(self, transport_url=None):
         """Simple cellsv2 setup.
 
         This simplified command is for use by existing non-cells users to
@@ -1225,6 +1229,9 @@ class CellV2Commands(object):
         if CONF.cells.enable:
             print('CellsV1 users cannot use this simplified setup command')
             return 2
+        transport_url = self._validate_transport_url(transport_url)
+        if not transport_url:
+            return 1
         ctxt = context.RequestContext()
         try:
             cell0_mapping = self.map_cell0()
@@ -1437,10 +1444,8 @@ class CellV2Commands(object):
 
           nova-manage cell_v2 map_cell_and_hosts --config-file <cell nova.conf>
         """
-        transport_url = CONF.transport_url or transport_url
+        transport_url = self._validate_transport_url(transport_url)
         if not transport_url:
-            print('Must specify --transport-url if [DEFAULT]/transport_url '
-                  'is not set in the configuration file.')
             return 1
         self._map_cell_and_hosts(transport_url, name, verbose)
         # online_data_migrations established a pattern of 0 meaning everything
@@ -1513,8 +1518,7 @@ class CellV2Commands(object):
             cell_mappings = objects.CellMappingList.get_all(context)
 
         for cell_mapping in cell_mappings:
-            # TODO(alaski): Factor this into helper method on CellMapping
-            if cell_mapping.uuid == cell_mapping.CELL0_UUID:
+            if cell_mapping.is_cell0():
                 continue
             with context.target_cell(ctxt, cell_mapping):
                 compute_nodes = objects.ComputeNodeList.get_all(ctxt)

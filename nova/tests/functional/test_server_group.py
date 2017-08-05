@@ -82,7 +82,7 @@ class ServerGroupTestBase(test.TestCase,
         # the image fake backend needed for image discovery
         nova.tests.unit.image.fake.stub_out_image_service(self)
 
-        self.start_service('conductor', manager=CONF.conductor.manager)
+        self.start_service('conductor')
         self.start_service('scheduler')
 
         self.addCleanup(nova.tests.unit.image.fake.FakeImageService_reset)
@@ -111,7 +111,7 @@ class ServerGroupTestV21(ServerGroupTestBase):
     def setUp(self):
         super(ServerGroupTestV21, self).setUp()
 
-        self.start_service('network')
+        self.start_service('network', manager=CONF.network_manager)
         self.compute = self.start_service('compute')
 
         # NOTE(gibi): start a second compute host to be able to test affinity

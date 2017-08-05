@@ -17,14 +17,17 @@
 """Fixtures for Nova tests."""
 from __future__ import absolute_import
 
+from contextlib import contextmanager
 import logging as std_logging
 import os
 import warnings
 
 import fixtures
 import mock
+from oslo_concurrency import lockutils
 from oslo_config import cfg
 from oslo_db.sqlalchemy import enginefacade
+import oslo_messaging as messaging
 from oslo_messaging import conffixture as messaging_conffixture
 import six
 
@@ -39,6 +42,7 @@ from nova.objects import service as service_obj
 from nova import rpc
 from nova import service
 from nova.tests.functional.api import client
+from nova.tests import uuidsentinel
 
 _TRUE_VALUES = ('True', 'true', '1', 'yes')
 
@@ -221,10 +225,197 @@ class DatabasePoisonFixture(fixtures.Fixture):
             self._poison_configure))
 
     def _poison_configure(self, *a, **k):
+        # If you encounter this error, you might be tempted to just not
+        # inherit from NoDBTestCase. Bug #1568414 fixed a few hundred of these
+        # errors, and not once was that the correct solution. Instead,
+        # consider some of the following tips (when applicable):
+        #
+        # - mock at the object layer rather than the db layer, for example:
+        #       nova.objects.instance.Instance.get
+        #            vs.
+        #       nova.db.instance_get
+        #
+        # - mock at the api layer rather than the object layer, for example:
+        #       nova.api.openstack.common.get_instance
+        #           vs.
+        #       nova.objects.instance.Instance.get
+        #
+        # - mock code that requires the database but is otherwise tangential
+        #   to the code you're testing (for example: EventReporterStub)
+        #
+        # - peruse some of the other database poison warning fixes here:
+        #   https://review.openstack.org/#/q/topic:bug/1568414
         raise Exception('This test uses methods that set internal oslo_db '
                         'state, but it does not claim to use the database. '
                         'This will conflict with the setup of tests that '
                         'do use the database and cause failures later.')
+
+
+class SingleCellSimple(fixtures.Fixture):
+    """Setup the simplest cells environment possible
+
+    This should be used when you do not care about multiple cells,
+    or having a "real" environment for tests that should not care.
+    This will give you a single cell, and map any and all accesses
+    to that cell (even things that would go to cell0).
+
+    If you need to distinguish between cell0 and cellN, then you
+    should use the CellDatabases fixture.
+    """
+
+    def setUp(self):
+        super(SingleCellSimple, self).setUp()
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.objects.CellMappingList._get_all_from_db',
+            self._fake_cell_list))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.context.target_cell',
+            self._fake_target_cell))
+
+    def _fake_cell_list(self, *args):
+        return [{'id': 1,
+                 'updated_at': None,
+                 'created_at': None,
+                 'uuid': uuidsentinel.cell1,
+                 'name': 'onlycell',
+                 'transport_url': 'fake://nowhere/',
+                 'database_connection': 'sqlite:///'}]
+
+    @contextmanager
+    def _fake_target_cell(self, context, target_cell):
+        # NOTE(danms): Just pass through the context without actually
+        # targetting anything.
+        yield context
+
+
+class CellDatabases(fixtures.Fixture):
+    """Create per-cell databases for testing.
+
+    How to use::
+
+      fix = CellDatabases()
+      fix.add_cell_database('connection1')
+      fix.add_cell_database('connection2', default=True)
+      self.useFixture(fix)
+
+    Passing default=True tells the fixture which database should
+    be given to code that doesn't target a specific cell.
+    """
+    def __init__(self):
+        self._ctxt_mgrs = {}
+        self._last_ctxt_mgr = None
+        self._default_ctxt_mgr = None
+
+        # NOTE(danms): Use a ReaderWriterLock to synchronize our
+        # global database muckery here. If we change global db state
+        # to point to a cell, we need to take an exclusive lock to
+        # prevent any other calls to get_context_manager() until we
+        # reset to the default.
+        self._cell_lock = lockutils.ReaderWriterLock()
+
+    def _cache_schema(self, connection_str):
+        # NOTE(melwitt): See the regular Database fixture for why
+        # we do this.
+        global DB_SCHEMA
+        if not DB_SCHEMA['main']:
+            ctxt_mgr = self._ctxt_mgrs[connection_str]
+            engine = ctxt_mgr.get_legacy_facade().get_engine()
+            conn = engine.connect()
+            migration.db_sync(database='main')
+            DB_SCHEMA['main'] = "".join(line for line
+                                        in conn.connection.iterdump())
+            engine.dispose()
+
+    @contextmanager
+    def _wrap_target_cell(self, context, cell_mapping):
+        with self._cell_lock.write_lock():
+            ctxt_mgr = self._ctxt_mgrs[cell_mapping.database_connection]
+            # This assumes the next local DB access is the same cell that
+            # was targeted last time.
+            self._last_ctxt_mgr = ctxt_mgr
+            try:
+                with self._real_target_cell(context, cell_mapping) as ccontext:
+                    yield ccontext
+            finally:
+                # Once we have returned from the context, we need
+                # to restore the default context manager for any
+                # subsequent calls
+                self._last_ctxt_mgr = self._default_ctxt_mgr
+
+    def _wrap_create_context_manager(self, connection=None):
+        ctxt_mgr = self._ctxt_mgrs[connection]
+        return ctxt_mgr
+
+    def _wrap_get_context_manager(self, context):
+        # NOTE(melwitt): This is a hack to try to deal with
+        # local accesses i.e. non target_cell accesses.
+        with self._cell_lock.read_lock():
+            return self._last_ctxt_mgr
+
+    def add_cell_database(self, connection_str, default=False):
+        """Add a cell database to the fixture.
+
+        :param connection_str: An identifier used to represent the connection
+        string for this database. It should match the database_connection field
+        in the corresponding CellMapping.
+        """
+
+        # NOTE(danms): Create a new context manager for the cell, which
+        # will house the sqlite:// connection for this cell's in-memory
+        # database. Store/index it by the connection string, which is
+        # how we identify cells in CellMapping.
+        ctxt_mgr = session.create_context_manager()
+        self._ctxt_mgrs[connection_str] = ctxt_mgr
+
+        # NOTE(melwitt): The first DB access through service start is
+        # local so this initializes _last_ctxt_mgr for that and needs
+        # to be a compute cell.
+        self._last_ctxt_mgr = ctxt_mgr
+
+        # NOTE(danms): Record which context manager should be the default
+        # so we can restore it when we return from target-cell contexts.
+        # If none has been provided yet, store the current one in case
+        # no default is ever specified.
+        if self._default_ctxt_mgr is None or default:
+            self._default_ctxt_mgr = ctxt_mgr
+
+        def get_context_manager(context):
+            return ctxt_mgr
+
+        # NOTE(danms): This is a temporary MonkeyPatch just to get
+        # a new database created with the schema we need and the
+        # context manager for it stashed.
+        with fixtures.MonkeyPatch(
+                'nova.db.sqlalchemy.api.get_context_manager',
+                get_context_manager):
+            self._cache_schema(connection_str)
+            engine = ctxt_mgr.get_legacy_facade().get_engine()
+            engine.dispose()
+            conn = engine.connect()
+            conn.connection.executescript(DB_SCHEMA['main'])
+
+    def setUp(self):
+        super(CellDatabases, self).setUp()
+        self.addCleanup(self.cleanup)
+        self._real_target_cell = context.target_cell
+
+        # NOTE(danms): These context managers are in place for the
+        # duration of the test (unlike the temporary ones above) and
+        # provide the actual "runtime" switching of connections for us.
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.db.sqlalchemy.api.create_context_manager',
+            self._wrap_create_context_manager))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.db.sqlalchemy.api.get_context_manager',
+            self._wrap_get_context_manager))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.context.target_cell',
+            self._wrap_target_cell))
+
+    def cleanup(self):
+        for ctxt_mgr in self._ctxt_mgrs.values():
+            engine = ctxt_mgr.get_legacy_facade().get_engine()
+            engine.dispose()
 
 
 class Database(fixtures.Fixture):
@@ -343,6 +534,27 @@ class RPCFixture(fixtures.Fixture):
         super(RPCFixture, self).__init__()
         self.exmods = []
         self.exmods.extend(exmods)
+        self._buses = {}
+
+    def _fake_create_transport(self, url):
+        # FIXME(danms): Right now, collapse all connections
+        # to a single bus. This is how our tests expect things
+        # to work. When the tests are fixed, this fixture can
+        # support simulating multiple independent buses, and this
+        # hack should be removed.
+        url = None
+
+        # NOTE(danms): This will be called with a non-None url by
+        # cells-aware code that is requesting to contact something on
+        # one of the many transports we're multplexing here.
+        if url not in self._buses:
+            exmods = rpc.get_allowed_exmods()
+            self._buses[url] = messaging.get_transport(
+                CONF,
+                url=url,
+                allowed_remote_exmods=exmods,
+                aliases=rpc.TRANSPORT_ALIASES)
+        return self._buses[url]
 
     def setUp(self):
         super(RPCFixture, self).setUp()
@@ -352,7 +564,15 @@ class RPCFixture(fixtures.Fixture):
         self.messaging_conf = messaging_conffixture.ConfFixture(CONF)
         self.messaging_conf.transport_driver = 'fake'
         self.useFixture(self.messaging_conf)
-        rpc.init(CONF)
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.rpc.create_transport', self._fake_create_transport))
+        # NOTE(danms): Execute the init with get_transport_url() as None,
+        # instead of the parsed TransportURL(None) so that we can cache
+        # it as it will be called later if the default is requested by
+        # one of our mq-switching methods.
+        with mock.patch('nova.rpc.get_transport_url') as mock_gtu:
+            mock_gtu.return_value = None
+            rpc.init(CONF)
 
 
 class WarningsFixture(fixtures.Fixture):

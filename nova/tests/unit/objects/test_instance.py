@@ -989,6 +989,7 @@ class _TestInstanceObject(object):
     @mock.patch.object(db, 'instance_create')
     def test_create_skip_scheduled_at(self, mock_create):
         vals = {'host': 'foo-host',
+                'deleted': 0,
                 'memory_mb': 128,
                 'system_metadata': {'foo': 'bar'},
                 'extra': {
@@ -1017,6 +1018,7 @@ class _TestInstanceObject(object):
     @mock.patch.object(db, 'instance_create')
     def test_create_stubbed(self, mock_create):
         vals = {'host': 'foo-host',
+                'deleted': 0,
                 'memory_mb': 128,
                 'system_metadata': {'foo': 'bar'},
                 'extra': {
@@ -1046,7 +1048,8 @@ class _TestInstanceObject(object):
 
         self.assertEqual(self.fake_instance['id'], inst.id)
         self.assertIsNotNone(inst.ec2_ids)
-        mock_create.assert_called_once_with(self.context, {'extra': extras})
+        mock_create.assert_called_once_with(self.context, {'deleted': 0,
+                                                           'extra': extras})
 
     def test_create_with_values(self):
         inst1 = objects.Instance(context=self.context,
@@ -1057,6 +1060,13 @@ class _TestInstanceObject(object):
         self.assertEqual('foo-host', inst1.host)
         inst2 = objects.Instance.get_by_uuid(self.context, inst1.uuid)
         self.assertEqual('foo-host', inst2.host)
+
+    def test_create_deleted(self):
+        inst1 = objects.Instance(context=self.context,
+                                 user_id=self.context.user_id,
+                                 project_id=self.context.project_id,
+                                 deleted=True)
+        self.assertRaises(exception.ObjectActionError, inst1.create)
 
     def test_create_with_extras(self):
         inst = objects.Instance(context=self.context,
@@ -1112,6 +1122,7 @@ class _TestInstanceObject(object):
 
         mock_create.assert_called_once_with(self.context,
                            {'host': 'foo-host',
+                            'deleted': 0,
                             'security_groups': ['foo', 'bar'],
                             'info_cache': {'network_info': '[]'},
                             'extra': {
@@ -1238,6 +1249,15 @@ class _TestInstanceObject(object):
         inst._from_db_object(self.context, inst, db_inst,
                              expected_attrs=['security_groups'])
         self.assertEqual([], inst.security_groups.objects)
+
+    @mock.patch('nova.db.instance_extra_get_by_instance_uuid',
+                return_value=None)
+    def test_from_db_object_no_extra_db_calls(self, mock_get):
+        db_inst = fake_instance.fake_db_instance()
+        instance.Instance._from_db_object(
+            self.context, objects.Instance(), db_inst,
+            expected_attrs=instance._INSTANCE_EXTRA_FIELDS)
+        self.assertEqual(0, mock_get.call_count)
 
     @mock.patch('nova.objects.InstancePCIRequests.get_by_instance_uuid')
     def test_get_with_pci_requests(self, mock_get):
@@ -1836,6 +1856,28 @@ class _TestInstanceListObject(object):
         self.assertEqual([1, 2], [x.id for x in instances])
         self.assertTrue(instances[0].obj_attr_is_set('system_metadata'))
         self.assertEqual({'foo': 'bar'}, instances[0].system_metadata)
+
+    def test_get_by_security_group_after_destroy(self):
+        db_sg = db.security_group_create(
+            self.context,
+            {'name': 'foo',
+             'description': 'test group',
+             'user_id': self.context.user_id,
+             'project_id': self.context.project_id})
+        self.assertFalse(db.security_group_in_use(self.context, db_sg.id))
+        inst = objects.Instance(
+            context=self.context,
+            user_id=self.context.user_id,
+            project_id=self.context.project_id)
+        inst.create()
+
+        db.instance_add_security_group(self.context,
+                                       inst.uuid,
+                                       db_sg.id)
+
+        self.assertTrue(db.security_group_in_use(self.context, db_sg.id))
+        inst.destroy()
+        self.assertFalse(db.security_group_in_use(self.context, db_sg.id))
 
     def test_get_by_grantee_security_group_ids(self):
         fake_instances = [

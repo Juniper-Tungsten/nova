@@ -70,7 +70,7 @@ def _translate_volume_summary_view(context, vol):
         #                   'mountpoint': '/dev/sda/
         #                    }
         #                }
-        attachment = vol['attachments'].items()[0]
+        attachment = list(vol['attachments'].items())[0]
         d['attachments'] = [_translate_attachment_detail_view(vol['id'],
             attachment[0],
             attachment[1].get('mountpoint'))]
@@ -223,7 +223,7 @@ def _translate_attachment_summary_view(volume_id, instance_uuid, mountpoint):
     """Maps keys for attachment summary view."""
     d = {}
 
-    # NOTE(justinsb): We use the volume id as he id of the attachment object
+    # NOTE(justinsb): We use the volume id as the id of the attachment object
     d['id'] = volume_id
 
     d['volumeId'] = volume_id
@@ -302,6 +302,7 @@ class VolumeAttachmentController(wsgi.Controller):
             instance.uuid,
             assigned_mountpoint)}
 
+    # TODO(mriedem): This API should return a 202 instead of a 200 response.
     @extensions.expected_errors((400, 404, 409))
     @validation.schema(volumes_schema.create_volume_attachment)
     def create(self, req, server_id, body):

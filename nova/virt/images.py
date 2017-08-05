@@ -39,7 +39,7 @@ CONF = nova.conf.CONF
 IMAGE_API = image.API()
 
 QEMU_IMG_LIMITS = processutils.ProcessLimits(
-    cpu_time=2,
+    cpu_time=8,
     address_space=1 * units.Gi)
 
 
@@ -62,8 +62,13 @@ def qemu_img_info(path, format=None):
             cmd = cmd + ('-f', format)
         out, err = utils.execute(*cmd, prlimit=QEMU_IMG_LIMITS)
     except processutils.ProcessExecutionError as exp:
-        msg = (_("qemu-img failed to execute on %(path)s : %(exp)s") %
-                {'path': path, 'exp': exp})
+        # this means we hit prlimits, make the exception more specific
+        if exp.exit_code == -9:
+            msg = (_("qemu-img aborted by prlimits when inspecting "
+                    "%(path)s : %(exp)s") % {'path': path, 'exp': exp})
+        else:
+            msg = (_("qemu-img failed to execute on %(path)s : %(exp)s") %
+                   {'path': path, 'exp': exp})
         raise exception.InvalidDiskInfo(reason=msg)
 
     if not out:
@@ -96,9 +101,10 @@ def convert_image_unsafe(source, dest, out_format, run_as_root=False):
 
 
 def _convert_image(source, dest, in_format, out_format, run_as_root):
-    cmd = ('qemu-img', 'convert', '-O', out_format, source, dest)
+    cmd = ('qemu-img', 'convert', '-O', out_format)
     if in_format is not None:
         cmd = cmd + ('-f', in_format)
+    cmd = cmd + (source, dest)
     try:
         utils.execute(*cmd, run_as_root=run_as_root)
     except processutils.ProcessExecutionError as exp:

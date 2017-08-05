@@ -76,11 +76,10 @@ from oslo_config import cfg
 import six
 
 from nova import block_device
-from nova.compute import arch
-from nova.compute import vm_mode
 from nova import exception
 from nova.i18n import _
 from nova.objects import base as obj_base
+from nova.objects import fields as obj_fields
 from nova.virt import configdrive
 from nova.virt import driver
 from nova.virt.libvirt import utils as libvirt_utils
@@ -164,15 +163,13 @@ def get_dev_count_for_disk_bus(disk_bus):
 
 
 def find_disk_dev_for_disk_bus(mapping, bus,
-                               last_device=False,
                                assigned_devices=None):
     """Identify a free disk dev name for a bus.
 
        Determines the possible disk dev names for
        the bus, and then checks them in order until
        it identifies one that is not yet used in the
-       disk mapping. If 'last_device' is set, it will
-       only consider the last available disk dev name.
+       disk mapping.
 
        Returns the chosen disk_dev name, or raises an
        exception if none is available.
@@ -186,10 +183,7 @@ def find_disk_dev_for_disk_bus(mapping, bus,
         assigned_devices = []
 
     max_dev = get_dev_count_for_disk_bus(bus)
-    if last_device:
-        devs = [max_dev - 1]
-    else:
-        devs = range(max_dev)
+    devs = range(max_dev)
 
     for idx in devs:
         disk_dev = dev_prefix + chr(ord('a') + idx)
@@ -209,7 +203,7 @@ def is_disk_bus_valid_for_virt(virt_type, disk_bus):
         'xen': ['xen', 'ide'],
         'uml': ['uml'],
         'lxc': ['lxc'],
-        'parallels': ['ide', 'scsi', 'sata']
+        'parallels': ['ide', 'scsi']
         }
 
     if virt_type not in valid_bus:
@@ -253,16 +247,22 @@ def get_disk_bus_for_device_type(instance,
     elif virt_type == "lxc":
         return "lxc"
     elif virt_type == "xen":
-        guest_vm_mode = vm_mode.get_from_instance(instance)
-        if guest_vm_mode == vm_mode.HVM:
+        guest_vm_mode = obj_fields.VMMode.get_from_instance(instance)
+        if guest_vm_mode == obj_fields.VMMode.HVM:
             return "ide"
         else:
             return "xen"
     elif virt_type in ("qemu", "kvm"):
         if device_type == "cdrom":
             guestarch = libvirt_utils.get_arch(image_meta)
-            if guestarch in (arch.PPC, arch.PPC64, arch.PPCLE, arch.PPC64LE,
-                arch.S390, arch.S390X, arch.AARCH64):
+            if guestarch in (
+                    obj_fields.Architecture.PPC,
+                    obj_fields.Architecture.PPC64,
+                    obj_fields.Architecture.PPCLE,
+                    obj_fields.Architecture.PPC64LE,
+                    obj_fields.Architecture.S390,
+                    obj_fields.Architecture.S390X,
+                    obj_fields.Architecture.AARCH64):
                 return "scsi"
             else:
                 return "ide"
@@ -274,7 +274,7 @@ def get_disk_bus_for_device_type(instance,
         if device_type == "cdrom":
             return "ide"
         elif device_type == "disk":
-            return "sata"
+            return "scsi"
     else:
         # If virt-type not in list then it is unsupported
         raise exception.UnsupportedVirtType(virt=virt_type)
@@ -301,8 +301,6 @@ def get_disk_bus_for_disk_dev(virt_type, disk_dev):
         # this picks the most likely mappings
         if virt_type == "xen":
             return "xen"
-        elif virt_type == "parallels":
-            return "sata"
         else:
             return "scsi"
     elif disk_dev.startswith('vd'):
@@ -321,7 +319,6 @@ def get_disk_bus_for_disk_dev(virt_type, disk_dev):
 
 def get_next_disk_info(mapping, disk_bus,
                        device_type='disk',
-                       last_device=False,
                        boot_index=None,
                        assigned_devices=None):
     """Determine the disk info for the next device on disk_bus.
@@ -335,7 +332,6 @@ def get_next_disk_info(mapping, disk_bus,
 
     disk_dev = find_disk_dev_for_disk_bus(mapping,
                                           disk_bus,
-                                          last_device,
                                           assigned_devices)
     info = {'bus': disk_bus,
             'dev': disk_dev,
@@ -530,8 +526,7 @@ def get_disk_mapping(virt_type, instance,
                                                     device_type)
             config_info = get_next_disk_info(mapping,
                                              disk_bus,
-                                             device_type,
-                                             last_device=True)
+                                             device_type)
             mapping['disk.config.rescue'] = config_info
 
         return mapping
@@ -616,8 +611,7 @@ def get_disk_mapping(virt_type, instance,
                                                 device_type)
         config_info = get_next_disk_info(mapping,
                                          disk_bus,
-                                         device_type,
-                                         last_device=True)
+                                         device_type)
         mapping['disk.config'] = config_info
 
     return mapping

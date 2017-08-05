@@ -20,6 +20,7 @@ import hmac
 import os
 
 from oslo_log import log as logging
+from oslo_utils import encodeutils
 from oslo_utils import secretutils as secutils
 import six
 import webob.dec
@@ -45,7 +46,7 @@ class MetadataRequestHandler(wsgi.Application):
 
     def __init__(self):
         self._cache = cache_utils.get_client(
-                expiration_time=CONF.metadata_cache_expiration)
+                expiration_time=CONF.api.metadata_cache_expiration)
         if (CONF.neutron.service_metadata_proxy and
             not CONF.neutron.metadata_proxy_shared_secret):
             LOG.warning(_LW("metadata_proxy_shared_secret is not configured, "
@@ -67,7 +68,7 @@ class MetadataRequestHandler(wsgi.Application):
         except exception.NotFound:
             return None
 
-        if CONF.metadata_cache_expiration > 0:
+        if CONF.api.metadata_cache_expiration > 0:
             self._cache.set(cache_key, data)
 
         return data
@@ -84,7 +85,7 @@ class MetadataRequestHandler(wsgi.Application):
         except exception.NotFound:
             return None
 
-        if CONF.metadata_cache_expiration > 0:
+        if CONF.api.metadata_cache_expiration > 0:
             self._cache.set(cache_key, data)
 
         return data
@@ -93,7 +94,7 @@ class MetadataRequestHandler(wsgi.Application):
     def __call__(self, req):
         if os.path.normpath(req.path_info) == "/":
             resp = base.ec2_md_print(base.VERSIONS + ["latest"])
-            req.response.body = resp
+            req.response.body = encodeutils.to_utf8(resp)
             req.response.content_type = base.MIME_TYPE_TEXT_PLAIN
             return req.response
 
@@ -122,17 +123,14 @@ class MetadataRequestHandler(wsgi.Application):
             return data(req, meta_data)
 
         resp = base.ec2_md_print(data)
-        if isinstance(resp, six.text_type):
-            req.response.text = resp
-        else:
-            req.response.body = resp
+        req.response.body = encodeutils.to_utf8(resp)
 
         req.response.content_type = meta_data.get_mimetype()
         return req.response
 
     def _handle_remote_ip_request(self, req):
         remote_address = req.remote_addr
-        if CONF.use_forwarded_for:
+        if CONF.api.use_forwarded_for:
             remote_address = req.headers.get('X-Forwarded-For', remote_address)
 
         try:
@@ -264,8 +262,9 @@ class MetadataRequestHandler(wsgi.Application):
     def _validate_shared_secret(self, requestor_id, signature,
                                 requestor_address):
         expected_signature = hmac.new(
-            CONF.neutron.metadata_proxy_shared_secret,
-            requestor_id, hashlib.sha256).hexdigest()
+            encodeutils.to_utf8(CONF.neutron.metadata_proxy_shared_secret),
+            encodeutils.to_utf8(requestor_id),
+            hashlib.sha256).hexdigest()
 
         if not secutils.constant_time_compare(expected_signature, signature):
             if requestor_id:

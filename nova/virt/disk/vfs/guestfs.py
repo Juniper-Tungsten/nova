@@ -80,8 +80,11 @@ class VFSGuestFS(vfs.VFS):
             g.add_drive("/dev/null")  # sic
             g.launch()
         except Exception as e:
-            if os.access("/boot/vmlinuz-%s" % os.uname()[2], os.R_OK):
-                raise exception.LibguestfsCannotReadKernel()
+            kernel_file = "/boot/vmlinuz-%s" % os.uname()[2]
+            if not os.access(kernel_file, os.R_OK):
+                raise exception.LibguestfsCannotReadKernel(
+                    _("Please change permissions on %s to 0x644")
+                    % kernel_file)
             raise exception.NovaException(
                 _("libguestfs installed but not usable (%s)") % e)
 
@@ -313,13 +316,20 @@ class VFSGuestFS(vfs.VFS):
         uid = -1
         gid = -1
 
-        if user is not None:
-            uid = int(self.handle.aug_get(
-                    "/files/etc/passwd/" + user + "/uid"))
-        if group is not None:
-            gid = int(self.handle.aug_get(
-                    "/files/etc/group/" + group + "/gid"))
+        def _get_item_id(id_path):
+            try:
+                return int(self.handle.aug_get("/files/etc/" + id_path))
+            except RuntimeError as e:
+                msg = _("Error obtaining uid/gid for %(user)s/%(group)s: "
+                        " path %(id_path)s not found (%(e)s)") % {
+                    'id_path': "/files/etc/" + id_path, 'user': user,
+                    'group': group, 'e': e}
+                raise exception.NovaException(msg)
 
+        if user is not None:
+            uid = _get_item_id('passwd/' + user + '/uid')
+        if group is not None:
+            gid = _get_item_id('group/' + group + '/gid')
         LOG.debug("chown uid=%(uid)d gid=%(gid)s",
                   {'uid': uid, 'gid': gid})
         self.handle.chown(uid, gid, path)

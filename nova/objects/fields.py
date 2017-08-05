@@ -12,19 +12,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import os
 import re
 
 from oslo_versionedobjects import fields
 import six
 
-# TODO(berrange) Temporary import for Arch class
-from nova.compute import arch
-# TODO(berrange) Temporary import for CPU* classes
-from nova.compute import cpumodel
-# TODO(berrange) Temporary import for HVType class
-from nova.compute import hv_type
-# TODO(berrange) Temporary import for VMMode class
-from nova.compute import vm_mode
 from nova import exception
 from nova.i18n import _
 from nova.network import model as network_model
@@ -39,8 +32,10 @@ ElementTypeError = fields.ElementTypeError
 BooleanField = fields.BooleanField
 UnspecifiedDefault = fields.UnspecifiedDefault
 IntegerField = fields.IntegerField
+NonNegativeIntegerField = fields.NonNegativeIntegerField
 UUIDField = fields.UUIDField
 FloatField = fields.FloatField
+NonNegativeFloatField = fields.NonNegativeFloatField
 StringField = fields.StringField
 SensitiveStringField = fields.SensitiveStringField
 EnumField = fields.EnumField
@@ -61,6 +56,7 @@ DictOfListOfStringsField = fields.DictOfListOfStringsField
 IPAddressField = fields.IPAddressField
 IPV4AddressField = fields.IPV4AddressField
 IPV6AddressField = fields.IPV6AddressField
+IPV4AndV6AddressField = fields.IPV4AndV6AddressField
 IPNetworkField = fields.IPNetworkField
 IPV4NetworkField = fields.IPV4NetworkField
 IPV6NetworkField = fields.IPV6NetworkField
@@ -94,13 +90,118 @@ class BaseNovaEnum(Enum):
 
 
 class Architecture(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.arch'
-    # into fields on this class
-    ALL = arch.ALL
+    """Represents CPU architectures.
+
+    Provides the standard names for all known processor architectures.
+    Many have multiple variants to deal with big-endian vs little-endian
+    modes, as well as 32 vs 64 bit word sizes. These names are chosen to
+    be identical to the architecture names expected by libvirt, so if
+    ever adding new ones then ensure it matches libvirt's expectation.
+    """
+
+    ALPHA = 'alpha'
+    ARMV6 = 'armv6'
+    ARMV7 = 'armv7l'
+    ARMV7B = 'armv7b'
+
+    AARCH64 = 'aarch64'
+    CRIS = 'cris'
+    I686 = 'i686'
+    IA64 = 'ia64'
+    LM32 = 'lm32'
+
+    M68K = 'm68k'
+    MICROBLAZE = 'microblaze'
+    MICROBLAZEEL = 'microblazeel'
+    MIPS = 'mips'
+    MIPSEL = 'mipsel'
+
+    MIPS64 = 'mips64'
+    MIPS64EL = 'mips64el'
+    OPENRISC = 'openrisc'
+    PARISC = 'parisc'
+    PARISC64 = 'parisc64'
+
+    PPC = 'ppc'
+    PPCLE = 'ppcle'
+    PPC64 = 'ppc64'
+    PPC64LE = 'ppc64le'
+    PPCEMB = 'ppcemb'
+
+    S390 = 's390'
+    S390X = 's390x'
+    SH4 = 'sh4'
+    SH4EB = 'sh4eb'
+    SPARC = 'sparc'
+
+    SPARC64 = 'sparc64'
+    UNICORE32 = 'unicore32'
+    X86_64 = 'x86_64'
+    XTENSA = 'xtensa'
+    XTENSAEB = 'xtensaeb'
+
+    ALL = (
+        ALPHA, ARMV6, ARMV7, ARMV7B,
+        AARCH64, CRIS, I686, IA64, LM32,
+        M68K, MICROBLAZE, MICROBLAZEEL, MIPS, MIPSEL,
+        MIPS64, MIPS64EL, OPENRISC, PARISC, PARISC64,
+        PPC, PPCLE, PPC64, PPC64LE, PPCEMB,
+        S390, S390X, SH4, SH4EB, SPARC,
+        SPARC64, UNICORE32, X86_64, XTENSA, XTENSAEB,
+    )
+
+    @classmethod
+    def from_host(cls):
+        """Get the architecture of the host OS
+
+        :returns: the canonicalized host architecture
+        """
+
+        return cls.canonicalize(os.uname()[4])
+
+    @classmethod
+    def is_valid(cls, name):
+        """Check if a string is a valid architecture
+
+        :param name: architecture name to validate
+
+        :returns: True if @name is valid
+        """
+
+        return name in cls.ALL
+
+    @classmethod
+    def canonicalize(cls, name):
+        """Canonicalize the architecture name
+
+        :param name: architecture name to canonicalize
+
+        :returns: a canonical architecture name
+        """
+
+        if name is None:
+            return None
+
+        newname = name.lower()
+
+        if newname in ("i386", "i486", "i586"):
+            newname = cls.I686
+
+        # Xen mistake from Icehouse or earlier
+        if newname in ("x86_32", "x86_32p"):
+            newname = cls.I686
+
+        if newname == "amd64":
+            newname = cls.X86_64
+
+        if not cls.is_valid(newname):
+            raise exception.InvalidArchitectureName(arch=name)
+
+        return newname
 
     def coerce(self, obj, attr, value):
         try:
-            value = arch.canonicalize(value)
+            value = self.canonicalize(value)
         except exception.InvalidArchitectureName:
             msg = _("Architecture name '%s' is not valid") % value
             raise ValueError(msg)
@@ -175,21 +276,32 @@ class CPUThreadAllocationPolicy(BaseNovaEnum):
 
 
 class CPUMode(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.cpumodel'
-    # into fields on this class
-    ALL = cpumodel.ALL_CPUMODES
+
+    CUSTOM = 'custom'
+    HOST_MODEL = 'host-model'
+    HOST_PASSTHROUGH = 'host-passthrough'
+
+    ALL = (CUSTOM, HOST_MODEL, HOST_PASSTHROUGH)
 
 
 class CPUMatch(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.cpumodel'
-    # into fields on this class
-    ALL = cpumodel.ALL_MATCHES
+
+    MINIMUM = 'minimum'
+    EXACT = 'exact'
+    STRICT = 'strict'
+
+    ALL = (MINIMUM, EXACT, STRICT)
 
 
 class CPUFeaturePolicy(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.cpumodel'
-    # into fields on this class
-    ALL = cpumodel.ALL_POLICIES
+
+    FORCE = 'force'
+    REQUIRE = 'require'
+    OPTIONAL = 'optional'
+    DISABLE = 'disable'
+    FORBID = 'forbid'
+
+    ALL = (FORCE, REQUIRE, OPTIONAL, DISABLE, FORBID)
 
 
 class DiskBus(BaseNovaEnum):
@@ -216,17 +328,80 @@ class FirmwareType(BaseNovaEnum):
 
 
 class HVType(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.hv_type'
-    # into fields on this class
-    ALL = hv_type.ALL
+    """Represents virtualization types.
+
+    Provide the standard names for all known guest virtualization
+    types. This is not to be confused with the Nova hypervisor driver
+    types, since one driver may support multiple virtualization types
+    and one virtualization type (eg 'xen') may be supported by multiple
+    drivers ('XenAPI' or  'Libvirt-Xen').
+    """
+
+    BAREMETAL = 'baremetal'
+    BHYVE = 'bhyve'
+    DOCKER = 'docker'
+    FAKE = 'fake'
+    HYPERV = 'hyperv'
+    IRONIC = 'ironic'
+    KQEMU = 'kqemu'
+    KVM = 'kvm'
+    LXC = 'lxc'
+    LXD = 'lxd'
+    OPENVZ = 'openvz'
+    PARALLELS = 'parallels'
+    VIRTUOZZO = 'vz'
+    PHYP = 'phyp'
+    QEMU = 'qemu'
+    TEST = 'test'
+    UML = 'uml'
+    VBOX = 'vbox'
+    VMWARE = 'vmware'
+    XEN = 'xen'
+    ZVM = 'zvm'
+
+    ALL = (BAREMETAL, BHYVE, DOCKER, FAKE, HYPERV, IRONIC, KQEMU, KVM, LXC,
+           LXD, OPENVZ, PARALLELS, PHYP, QEMU, TEST, UML, VBOX, VIRTUOZZO,
+           VMWARE, XEN, ZVM)
 
     def coerce(self, obj, attr, value):
         try:
-            value = hv_type.canonicalize(value)
+            value = self.canonicalize(value)
         except exception.InvalidHypervisorVirtType:
             msg = _("Hypervisor virt type '%s' is not valid") % value
             raise ValueError(msg)
+
         return super(HVType, self).coerce(obj, attr, value)
+
+    @classmethod
+    def is_valid(cls, name):
+        """Check if a string is a valid hypervisor type
+
+        :param name: hypervisor type name to validate
+
+        :returns: True if @name is valid
+        """
+        return name in cls.ALL
+
+    @classmethod
+    def canonicalize(cls, name):
+        """Canonicalize the hypervisor type name
+
+        :param name: hypervisor type name to canonicalize
+
+        :returns: a canonical hypervisor type name
+        """
+        if name is None:
+            return None
+
+        newname = name.lower()
+
+        if newname == 'xapi':
+            newname = cls.XEN
+
+        if not cls.is_valid(newname):
+            raise exception.InvalidHypervisorVirtType(hv_type=name)
+
+        return newname
 
 
 class ImageSignatureHashType(BaseNovaEnum):
@@ -364,17 +539,79 @@ class VIFModel(BaseNovaEnum):
 
 
 class VMMode(BaseNovaEnum):
-    # TODO(berrange): move all constants out of 'nova.compute.vm_mode'
-    # into fields on this class
-    ALL = vm_mode.ALL
+    """Represents possible vm modes for instances.
+
+    Compute instance VM modes represent the host/guest ABI used for the
+    virtual machine or container. Individual hypervisors may support
+    multiple different vm modes per host. Available VM modes for a
+    hypervisor driver may also vary according to the architecture it is
+    running on.
+    """
+    HVM = 'hvm'  # Native ABI (aka fully virtualized)
+    XEN = 'xen'  # Xen 3.0 paravirtualized
+    UML = 'uml'  # User Mode Linux paravirtualized
+    EXE = 'exe'  # Executables in containers
+
+    ALL = (HVM, XEN, UML, EXE)
 
     def coerce(self, obj, attr, value):
         try:
-            value = vm_mode.canonicalize(value)
+            value = self.canonicalize(value)
         except exception.InvalidVirtualMachineMode:
             msg = _("Virtual machine mode '%s' is not valid") % value
             raise ValueError(msg)
+
         return super(VMMode, self).coerce(obj, attr, value)
+
+    @classmethod
+    def get_from_instance(cls, instance):
+        """Get the vm mode for an instance
+
+        :param instance: instance object to query
+
+        :returns: canonicalized vm mode for the instance
+        """
+        mode = instance.vm_mode
+
+        return cls.canonicalize(mode)
+
+    @classmethod
+    def is_valid(cls, name):
+        """Check if a string is a valid vm mode
+
+        :param name: vm mode name to validate
+
+        :returns: True if @name is valid
+        """
+        return name in cls.ALL
+
+    @classmethod
+    def canonicalize(cls, mode):
+        """Canonicalize the vm mode
+
+        :param name: vm mode name to canonicalize
+
+        :returns: a canonical vm mode name
+        """
+        if mode is None:
+            return None
+
+        mode = mode.lower()
+
+        # For compatibility with pre-Folsom deployments
+        if mode == 'pv':
+            mode = cls.XEN
+
+        if mode == 'hv':
+            mode = cls.HVM
+
+        if mode == 'baremetal':
+            mode = cls.HVM
+
+        if not cls.is_valid(mode):
+            raise exception.InvalidVirtualMachineMode(vmmode=mode)
+
+        return mode
 
 
 class WatchdogAction(BaseNovaEnum):
@@ -673,17 +910,6 @@ class InstancePowerState(Enum):
         return cls.ALL[index]
 
 
-class IPV4AndV6Address(IPAddress):
-    @staticmethod
-    def coerce(obj, attr, value):
-        result = IPAddress.coerce(obj, attr, value)
-        if result.version != 4 and result.version != 6:
-            raise ValueError(_('Network "%(val)s" is not valid '
-                               'in field %(attr)s') %
-                             {'val': value, 'attr': attr})
-        return result
-
-
 class NetworkModel(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
@@ -709,24 +935,6 @@ class NetworkModel(FieldType):
             ','.join([str(vif['id']) for vif in value]))
 
 
-class NonNegativeFloat(FieldType):
-    @staticmethod
-    def coerce(obj, attr, value):
-        v = float(value)
-        if v < 0:
-            raise ValueError(_('Value must be >= 0 for field %s') % attr)
-        return v
-
-
-class NonNegativeInteger(FieldType):
-    @staticmethod
-    def coerce(obj, attr, value):
-        v = int(value)
-        if v < 0:
-            raise ValueError(_('Value must be >= 0 for field %s') % attr)
-        return v
-
-
 class AddressBase(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
@@ -734,6 +942,9 @@ class AddressBase(FieldType):
             return str(value)
         else:
             raise ValueError(_('Value must match %s') % obj.PATTERN)
+
+    def get_schema(self):
+        return {'type': ['string'], 'pattern': self.PATTERN}
 
 
 class PCIAddress(AddressBase):
@@ -924,17 +1135,5 @@ class InstancePowerStateField(BaseEnumField):
     AUTO_TYPE = InstancePowerState()
 
 
-class IPV4AndV6AddressField(AutoTypedField):
-    AUTO_TYPE = IPV4AndV6Address()
-
-
 class ListOfIntegersField(AutoTypedField):
     AUTO_TYPE = List(fields.Integer())
-
-
-class NonNegativeFloatField(AutoTypedField):
-    AUTO_TYPE = NonNegativeFloat()
-
-
-class NonNegativeIntegerField(AutoTypedField):
-    AUTO_TYPE = NonNegativeInteger()

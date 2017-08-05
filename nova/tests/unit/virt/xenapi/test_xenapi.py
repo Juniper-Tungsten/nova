@@ -21,7 +21,6 @@ import copy
 import functools
 import os
 import re
-import uuid
 
 import mock
 from mox3 import mox
@@ -30,12 +29,12 @@ from oslo_config import fixture as config_fixture
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
+from oslo_utils import uuidutils
 import six
 import testtools
 
 from nova.compute import api as compute_api
-from nova.compute import arch
-from nova.compute import hv_type
+from nova.compute import manager
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.compute import utils as compute_utils
@@ -47,6 +46,7 @@ from nova import db
 from nova import exception
 from nova import objects
 from nova.objects import base
+from nova.objects import fields as obj_fields
 from nova import test
 from nova.tests.unit.api.openstack import fakes
 from nova.tests.unit.db import fakes as db_fakes
@@ -1106,10 +1106,10 @@ iface eth0 inet6 static
 
         self.stubs.Set(crypto, 'ssh_encrypt_text', fake_encrypt_text)
 
-        expected_data = ('\n# The following ssh key was injected by '
-                         'Nova\nssh-rsa fake_keydata\n')
+        expected_data = (b'\n# The following ssh key was injected by '
+                         b'Nova\nssh-rsa fake_keydata\n')
 
-        injected_files = [('/root/.ssh/authorized_keys', expected_data)]
+        injected_files = [(b'/root/.ssh/authorized_keys', expected_data)]
         self._test_spawn(IMAGE_VHD, None, None,
                          os_type="linux", architecture="x86-64",
                          key_data='ssh-rsa fake_keydata')
@@ -1136,10 +1136,10 @@ iface eth0 inet6 static
 
         self.stubs.Set(crypto, 'ssh_encrypt_text', fake_encrypt_text)
 
-        expected_data = ('\n# The following ssh key was injected by '
-                         'Nova\nssh-dsa fake_keydata\n')
+        expected_data = (b'\n# The following ssh key was injected by '
+                         b'Nova\nssh-dsa fake_keydata\n')
 
-        injected_files = [('/root/.ssh/authorized_keys', expected_data)]
+        injected_files = [(b'/root/.ssh/authorized_keys', expected_data)]
         self._test_spawn(IMAGE_VHD, None, None,
                          os_type="linux", architecture="x86-64",
                          key_data='ssh-dsa fake_keydata')
@@ -1159,7 +1159,7 @@ iface eth0 inet6 static
         self.stubs.Set(stubs.FakeSessionForVMTests,
                        '_plugin_agent_inject_file', fake_inject_file)
 
-        injected_files = [('/tmp/foo', 'foobar')]
+        injected_files = [(b'/tmp/foo', b'foobar')]
         self._test_spawn(IMAGE_VHD, None, None,
                          os_type="linux", architecture="x86-64",
                          injected_files=injected_files)
@@ -1550,7 +1550,7 @@ iface eth0 inet6 static
     def _create_instance(self, spawn=True, obj=False, **attrs):
         """Creates and spawns a test instance."""
         instance_values = {
-            'uuid': str(uuid.uuid4()),
+            'uuid': uuidutils.generate_uuid(),
             'display_name': 'host-',
             'project_id': self.project_id,
             'user_id': self.user_id,
@@ -2276,18 +2276,20 @@ class ToSupportedInstancesTestCase(test.NoDBTestCase):
             host.to_supported_instances(None))
 
     def test_return_value(self):
-        self.assertEqual([(arch.X86_64, hv_type.XEN, 'xen')],
-             host.to_supported_instances([u'xen-3.0-x86_64']))
+        self.assertEqual(
+            [(obj_fields.Architecture.X86_64, obj_fields.HVType.XEN, 'xen')],
+            host.to_supported_instances([u'xen-3.0-x86_64']))
 
     def test_invalid_values_do_not_break(self):
-        self.assertEqual([(arch.X86_64, hv_type.XEN, 'xen')],
-             host.to_supported_instances([u'xen-3.0-x86_64', 'spam']))
+        self.assertEqual(
+            [(obj_fields.Architecture.X86_64, obj_fields.HVType.XEN, 'xen')],
+            host.to_supported_instances([u'xen-3.0-x86_64', 'spam']))
 
     def test_multiple_values(self):
         self.assertEqual(
             [
-                (arch.X86_64, hv_type.XEN, 'xen'),
-                (arch.I686, hv_type.XEN, 'hvm')
+                (obj_fields.Architecture.X86_64, obj_fields.HVType.XEN, 'xen'),
+                (obj_fields.Architecture.I686, obj_fields.HVType.XEN, 'hvm')
             ],
             host.to_supported_instances([u'xen-3.0-x86_64', 'hvm-3.0-x86_32'])
         )
@@ -2754,17 +2756,20 @@ class XenAPIDom0IptablesFirewallTestCase(stubs.XenAPITestBase):
 
         regex = re.compile('\[0\:0\] -A .* -j ACCEPT -p icmp'
                            ' -s 192.168.11.0/24')
-        self.assertGreater(len(filter(regex.match, self._out_rules)), 0,
+        match_rules = [rule for rule in self._out_rules if regex.match(rule)]
+        self.assertGreater(len(match_rules), 0,
                            "ICMP acceptance rule wasn't added")
 
         regex = re.compile('\[0\:0\] -A .* -j ACCEPT -p icmp -m icmp'
                            ' --icmp-type 8 -s 192.168.11.0/24')
-        self.assertGreater(len(filter(regex.match, self._out_rules)), 0,
+        match_rules = [rule for rule in self._out_rules if regex.match(rule)]
+        self.assertGreater(len(match_rules), 0,
                            "ICMP Echo Request acceptance rule wasn't added")
 
         regex = re.compile('\[0\:0\] -A .* -j ACCEPT -p tcp --dport 80:81'
                            ' -s 192.168.10.0/24')
-        self.assertGreater(len(filter(regex.match, self._out_rules)), 0,
+        match_rules = [rule for rule in self._out_rules if regex.match(rule)]
+        self.assertGreater(len(match_rules), 0,
                            "TCP port 80/81 acceptance rule wasn't added")
 
     def test_static_filters(self):
@@ -2808,7 +2813,9 @@ class XenAPIDom0IptablesFirewallTestCase(stubs.XenAPITestBase):
                 continue
             regex = re.compile('\[0\:0\] -A .* -j ACCEPT -p tcp'
                                ' --dport 80:81 -s %s' % ip['address'])
-            self.assertGreater(len(filter(regex.match, self._out_rules)), 0,
+            match_rules = [rule for rule in self._out_rules
+                           if regex.match(rule)]
+            self.assertGreater(len(match_rules), 0,
                                "TCP port 80/81 acceptance rule wasn't added")
 
         db.instance_destroy(admin_ctxt, instance_ref['uuid'])
@@ -2878,7 +2885,8 @@ class XenAPIDom0IptablesFirewallTestCase(stubs.XenAPITestBase):
         self.fw.refresh_security_group_rules(secgroup)
         regex = re.compile('\[0\:0\] -A .* -j ACCEPT -p udp --dport 200:299'
                            ' -s 192.168.99.0/24')
-        self.assertGreater(len(filter(regex.match, self._out_rules)), 0,
+        match_rules = [rule for rule in self._out_rules if regex.match(rule)]
+        self.assertGreater(len(match_rules), 0,
                            "Rules were not updated properly. "
                            "The rule for UDP acceptance is missing")
 
@@ -2971,7 +2979,7 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.context = context.get_admin_context()
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
-        self.compute = importutils.import_object(CONF.compute_manager)
+        self.compute = manager.ComputeManager()
         self.api = compute_api.AggregateAPI()
         values = {'name': 'test_aggr',
                   'metadata': {'availability_zone': 'test_zone',

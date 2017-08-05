@@ -20,6 +20,7 @@ import time
 
 import eventlet
 import fixtures
+import six
 
 from nova import test
 from nova.virt.disk.mount import nbd
@@ -38,7 +39,7 @@ def _fake_exists_no_users(path):
 
 
 def _fake_listdir_nbd_devices(path):
-    if path.startswith('/sys/block'):
+    if isinstance(path, six.string_types) and path.startswith('/sys/block'):
         return ['nbd0', 'nbd1']
     return ORIG_LISTDIR(path)
 
@@ -64,8 +65,8 @@ def _fake_noop(*args, **kwargs):
 class NbdTestCase(test.NoDBTestCase):
     def setUp(self):
         super(NbdTestCase, self).setUp()
-        self.stubs.Set(nbd.NbdMount, '_detect_nbd_devices',
-                       _fake_detect_nbd_devices)
+        self.stub_out('nova.virt.disk.mount.nbd.NbdMount._detect_nbd_devices',
+                      _fake_detect_nbd_devices)
         self.useFixture(fixtures.MonkeyPatch('os.listdir',
                                              _fake_listdir_nbd_devices))
         self.file = imgmodel.LocalFileImage("/some/file.qcow2",
@@ -73,8 +74,8 @@ class NbdTestCase(test.NoDBTestCase):
 
     def test_nbd_no_devices(self):
         tempdir = self.useFixture(fixtures.TempDir()).path
-        self.stubs.Set(nbd.NbdMount, '_detect_nbd_devices',
-                       _fake_detect_nbd_devices_none)
+        self.stub_out('nova.virt.disk.mount.nbd.NbdMount._detect_nbd_devices',
+                      _fake_detect_nbd_devices_none)
         n = nbd.NbdMount(self.file, tempdir)
         self.assertIsNone(n._allocate_nbd())
 
@@ -136,8 +137,8 @@ class NbdTestCase(test.NoDBTestCase):
 
     def test_inner_get_dev_no_devices(self):
         tempdir = self.useFixture(fixtures.TempDir()).path
-        self.stubs.Set(nbd.NbdMount, '_detect_nbd_devices',
-                       _fake_detect_nbd_devices_none)
+        self.stub_out('nova.virt.disk.mount.nbd.NbdMount._detect_nbd_devices',
+                      _fake_detect_nbd_devices_none)
         n = nbd.NbdMount(self.file, tempdir)
         self.assertFalse(n._inner_get_dev())
 
@@ -252,7 +253,8 @@ class NbdTestCase(test.NoDBTestCase):
         # Always fail to get a device
         def fake_get_dev_fails(self):
             return False
-        self.stubs.Set(nbd.NbdMount, '_inner_get_dev', fake_get_dev_fails)
+        self.stub_out('nova.virt.disk.mount.nbd.NbdMount._inner_get_dev',
+                      fake_get_dev_fails)
 
         tempdir = self.useFixture(fixtures.TempDir()).path
         n = nbd.NbdMount(self.file, tempdir)
@@ -314,7 +316,8 @@ class NbdTestCase(test.NoDBTestCase):
             return pidfile not in [os.path.join('/sys/block', dev, 'pid')
                                    for dev in free_devices]
 
-        self.stubs.Set(nbd.NbdMount, '_allocate_nbd', fake_find_unused)
+        self.stub_out('nova.virt.disk.mount.nbd.NbdMount._allocate_nbd',
+                      fake_find_unused)
         self.useFixture(fixtures.MonkeyPatch('nova.utils.trycmd',
                                              delay_and_remove_device))
         self.useFixture(fixtures.MonkeyPatch('os.path.exists',

@@ -521,6 +521,15 @@ limit:
   in: query
   required: false
   type: integer
+limit_simple:
+  description: |
+    Used in conjunction with ``offset`` to return a slice of items. ``limit``
+    is the maximum number of items to return. If ``limit`` is not specified,
+    or exceeds the configurable ``osapi_max_limit``, then ``osapi_max_limit``
+    will be used instead.
+  in: query
+  required: false
+  type: integer
 marker:
   description: |
     The ID of the last-seen item. Use the ``limit`` parameter to make an initial limited
@@ -595,6 +604,13 @@ not_tags_query:
     match all tags in this list will be returned. Boolean expression in this
     case is 'NOT (t1 AND t2)'. Tags in query must be separated by comma.
   min_version: 2.26
+offset_simple:
+  description: |
+    Used in conjunction with ``limit`` to return a slice of items. ``offset``
+    is where to start in the list.
+  in: query
+  required: false
+  type: integer
 reservation_id_query:
   in: query
   required: false
@@ -975,6 +991,12 @@ attachment_device_resp:
   in: body
   required: false
   type: string
+attachment_id_required:
+  description: |
+    The UUID of the attachment.
+  in: body
+  required: true
+  type: string
 attachment_id_resp:
   description: |
     The UUID of the attachment.
@@ -1135,6 +1157,15 @@ block_device_mapping_v2:
   in: body
   required: false
   type: object
+block_device_uuid:
+  description: |
+    This is the uuid of source resource. The uuid is point to different resource
+    based on the source_type. For example if source_type is ``image`` as the above
+    sample, the block device is created based on the specified image which is gotten
+    from the image service.
+  in: body
+  required: false
+  type: string
 block_migration:
   description: |
     Set to ``True`` to migrate local disks by using block migration. If the source
@@ -1912,6 +1943,23 @@ floating_ip_bulk_object:
   in: body
   required: true
   type: object
+floating_ip_id_value:
+  description: |
+    The floating IP id value.
+
+    .. note::
+
+      For nova-network, the value will be of type integer, whereas for
+      neutron, the value will be of type string.
+  in: body
+  required: true
+  type: string
+floating_ip_obj:
+  description: |
+    A floating IP address object.
+  in: body
+  required: true
+  type: object
 floating_ip_pool_name:
   description: |
     The name of the floating ip pool.
@@ -2328,6 +2376,15 @@ image_id_body:
   in: body
   required: true
   type: string
+image_metadata_items:
+  description: |
+    The number of allowed metadata items for each image. Starting from
+    version 2.39 this field is dropped from 'os-limits' response, because
+    'image-metadata' proxy API was deprecated.
+  in: body
+  required: true
+  type: integer
+  max_version: 2.38
 image_name:
   description: |
     The display name of an Image.
@@ -2775,6 +2832,13 @@ lock:
   in: body
   required: true
   type: string
+locked:
+  description: |
+    True if the instance is locked otherwise False.
+  in: body
+  required: true
+  type: boolean
+  min_version: 2.9
 mac_addr:
   description: |
     The MAC address.

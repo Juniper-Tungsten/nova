@@ -46,7 +46,7 @@ class ConfFixture(config_fixture.Config):
         self.conf.set_default('num_networks', 2)
         self.conf.set_default('use_ipv6', True)
         self.conf.set_default('vlan_interface', 'eth0')
-        self.conf.set_default('auth_strategy', 'noauth2')
+        self.conf.set_default('auth_strategy', 'noauth2', group='api')
         config.parse_args([], default_config_files=[], configure_db=False,
                           init_rpc=False)
         self.conf.set_default('connection', "sqlite://", group='database')
@@ -54,7 +54,6 @@ class ConfFixture(config_fixture.Config):
         self.conf.set_default('sqlite_synchronous', False, group='database')
         self.conf.set_default('sqlite_synchronous', False,
                 group='api_database')
-        self.conf.set_default('fatal_exception_format_errors', True)
         # TODO(sdague): this makes our project_id match 'fake' as well.
         # We should fix the tests to use real
         # UUIDs then drop this work around.

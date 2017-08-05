@@ -14,10 +14,10 @@
 #    under the License.
 
 import datetime
-import uuid
 
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import routes
 import six
 from six.moves import range
@@ -33,6 +33,7 @@ from nova.api.openstack import wsgi as os_wsgi
 from nova.compute import api as compute_api
 from nova.compute import flavors
 from nova.compute import vm_states
+import nova.conf
 from nova import context
 from nova.db.sqlalchemy import models
 from nova import exception as exc
@@ -46,6 +47,7 @@ from nova import utils
 from nova import wsgi
 
 
+CONF = nova.conf.CONF
 QUOTAS = quota.QUOTAS
 
 
@@ -182,8 +184,11 @@ def stub_out_nw_api(test, cls=None, private=None, publics=None):
 
     if cls is None:
         cls = Fake
-    test.stub_out('nova.network.api.API', cls)
-    fake_network.stub_out_nw_api_get_instance_nw_info(test)
+    if CONF.use_neutron:
+        test.stub_out('nova.network.neutronv2.api.API', cls)
+    else:
+        test.stub_out('nova.network.api.API', cls)
+        fake_network.stub_out_nw_api_get_instance_nw_info(test)
 
 
 class FakeToken(object):
@@ -302,7 +307,7 @@ def create_info_cache(nw_cache):
 
 def get_fake_uuid(token=0):
     if token not in FAKE_UUIDS:
-        FAKE_UUIDS[token] = str(uuid.uuid4())
+        FAKE_UUIDS[token] = uuidutils.generate_uuid()
     return FAKE_UUIDS[token]
 
 

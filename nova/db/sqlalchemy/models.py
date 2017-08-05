@@ -198,6 +198,7 @@ class Instance(BASE, NovaBase, models.SoftDeleteMixin):
     __tablename__ = 'instances'
     __table_args__ = (
         Index('uuid', 'uuid', unique=True),
+        Index('instances_project_id_idx', 'project_id'),
         Index('instances_project_id_deleted_idx',
               'project_id', 'deleted'),
         Index('instances_reservation_id_idx',
@@ -214,6 +215,8 @@ class Instance(BASE, NovaBase, models.SoftDeleteMixin):
               'host', 'deleted', 'cleaned'),
         Index('instances_deleted_created_at_idx',
               'deleted', 'created_at'),
+        Index('instances_updated_at_project_id_idx',
+              'updated_at', 'project_id'),
         schema.UniqueConstraint('uuid', name='uniq_instances0uuid'),
     )
     injected_files = []
@@ -539,16 +542,14 @@ class Reservation(BASE, NovaBase, models.SoftDeleteMixin):
                          'QuotaUsage.deleted == 0)')
 
 
+# TODO(macsz) This class can be removed. It might need a DB migration to drop
+# this.
 class Snapshot(BASE, NovaBase, models.SoftDeleteMixin):
     """Represents a block storage device that can be attached to a VM."""
     __tablename__ = 'snapshots'
     __table_args__ = ()
     id = Column(String(36), primary_key=True, nullable=False)
     deleted = Column(String(36), default="")
-
-    @property
-    def name(self):
-        return CONF.snapshot_name_template % self.id
 
     @property
     def volume_name(self):

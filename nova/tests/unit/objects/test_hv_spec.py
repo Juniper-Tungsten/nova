@@ -13,35 +13,33 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from nova.compute import arch
-from nova.compute import hv_type
-from nova.compute import vm_mode
 from nova import objects
+from nova.objects import fields as obj_fields
 from nova.tests.unit.objects import test_objects
 
 
 spec_dict = {
-    'arch': arch.I686,
-    'hv_type': hv_type.KVM,
-    'vm_mode': vm_mode.HVM
+    'arch': obj_fields.Architecture.I686,
+    'hv_type': obj_fields.HVType.KVM,
+    'vm_mode': obj_fields.VMMode.HVM
 }
 
 spec_list = [
-    arch.I686,
-    hv_type.KVM,
-    vm_mode.HVM
+    obj_fields.Architecture.I686,
+    obj_fields.HVType.KVM,
+    obj_fields.VMMode.HVM
 ]
 
 spec_dict_vz = {
-    'arch': arch.I686,
-    'hv_type': hv_type.VIRTUOZZO,
-    'vm_mode': vm_mode.HVM
+    'arch': obj_fields.Architecture.I686,
+    'hv_type': obj_fields.HVType.VIRTUOZZO,
+    'vm_mode': obj_fields.VMMode.HVM
 }
 
 spec_dict_parallels = {
-    'arch': arch.I686,
-    'hv_type': hv_type.PARALLELS,
-    'vm_mode': vm_mode.HVM
+    'arch': obj_fields.Architecture.I686,
+    'hv_type': obj_fields.HVType.PARALLELS,
+    'vm_mode': obj_fields.VMMode.HVM
 }
 
 
@@ -53,9 +51,9 @@ class _TestHVSpecObject(object):
 
     def test_hv_spec_to_list(self):
         spec_obj = objects.HVSpec()
-        spec_obj.arch = arch.I686
-        spec_obj.hv_type = hv_type.KVM
-        spec_obj.vm_mode = vm_mode.HVM
+        spec_obj.arch = obj_fields.Architecture.I686
+        spec_obj.hv_type = obj_fields.HVType.KVM
+        spec_obj.vm_mode = obj_fields.VMMode.HVM
         spec = spec_obj.to_list()
         self.assertEqual(spec_list, spec)
 

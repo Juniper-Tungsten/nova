@@ -14,18 +14,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 import eventlet
 from eventlet import greenthread
 import mock
+from oslo_utils import uuidutils
 import six
 
-from nova.compute import arch
 from nova import exception
 from nova import objects
+from nova.objects import fields as obj_fields
 from nova import test
 from nova.tests.unit.virt.libvirt import fakelibvirt
+from nova.tests import uuidsentinel as uuids
 from nova.virt import event
 from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import driver as libvirt_driver
@@ -33,12 +33,17 @@ from nova.virt.libvirt import guest as libvirt_guest
 from nova.virt.libvirt import host
 
 
+class StringMatcher(object):
+    def __eq__(self, other):
+        return isinstance(other, six.string_types)
+
+
 class FakeVirtDomain(object):
 
     def __init__(self, id=-1, name=None):
         self._id = id
         self._name = name
-        self._uuid = str(uuid.uuid4())
+        self._uuid = uuidutils.generate_uuid()
 
     def name(self):
         return self._name
@@ -300,6 +305,69 @@ class HostTestCase(test.NoDBTestCase):
         thr2.wait()
         self.assertEqual(self.connect_calls, 1)
         self.assertEqual(self.register_calls, 1)
+
+    @mock.patch.object(host.Host, "_connect")
+    def test_conn_event(self, mock_conn):
+        handler = mock.MagicMock()
+        h = host.Host("qemu:///system", conn_event_handler=handler)
+
+        h.get_connection()
+        h._dispatch_conn_event()
+
+        handler.assert_called_once_with(True, None)
+
+    @mock.patch.object(host.Host, "_connect")
+    def test_conn_event_fail(self, mock_conn):
+        handler = mock.MagicMock()
+        h = host.Host("qemu:///system", conn_event_handler=handler)
+        mock_conn.side_effect = fakelibvirt.libvirtError('test')
+
+        self.assertRaises(exception.HypervisorUnavailable, h.get_connection)
+        h._dispatch_conn_event()
+
+        handler.assert_called_once_with(False, StringMatcher())
+
+        # Attempt to get a second connection, and assert that we don't add
+        # queue a second callback. Note that we can't call
+        # _dispatch_conn_event() and assert no additional call to the handler
+        # here as above. This is because we haven't added an event, so it would
+        # block. We mock the helper method which queues an event for callback
+        # instead.
+        with mock.patch.object(h, '_queue_conn_event_handler') as mock_queue:
+            self.assertRaises(exception.HypervisorUnavailable,
+                              h.get_connection)
+            mock_queue.assert_not_called()
+
+    @mock.patch.object(host.Host, "_test_connection")
+    @mock.patch.object(host.Host, "_connect")
+    def test_conn_event_up_down(self, mock_conn, mock_test_conn):
+        handler = mock.MagicMock()
+        h = host.Host("qemu:///system", conn_event_handler=handler)
+        mock_conn.side_effect = (mock.MagicMock(),
+                                 fakelibvirt.libvirtError('test'))
+        mock_test_conn.return_value = False
+
+        h.get_connection()
+        self.assertRaises(exception.HypervisorUnavailable, h.get_connection)
+        h._dispatch_conn_event()
+        h._dispatch_conn_event()
+
+        handler.assert_has_calls([
+            mock.call(True, None),
+            mock.call(False, StringMatcher())
+        ])
+
+    @mock.patch.object(host.Host, "_connect")
+    def test_conn_event_thread(self, mock_conn):
+        event = eventlet.event.Event()
+        h = host.Host("qemu:///system", conn_event_handler=event.send)
+        h.initialize()
+
+        h.get_connection()
+        event.wait()
+        # This test will timeout if it fails. Success is implicit in a
+        # timely return from wait(), indicating that the connection event
+        # handler was called.
 
     @mock.patch.object(fakelibvirt.virConnect, "getLibVersion")
     @mock.patch.object(fakelibvirt.virConnect, "getVersion")
@@ -802,7 +870,7 @@ Active:          8381604 kB
                 mock.patch('sys.platform', 'linux2'),
                 ) as (mock_file, mock_conn, mock_platform):
             mock_conn().getInfo.return_value = [
-                arch.X86_64, 15814, 8, 1208, 1, 1, 4, 2]
+                obj_fields.Architecture.X86_64, 15814, 8, 1208, 1, 1, 4, 2]
 
             self.assertEqual(6866, self.host.get_memory_mb_used())
 
@@ -824,7 +892,7 @@ Active:          8381604 kB
                 return "instance000001"
 
             def UUIDString(self):
-                return str(uuid.uuid4())
+                return uuids.fake
 
         m = mock.mock_open(read_data="""
 MemTotal:       16194180 kB
@@ -849,7 +917,7 @@ Active:          8381604 kB
                 libvirt_guest.Guest(DiagFakeDomain(1, 750)),
                 libvirt_guest.Guest(DiagFakeDomain(2, 1042))]
             mock_conn.getInfo.return_value = [
-                arch.X86_64, 15814, 8, 1208, 1, 1, 4, 2]
+                obj_fields.Architecture.X86_64, 15814, 8, 1208, 1, 1, 4, 2]
 
             self.assertEqual(8657, self.host.get_memory_mb_used())
             mock_list.assert_called_with(only_guests=False)

@@ -19,6 +19,7 @@ import functools
 import microversion_parse
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+from oslo_utils import encodeutils
 from oslo_utils import strutils
 import six
 import webob
@@ -40,11 +41,6 @@ _SUPPORTED_CONTENT_TYPES = (
     'application/json',
     'application/vnd.openstack.compute+json',
 )
-
-_MEDIA_TYPE_MAP = {
-    'application/vnd.openstack.compute+json': 'json',
-    'application/json': 'json',
-}
 
 # These are typically automatically created by routes as either defaults
 # collection or member methods.
@@ -79,10 +75,6 @@ ENV_LEGACY_V2 = 'openstack.legacy_v2'
 
 def get_supported_content_types():
     return _SUPPORTED_CONTENT_TYPES
-
-
-def get_media_map():
-    return dict(_MEDIA_TYPE_MAP.items())
 
 
 # NOTE(rlrossit): This function allows a get on both a dict-like and an
@@ -691,8 +683,13 @@ class Resource(wsgi.Application):
 
         if hasattr(response, 'headers'):
             for hdr, val in list(response.headers.items()):
-                # Headers must be utf-8 strings
-                response.headers[hdr] = utils.utf8(val)
+                if six.PY2:
+                    # In Py2.X Headers must be byte strings
+                    response.headers[hdr] = utils.utf8(val)
+                else:
+                    # In Py3.X Headers must be utf-8 strings
+                    response.headers[hdr] = encodeutils.safe_decode(
+                            utils.utf8(val))
 
             if not request.api_version_request.is_null():
                 response.headers[API_VERSION_REQUEST_HEADER] = \

@@ -23,10 +23,10 @@ from oslo_config import cfg
 from oslo_utils import fileutils
 import six
 
-from nova.compute import arch
 from nova import context
 from nova import exception
 from nova import objects
+from nova.objects import fields as obj_fields
 from nova import test
 from nova.tests.unit import fake_instance
 from nova.tests import uuidsentinel as uuids
@@ -649,8 +649,8 @@ disk size: 4.4M
         target = 't.qcow2'
         self.executes = []
         expected_commands = [('qemu-img', 'convert', '-O', 'raw',
-                              't.qcow2.part', 't.qcow2.converted',
-                              '-f', 'qcow2'),
+                              '-f', 'qcow2',
+                              't.qcow2.part', 't.qcow2.converted'),
                              ('rm', 't.qcow2.part'),
                              ('mv', 't.qcow2.converted', 't.qcow2')]
         images.fetch_to_raw(context, image_id, target)
@@ -723,7 +723,7 @@ disk size: 4.4M
         image_meta = objects.ImageMeta.from_dict(
             {'properties': {'architecture': "X86_64"}})
         image_arch = libvirt_utils.get_arch(image_meta)
-        self.assertEqual(arch.X86_64, image_arch)
+        self.assertEqual(obj_fields.Architecture.X86_64, image_arch)
 
     def test_update_mtime_error(self):
         with mock.patch.object(libvirt_utils, 'execute',

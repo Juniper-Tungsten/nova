@@ -23,6 +23,7 @@ import six
 
 from nova import db
 from nova.i18n import _
+from nova.objects import tag
 
 
 class ValidationRegex(object):
@@ -394,4 +395,10 @@ personality = {
         },
         'additionalProperties': False,
     }
+}
+
+tag = {
+    "type": "string",
+    "minLength": 1, "maxLength": tag.MAX_TAG_LENGTH,
+    "pattern": "^[^,/]*$"
 }

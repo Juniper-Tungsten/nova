@@ -40,6 +40,8 @@ from nova.virt.libvirt import vif
 
 CONF = cfg.CONF
 
+MIN_LIBVIRT_VHOSTUSER_MQ = vif.MIN_LIBVIRT_VHOSTUSER_MQ
+
 
 class LibvirtVifTestCase(test.NoDBTestCase):
 
@@ -428,6 +430,16 @@ class LibvirtVifTestCase(test.NoDBTestCase):
             has_traffic_filtering=False,
             network=self.os_vif_network)
 
+        self.os_vif_vhostuser = osv_objects.vif.VIFVHostUser(
+            id="dc065497-3c8d-4f44-8fb4-e1d33c16a536",
+            address="22:52:25:62:e2:aa",
+            plugin="openvswitch",
+            vif_name="vhudc065497-3c",
+            path='/var/run/openvswitch/vhudc065497-3c',
+            mode='client',
+            port_profile=self.os_vif_ovs_prof,
+            network=self.os_vif_network)
+
         self.os_vif_inst_info = osv_objects.instance_info.InstanceInfo(
             uuid="d5b1090c-9e00-4fa4-9504-4b1494857970",
             name="instance-000004da",
@@ -435,7 +447,7 @@ class LibvirtVifTestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(LibvirtVifTestCase, self).setUp()
-        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        self.useFixture(fakelibvirt.FakeLibvirtFixture(stub_os_vif=False))
         self.flags(allow_same_net_traffic=True)
         # os_vif.initialize is typically done in nova-compute startup
         os_vif.initialize()
@@ -587,6 +599,42 @@ class LibvirtVifTestCase(test.NoDBTestCase):
     @mock.patch('os.uname', return_value=('Linux', '', '4.2.0-35-generic'))
     def test_virtio_multiqueue_in_kernel_4(self, mock_uname):
         self._test_virtio_multiqueue(10, '10')
+
+    @mock.patch.object(host.Host, "has_min_version")
+    def test_vhostuser_os_vif_multiqueue(self, has_min_version):
+        d = vif.LibvirtGenericVIFDriver()
+        hostimpl = host.Host("qemu:///system")
+        image_meta = objects.ImageMeta.from_dict(
+            {'properties': {'hw_vif_model': 'virtio',
+                            'hw_vif_multiqueue_enabled': 'true'}})
+        flavor = objects.Flavor(name='m1.small',
+                    memory_mb=128,
+                    vcpus=4,
+                    root_gb=0,
+                    ephemeral_gb=0,
+                    swap=0,
+                    deleted_at=None,
+                    deleted=0,
+                    created_at=None, flavorid=1,
+                    is_public=True, vcpu_weight=None,
+                    id=2, disabled=False, rxtx_factor=1.0)
+        conf = d.get_base_config(None, 'ca:fe:de:ad:be:ef', image_meta,
+                                 flavor, 'kvm')
+        self.assertEqual(4, conf.vhost_queues)
+        self.assertEqual('vhost', conf.driver_name)
+
+        has_min_version.return_value = True
+        d._set_config_VIFVHostUser(self.instance, self.os_vif_vhostuser,
+                                   conf, hostimpl)
+        self.assertEqual(4, conf.vhost_queues)
+        self.assertEqual('vhost', conf.driver_name)
+        has_min_version.assert_called_once_with(MIN_LIBVIRT_VHOSTUSER_MQ)
+
+        has_min_version.return_value = False
+        d._set_config_VIFVHostUser(self.instance, self.os_vif_vhostuser,
+                                   conf, hostimpl)
+        self.assertIsNone(conf.vhost_queues)
+        self.assertIsNone(conf.driver_name)
 
     def test_multiple_nics(self):
         conf = self._get_conf()
@@ -937,6 +985,7 @@ class LibvirtVifTestCase(test.NoDBTestCase):
         instance.uuid = '46a4308b-e75a-4f90-a34a-650c86ca18b2'
         instance.project_id = 'b168ea26fa0c49c1a84e1566d9565fa5'
         instance.display_name = 'instance1'
+        instance.image_meta = objects.ImageMeta.from_dict({'properties': {}})
         with mock.patch.object(utils, 'execute') as execute:
             d.plug(instance, self.vif_vrouter)
             execute.assert_has_calls([
@@ -957,6 +1006,36 @@ class LibvirtVifTestCase(test.NoDBTestCase):
                     '--port_type=NovaVMPort '
                     '--tx_vlan_id=-1 '
                     '--rx_vlan_id=-1', run_as_root=True)])
+
+    @mock.patch('nova.network.linux_net.create_tap_dev')
+    def test_plug_vrouter_with_details_multiqueue(self, mock_create_tap_dev):
+        d = vif.LibvirtGenericVIFDriver()
+        instance = mock.Mock()
+        instance.name = 'instance-name'
+        instance.uuid = '46a4308b-e75a-4f90-a34a-650c86ca18b2'
+        instance.project_id = 'b168ea26fa0c49c1a84e1566d9565fa5'
+        instance.display_name = 'instance1'
+        instance.image_meta = objects.ImageMeta.from_dict({
+            'properties': {'hw_vif_multiqueue_enabled': True}})
+        instance.flavor.vcpus = 2
+        with mock.patch.object(utils, 'execute') as execute:
+            d.plug(instance, self.vif_vrouter)
+            mock_create_tap_dev.assert_called_once_with('tap-xxx-yyy-zzz',
+                                                        multiqueue=True)
+            execute.assert_called_once_with(
+                'vrouter-port-control',
+                '--oper=add --uuid=vif-xxx-yyy-zzz '
+                '--instance_uuid=46a4308b-e75a-4f90-a34a-650c86ca18b2 '
+                '--vn_uuid=network-id-xxx-yyy-zzz '
+                '--vm_project_uuid=b168ea26fa0c49c1a84e1566d9565fa5 '
+                '--ip_address=0.0.0.0 '
+                '--ipv6_address=None '
+                '--vm_name=instance1 '
+                '--mac=ca:fe:de:ad:be:ef '
+                '--tap_name=tap-xxx-yyy-zzz '
+                '--port_type=NovaVMPort '
+                '--tx_vlan_id=-1 '
+                '--rx_vlan_id=-1', run_as_root=True)
 
     def test_ivs_ethernet_driver(self):
         d = vif.LibvirtGenericVIFDriver()
@@ -1320,33 +1399,6 @@ class LibvirtVifTestCase(test.NoDBTestCase):
         d = vif.LibvirtGenericVIFDriver()
         d.unplug(self.instance, self.vif_vhostuser_fp)
         mock_delete_fp_dev.assert_has_calls([mock.call('tap-xxx-yyy-zzz')])
-
-    def test_vhostuser_ovs_plug(self):
-
-        calls = {
-            'create_ovs_vif_port': [
-                 mock.call(
-                     'br0', 'usv-xxx-yyy-zzz',
-                     'aaa-bbb-ccc', 'ca:fe:de:ad:be:ef',
-                     'f0000000-0000-0000-0000-000000000001', 9000,
-                     interface_type=network_model.OVS_VHOSTUSER_INTERFACE_TYPE
-                 )]
-        }
-        with mock.patch.object(linux_net,
-                               'create_ovs_vif_port') as create_ovs_vif_port:
-            d = vif.LibvirtGenericVIFDriver()
-            d.plug(self.instance, self.vif_vhostuser_ovs)
-            create_ovs_vif_port.assert_has_calls(calls['create_ovs_vif_port'])
-
-    def test_vhostuser_ovs_unplug(self):
-        calls = {
-            'delete_ovs_vif_port': [mock.call('br0', 'usv-xxx-yyy-zzz')]
-        }
-        with mock.patch.object(linux_net,
-                               'delete_ovs_vif_port') as delete_port:
-            d = vif.LibvirtGenericVIFDriver()
-            d.unplug(self.instance, self.vif_vhostuser_ovs)
-            delete_port.assert_has_calls(calls['delete_ovs_vif_port'])
 
     def test_vhostuser_ovs_fp_plug(self):
         calls = {

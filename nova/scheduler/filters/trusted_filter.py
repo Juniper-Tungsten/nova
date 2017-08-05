@@ -82,7 +82,7 @@ class AttestationService(object):
         # :returns: result data
         # :raises: IOError if the request fails
 
-        action_url = "https://%s:%s%s/%s" % (self.host, self.port,
+        action_url = "https://%s:%d%s/%s" % (self.host, self.port,
                                              self.api_url, action_url)
         try:
             res = requests.request(method, action_url, data=body,
@@ -153,6 +153,14 @@ class ComputeAttestationCache(object):
         for compute in computes:
             host = compute.hypervisor_hostname
             self._init_cache_entry(host)
+
+        # TODO(sfinucan): Remove this warning when the named config options
+        # gains a 'min' parameter.
+        if CONF.trusted_computing.attestation_auth_timeout < 0:
+            LOG.warning(_LW('Future versions of nova will restrict the '
+                '"trusted_computing.attestation_auth_timeout" config option '
+                'to values >=0. Update your configuration file to mitigate '
+                'future upgrade issues.'))
 
     def _cache_valid(self, host):
         cachevalid = False

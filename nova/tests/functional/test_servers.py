@@ -19,6 +19,7 @@ import zlib
 
 import mock
 from oslo_log import log as logging
+from oslo_serialization import base64
 from oslo_utils import timeutils
 
 from nova.compute import api as compute_api
@@ -475,14 +476,14 @@ class ServersTest(ServersTestBase):
         data = 'Hello, World!'
         personality.append({
             'path': '/helloworld.txt',
-            'contents': data.encode('base64'),
+            'contents': base64.encode_as_bytes(data),
         })
 
         # Inject a binary file
         data = zlib.compress('Hello, World!')
         personality.append({
             'path': '/helloworld.zip',
-            'contents': data.encode('base64'),
+            'contents': base64.encode_as_bytes(data),
         })
 
         # Create server
@@ -502,6 +503,48 @@ class ServersTest(ServersTestBase):
 
         found_server = self._wait_for_state_change(found_server, 'BUILD')
         self.assertEqual('ACTIVE', found_server['status'])
+
+        # Cleanup
+        self._delete_server(created_server_id)
+
+    def test_stop_start_servers_negative_invalid_state(self):
+        # Create server
+        server = self._build_minimal_create_server_request()
+        created_server = self.api.post_server({"server": server})
+        created_server_id = created_server['id']
+
+        found_server = self._wait_for_state_change(created_server, 'BUILD')
+        self.assertEqual('ACTIVE', found_server['status'])
+
+        # Start server in ACTIVE
+        # NOTE(mkoshiya): When os-start API runs, the server status
+        # must be SHUTOFF.
+        # By returning 409, I want to confirm that the ACTIVE server does not
+        # cause unexpected behavior.
+        post = {'os-start': {}}
+        ex = self.assertRaises(client.OpenStackApiException,
+                               self.api.post_server_action,
+                               created_server_id, post)
+        self.assertEqual(409, ex.response.status_code)
+        self.assertEqual('ACTIVE', found_server['status'])
+
+        # Stop server
+        post = {'os-stop': {}}
+        self.api.post_server_action(created_server_id, post)
+        found_server = self._wait_for_state_change(found_server, 'ACTIVE')
+        self.assertEqual('SHUTOFF', found_server['status'])
+
+        # Stop server in SHUTOFF
+        # NOTE(mkoshiya): When os-stop API runs, the server status
+        # must be ACTIVE or ERROR.
+        # By returning 409, I want to confirm that the SHUTOFF server does not
+        # cause unexpected behavior.
+        post = {'os-stop': {}}
+        ex = self.assertRaises(client.OpenStackApiException,
+                               self.api.post_server_action,
+                               created_server_id, post)
+        self.assertEqual(409, ex.response.status_code)
+        self.assertEqual('SHUTOFF', found_server['status'])
 
         # Cleanup
         self._delete_server(created_server_id)
@@ -596,21 +639,21 @@ class ServersTestV219(ServersTestBase):
         with self.assertRaisesRegex(client.OpenStackApiException,
                                     ".*Unexpected status code.*") as cm:
             self._create_server(True, desc)
-        self.assertEqual(400, cm.exception.response.status_code)
+            self.assertEqual(400, cm.exception.response.status_code)
 
     def _update_assertRaisesRegex(self, server_id, desc):
         # Verifies that a 400 error is thrown on update server
         with self.assertRaisesRegex(client.OpenStackApiException,
                                     ".*Unexpected status code.*") as cm:
             self._update_server(server_id, True, desc)
-        self.assertEqual(400, cm.exception.response.status_code)
+            self.assertEqual(400, cm.exception.response.status_code)
 
     def _rebuild_assertRaisesRegex(self, server_id, desc):
         # Verifies that a 400 error is thrown on rebuild server
         with self.assertRaisesRegex(client.OpenStackApiException,
                                     ".*Unexpected status code.*") as cm:
             self._rebuild_server(server_id, True, desc)
-        self.assertEqual(400, cm.exception.response.status_code)
+            self.assertEqual(400, cm.exception.response.status_code)
 
     def test_create_server_with_description(self):
         self.api.microversion = '2.19'

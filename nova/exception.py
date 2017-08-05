@@ -22,8 +22,6 @@ SHOULD include dedicated exception logging.
 
 """
 
-import sys
-
 from oslo_log import log as logging
 import six
 import webob.exc
@@ -88,18 +86,13 @@ class NovaException(Exception):
                 message = self.msg_fmt % kwargs
 
             except Exception:
-                exc_info = sys.exc_info()
                 # kwargs doesn't match a variable in the message
                 # log the issue and the kwargs
                 LOG.exception(_LE('Exception in string format operation'))
                 for name, value in six.iteritems(kwargs):
                     LOG.error("%s: %s" % (name, value))  # noqa
 
-                if CONF.fatal_exception_format_errors:
-                    six.reraise(*exc_info)
-                else:
-                    # at least get the core message out if something happened
-                    message = self.msg_fmt
+                message = self.msg_fmt
 
         self.message = message
         super(NovaException, self).__init__(message)
@@ -192,11 +185,6 @@ class InvalidBDMSnapshot(InvalidBDM):
 class InvalidBDMVolume(InvalidBDM):
     msg_fmt = _("Block Device Mapping is Invalid: "
                 "failed to get volume %(id)s.")
-
-
-class UnsupportedBDMVolumeAuthMethod(InvalidBDM):
-    msg_fmt = _("Block Device Mapping is Invalid: "
-                "%(auth_method)s is unsupported.")
 
 
 class InvalidBDMImage(InvalidBDM):
@@ -1661,10 +1649,6 @@ class InstanceGroupMemberNotFound(NotFound):
                 "id %(instance_id)s.")
 
 
-class InstanceGroupPolicyNotFound(NotFound):
-    msg_fmt = _("Instance group %(group_uuid)s has no policy %(policy)s.")
-
-
 class InstanceGroupSaveException(NovaException):
     msg_fmt = _("%(field)s should not be part of the updates.")
 
@@ -2124,6 +2108,23 @@ class ResourceProviderInUse(NovaException):
 
 class InventoryWithResourceClassNotFound(NotFound):
     msg_fmt = _("No inventory of class %(resource_class)s found.")
+
+
+class ResourceClassExists(NovaException):
+    msg_fmt = _("Resource class %(resource_class)s already exists.")
+
+
+class ResourceClassInUse(Invalid):
+    msg_fmt = _("Cannot delete resource class %(resource_class)s. "
+                "Class is in use in inventory.")
+
+
+class ResourceClassCannotDeleteStandard(Invalid):
+    msg_fmt = _("Cannot delete standard resource class %(resource_class)s.")
+
+
+class ResourceClassCannotUpdateStandard(Invalid):
+    msg_fmt = _("Cannot update standard resource class %(resource_class)s.")
 
 
 class InvalidInventory(Invalid):

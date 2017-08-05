@@ -38,11 +38,9 @@ You can specify one or more networks to which the server connects at
 launch time. Users can also specify a specific port on the network or
 the fixed IP address to assign to the server interface.
 
-    **Note**
-
-    You can use both IPv4 and IPv6 addresses as access addresses and you
-    can assign both addresses simultaneously. You can update access
-    addresses after you create a server.
+.. note:: You can use both IPv4 and IPv6 addresses as access addresses,
+          and you can assign both addresses simultaneously. You can update
+          access addresses after you create a server.
 
 **Server personality**
 
@@ -61,10 +59,10 @@ Follow these guidelines when you inject files:
    determines the maximum size of the file contents. The image that you
    use to create the server determines this value.
 
-       **Note**
+   .. note::
 
-       The maximum limit refers to the number of bytes in the decoded
-       data and not to the number of characters in the encoded data.
+      The maximum limit refers to the number of bytes in the decoded
+      data and not to the number of characters in the encoded data.
 
 -  The ``maxPersonality`` absolute limit defines the maximum number of
    file path and content pairs that you can supply. The compute provider
@@ -186,7 +184,7 @@ Response
   - links: links
   - name: server_name
 
-**Example List Servers: JSON response**
+**Example List Servers**
 
 .. literalinclude:: ../../doc/api_samples/servers/servers-list-resp.json
    :language: javascript
@@ -226,20 +224,20 @@ request.
 
 .. note:: Starting with microversion 2.37 the ``networks`` field is required.
 
-Preconditions
+**Preconditions**
 
 - The user must have sufficient server quota to create the number of
   servers requested.
 - The connection to the Image service is valid.
 
-Asynchronous postconditions
+**Asynchronous postconditions**
 
 - With correct permissions, you can see the server status as
   ``ACTIVE`` through API calls.
 - With correct access, you can see the created server in the compute
   node that OpenStack Compute manages.
 
-Troubleshooting
+**Troubleshooting**
 
 - If the server status remains ``BUILDING`` or shows another error
   status, the request failed. Ensure you meet the preconditions then
@@ -304,6 +302,7 @@ Request
   - block_device_mapping_v2.delete_on_termination: delete_on_termination
   - block_device_mapping_v2.guest_format: guest_format
   - block_device_mapping_v2.boot_index: boot_index
+  - block_device_mapping_v2.uuid: block_device_uuid
   - block_device_mapping_v2.tag: device_tag
   - config_drive: config_drive
   - key_name: key_name
@@ -311,7 +310,7 @@ Request
   - OS-DCF:diskConfig: OS-DCF:diskConfig
   - description: server_description
 
-**Example Create Server: JSON request**
+**Example Create Server**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-create-req.json
    :language: javascript
@@ -367,7 +366,7 @@ Response
   - OS-EXT-SERV-ATTR:root_device_name: server_root_device_name
   - OS-EXT-SERV-ATTR:user_data: server_user_data
 
-**Example Create Server: JSON response**
+**Example Create Server**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-create-resp.json
    :language: javascript
@@ -524,8 +523,9 @@ Response
   - OS-EXT-SERV-ATTR:ramdisk_id: server_ramdisk_id
   - OS-EXT-SERV-ATTR:root_device_name: server_root_device_name
   - OS-EXT-SERV-ATTR:user_data: server_user_data
+  - locked: locked
 
-**Example List Servers Detailed: JSON response**
+**Example List Servers Detailed**
 
 .. literalinclude:: /../../doc/api_samples/servers/servers-details-resp.json
    :language: javascript
@@ -548,7 +548,7 @@ To hide ``addresses`` information for instances in a certain state, set the ``os
 
 HostId is unique per account and is not globally unique.
 
-Preconditions
+**Preconditions**
 
 The server must exist.
 
@@ -561,7 +561,6 @@ Request
 -------
 
 .. rest_parameters:: parameters.yaml
-
 
   - server_id: server_id_path
 
@@ -611,8 +610,9 @@ Response
   - OS-EXT-SERV-ATTR:ramdisk_id: server_ramdisk_id
   - OS-EXT-SERV-ATTR:root_device_name: server_root_device_name
   - OS-EXT-SERV-ATTR:user_data: server_user_data
+  - locked: locked
 
-**Example Show Server Details: JSON response**
+**Example Show Server Details**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-get-resp.json
    :language: javascript
@@ -634,15 +634,14 @@ Request
 
 .. rest_parameters:: parameters.yaml
 
-
   - server_id: server_id_path
   - accessIPv4: accessIPv4_in
   - accessIPv6: accessIPv6_in
-  - name: server_name
+  - name: server_name_optional
   - OS-DCF:diskConfig: OS-DCF:diskConfig
   - description: server_description
 
-**Example Update server name: JSON request**
+**Example Update server name**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-update-req.json
    :language: javascript
@@ -705,8 +704,9 @@ Response
   - OS-EXT-SERV-ATTR:ramdisk_id: server_ramdisk_id
   - OS-EXT-SERV-ATTR:root_device_name: server_root_device_name
   - OS-EXT-SERV-ATTR:user_data: server_user_data
+  - locked: locked
 
-**Example Update server name: JSON response**
+**Example Update server name**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-update-resp.json
    :language: javascript
@@ -718,7 +718,7 @@ Delete Server
 
 Deletes a server.
 
-Preconditions
+**Preconditions**
 
 - The server must exist.
 - Anyone can delete a server when the status of the server is not
@@ -726,7 +726,7 @@ Preconditions
 - If the server is locked, you must have administrator privileges to
   delete the server.
 
-Asynchronous postconditions
+**Asynchronous postconditions**
 
 - With correct permissions, you can see the server status as
   ``DELETED`` through API calls.
@@ -735,7 +735,7 @@ Asynchronous postconditions
 - The server managed by OpenStack Compute is deleted on the compute
   node.
 
-Troubleshooting
+**Troubleshooting**
 
 - If server status remains in ``deleting`` status or another error
   status, the request failed. Ensure that you meet the
@@ -763,7 +763,6 @@ Request
 -------
 
 .. rest_parameters:: parameters.yaml
-
 
   - server_id: server_id_path
 

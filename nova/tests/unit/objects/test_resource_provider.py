@@ -10,14 +10,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import uuid
-
 import mock
+import six
 
+from nova import context
 from nova import exception
 from nova import objects
 from nova.objects import fields
 from nova.objects import resource_provider
+from nova import test
 from nova.tests.unit.objects import test_objects
 from nova.tests import uuidsentinel as uuids
 
@@ -31,7 +32,7 @@ VCPU_ID = objects.fields.ResourceClass.STANDARD.index(
 
 _RESOURCE_PROVIDER_ID = 1
 _RESOURCE_PROVIDER_UUID = uuids.resource_provider
-_RESOURCE_PROVIDER_NAME = uuids.resource_name
+_RESOURCE_PROVIDER_NAME = six.text_type(uuids.resource_name)
 _RESOURCE_PROVIDER_DB = {
     'id': _RESOURCE_PROVIDER_ID,
     'uuid': _RESOURCE_PROVIDER_UUID,
@@ -66,7 +67,8 @@ def _fake_ensure_cache(ctxt):
     cache.id_from_string.return_value = _RESOURCE_CLASS_ID
 
 
-class _TestResourceProviderNoDB(object):
+class TestResourceProviderNoDB(test_objects._LocalTest):
+    USES_DB = False
 
     @mock.patch('nova.objects.ResourceProvider._get_by_uuid_from_db',
                 return_value=_RESOURCE_PROVIDER_DB)
@@ -101,16 +103,6 @@ class _TestResourceProviderNoDB(object):
         obj = objects.ResourceProvider(context=self.context)
         self.assertRaises(exception.ObjectActionError,
                           obj.create)
-
-
-class TestResourceProviderNoDB(test_objects._LocalTest,
-                               _TestResourceProviderNoDB):
-    USES_DB = False
-
-
-class TestRemoteResourceProviderNoDB(test_objects._RemoteTest,
-                                     _TestResourceProviderNoDB):
-    USES_DB = False
 
 
 class TestResourceProvider(test_objects._LocalTest):
@@ -148,7 +140,9 @@ class TestResourceProvider(test_objects._LocalTest):
                           self.context, uuids.missing)
 
 
-class _TestInventoryNoDB(object):
+class TestInventoryNoDB(test_objects._LocalTest):
+    USES_DB = False
+
     @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
             side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.Inventory._create_in_db',
@@ -248,16 +242,6 @@ class _TestInventoryNoDB(object):
         self.assertEqual(2, inv.capacity)
 
 
-class TestInventoryNoDB(test_objects._LocalTest,
-                        _TestInventoryNoDB):
-    USES_DB = False
-
-
-class TestRemoteInventoryNoDB(test_objects._RemoteTest,
-                              _TestInventoryNoDB):
-    USES_DB = False
-
-
 class TestInventory(test_objects._LocalTest):
 
     def _make_inventory(self, rp_uuid=None):
@@ -322,8 +306,8 @@ class TestInventory(test_objects._LocalTest):
         # and should be moved.
         # Create 2 resource providers with DISK_GB resources. And
         # update total value for second one.
-        db_rp1, db_inv1 = self._make_inventory(str(uuid.uuid4()))
-        db_rp2, db_inv2 = self._make_inventory(str(uuid.uuid4()))
+        db_rp1, db_inv1 = self._make_inventory(uuids.fake_1)
+        db_rp2, db_inv2 = self._make_inventory(uuids.fake_2)
 
         objects.Inventory._update_in_db(self.context,
                                         db_inv2.id,
@@ -473,7 +457,9 @@ class TestInventory(test_objects._LocalTest):
                           target_version='1.0')
 
 
-class _TestAllocationNoDB(object):
+class TestAllocationNoDB(test_objects._LocalTest):
+    USES_DB = False
+
     @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
             side_effect=_fake_ensure_cache)
     @mock.patch('nova.objects.Allocation._create_in_db',
@@ -522,17 +508,8 @@ class _TestAllocationNoDB(object):
                           target_version='1.0')
 
 
-class TestAllocationNoDB(test_objects._LocalTest,
-                         _TestAllocationNoDB):
+class TestAllocationListNoDB(test_objects._LocalTest):
     USES_DB = False
-
-
-class TestRemoteAllocationNoDB(test_objects._RemoteTest,
-                               _TestAllocationNoDB):
-    USES_DB = False
-
-
-class _TestAllocationListNoDB(object):
 
     @mock.patch('nova.objects.resource_provider._ensure_rc_cache',
             side_effect=_fake_ensure_cache)
@@ -551,16 +528,6 @@ class _TestAllocationListNoDB(object):
         self.assertEqual(_ALLOCATION_DB['used'], allocations[0].used)
 
 
-class TestAllocationListNoDB(test_objects._LocalTest,
-                         _TestAllocationListNoDB):
-    USES_DB = False
-
-
-class TestRemoteAllocationListNoDB(test_objects._RemoteTest,
-                               _TestAllocationListNoDB):
-    USES_DB = False
-
-
 class TestUsageNoDB(test_objects._LocalTest):
     USES_DB = False
 
@@ -569,3 +536,22 @@ class TestUsageNoDB(test_objects._LocalTest):
         self.assertRaises(ValueError,
                           usage.obj_to_primitive,
                           target_version='1.0')
+
+
+class TestResourceClass(test.NoDBTestCase):
+
+    def setUp(self):
+        super(TestResourceClass, self).setUp()
+        self.user_id = 'fake-user'
+        self.project_id = 'fake-project'
+        self.context = context.RequestContext(self.user_id, self.project_id)
+
+    def test_cannot_create_with_id(self):
+        rc = objects.ResourceClass(self.context, id=1, name='CUSTOM_IRON_NFV')
+        exc = self.assertRaises(exception.ObjectActionError, rc.create)
+        self.assertIn('already created', str(exc))
+
+    def test_cannot_create_requires_name(self):
+        rc = objects.ResourceClass(self.context)
+        exc = self.assertRaises(exception.ObjectActionError, rc.create)
+        self.assertIn('name is required', str(exc))

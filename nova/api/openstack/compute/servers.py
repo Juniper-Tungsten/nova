@@ -653,6 +653,7 @@ class ServersController(wsgi.Controller):
             raise exc.HTTPBadRequest(explanation=msg)
         except (exception.ImageNotActive,
                 exception.ImageBadRequest,
+                exception.ImageNotAuthorized,
                 exception.FixedIpNotFoundForAddress,
                 exception.FlavorNotFound,
                 exception.FlavorDiskTooSmall,
@@ -708,7 +709,7 @@ class ServersController(wsgi.Controller):
         req.cache_db_instances(instances)
         server = self._view_builder.create(req, instances[0])
 
-        if CONF.enable_instance_password:
+        if CONF.api.enable_instance_password:
             server['server']['adminPass'] = password
 
         robj = wsgi.ResponseObject(server)
@@ -1032,7 +1033,7 @@ class ServersController(wsgi.Controller):
 
         # Add on the admin_password attribute since the view doesn't do it
         # unless instance passwords are disabled
-        if CONF.enable_instance_password:
+        if CONF.api.enable_instance_password:
             view['server']['adminPass'] = password
 
         robj = wsgi.ResponseObject(view)
@@ -1053,7 +1054,11 @@ class ServersController(wsgi.Controller):
         image_name = common.normalize_name(entity["name"])
         metadata = entity.get('metadata', {})
 
-        common.check_img_metadata_properties_quota(context, metadata)
+        # Starting from microversion 2.39 we don't check quotas on createImage
+        if api_version_request.is_supported(
+                req, max_version=
+                api_version_request.MAX_IMAGE_META_PROXY_API_VERSION):
+            common.check_img_metadata_properties_quota(context, metadata)
 
         instance = self._get_server(context, req, id)
 

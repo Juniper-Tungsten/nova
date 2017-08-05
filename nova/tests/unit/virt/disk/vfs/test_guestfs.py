@@ -110,12 +110,10 @@ class VirtDiskVFSGuestFSTest(test.NoDBTestCase):
         vfs.setup()
 
         self.assertIsNone(vfs.handle.backend_settings)
-
-        def fake_inspect_os():
-            return []
-
-        self.stubs.Set(vfs.handle, 'inspect_os', fake_inspect_os)
-        self.assertRaises(exception.NovaException, vfs.setup_os_inspect)
+        with mock.patch.object(
+            vfs.handle, 'inspect_os', return_value=[]) as mock_inspect_os:
+            self.assertRaises(exception.NovaException, vfs.setup_os_inspect)
+            mock_inspect_os.assert_called_once_with()
 
     def test_appliance_setup_inspect_multi_boots_raises(self):
         vfs = vfsimpl.VFSGuestFS(self.qcowfile,
@@ -125,11 +123,11 @@ class VirtDiskVFSGuestFSTest(test.NoDBTestCase):
 
         self.assertIsNone(vfs.handle.backend_settings)
 
-        def fake_inspect_os():
-            return ['fake1', 'fake2']
-
-        self.stubs.Set(vfs.handle, 'inspect_os', fake_inspect_os)
-        self.assertRaises(exception.NovaException, vfs.setup_os_inspect)
+        with mock.patch.object(
+            vfs.handle, 'inspect_os',
+            return_value=['fake1', 'fake2']) as mock_inspect_os:
+            self.assertRaises(exception.NovaException, vfs.setup_os_inspect)
+            mock_inspect_os.assert_called_once_with()
 
     def test_appliance_setup_static_nopart(self):
         vfs = vfsimpl.VFSGuestFS(self.qcowfile,
@@ -255,12 +253,27 @@ class VirtDiskVFSGuestFSTest(test.NoDBTestCase):
 
         vfs.teardown()
 
+    def test_set_ownership_not_supported(self):
+        # NOTE(andreaf) Setting ownership relies on /etc/passwd and/or
+        # /etc/group being available in the image, which is not always the
+        # case - e.g. CirrOS image before boot.
+        vfs = vfsimpl.VFSGuestFS(self.qcowfile)
+        vfs.setup()
+        self.stub_out('nova.tests.unit.virt.disk.vfs.fakeguestfs.GuestFS.'
+                      'CAN_SET_OWNERSHIP', False)
+
+        self.assertRaises(exception.NovaException, vfs.set_ownership,
+                          "/some/file", "fred", None)
+        self.assertRaises(exception.NovaException, vfs.set_ownership,
+                          "/some/file", None, "users")
+
     def test_close_on_error(self):
         vfs = vfsimpl.VFSGuestFS(self.qcowfile)
         vfs.setup()
         self.assertFalse(vfs.handle.kwargs['close_on_exit'])
         vfs.teardown()
-        self.stubs.Set(fakeguestfs.GuestFS, 'SUPPORT_CLOSE_ON_EXIT', False)
+        self.stub_out('nova.tests.unit.virt.disk.vfs.fakeguestfs.GuestFS.'
+                      'SUPPORT_CLOSE_ON_EXIT', False)
         vfs = vfsimpl.VFSGuestFS(self.qcowfile)
         vfs.setup()
         self.assertNotIn('close_on_exit', vfs.handle.kwargs)
@@ -271,7 +284,8 @@ class VirtDiskVFSGuestFSTest(test.NoDBTestCase):
         vfs.setup()
         self.assertFalse(vfs.handle.kwargs['python_return_dict'])
         vfs.teardown()
-        self.stubs.Set(fakeguestfs.GuestFS, 'SUPPORT_RETURN_DICT', False)
+        self.stub_out('nova.tests.unit.virt.disk.vfs.fakeguestfs.GuestFS.'
+                      'SUPPORT_RETURN_DICT', False)
         vfs = vfsimpl.VFSGuestFS(self.qcowfile)
         vfs.setup()
         self.assertNotIn('python_return_dict', vfs.handle.kwargs)
@@ -320,6 +334,7 @@ class VirtDiskVFSGuestFSTest(test.NoDBTestCase):
         m = mock.MagicMock()
         m.launch.side_effect = Exception
         vfs = vfsimpl.VFSGuestFS(self.qcowfile)
+        mock_access.return_value = False
         with mock.patch('eventlet.tpool.Proxy', return_value=m):
             self.assertRaises(exception.LibguestfsCannotReadKernel,
                                     vfs.inspect_capabilities)

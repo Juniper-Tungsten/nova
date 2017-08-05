@@ -29,6 +29,7 @@ from nova.db.sqlalchemy import migration as sqla_migration
 from nova import exception
 from nova import objects
 from nova import test
+from nova.tests import fixtures as nova_fixtures
 from nova.tests.unit.db import fakes as db_fakes
 from nova.tests.unit.objects import test_network
 from nova.tests import uuidsentinel
@@ -848,9 +849,13 @@ class CellCommandsTestCase(test.NoDBTestCase):
         mock_db_cell_create.assert_called_once_with(ctxt, exp_values)
 
 
-class CellV2CommandsTestCase(test.TestCase):
+class CellV2CommandsTestCase(test.NoDBTestCase):
+    USES_DB_SELF = True
+
     def setUp(self):
         super(CellV2CommandsTestCase, self).setUp()
+        self.useFixture(nova_fixtures.Database())
+        self.useFixture(nova_fixtures.Database(database='api'))
         self.output = StringIO()
         self.useFixture(fixtures.MonkeyPatch('sys.stdout', self.output))
         self.commands = manage.CellV2Commands()
@@ -1358,10 +1363,12 @@ class CellV2CommandsTestCase(test.TestCase):
             objects.ComputeNodeList(objects=compute_nodes[1:]),
             objects.ComputeNodeList(objects=compute_nodes[:1]))
 
+        cell_mapping0 = objects.CellMapping(
+            uuid=objects.CellMapping.CELL0_UUID)
         cell_mapping1 = objects.CellMapping(uuid=uuidutils.generate_uuid())
         cell_mapping2 = objects.CellMapping(uuid=uuidutils.generate_uuid())
         mock_cell_mapping_get_all.return_value = objects.CellMappingList(
-            objects=[cell_mapping1, cell_mapping2])
+            objects=[cell_mapping0, cell_mapping1, cell_mapping2])
 
         self.commands.discover_hosts()
 
@@ -1383,3 +1390,23 @@ class CellV2CommandsTestCase(test.TestCase):
         self.assertEqual(host_mapping_calls, mock_host_mapping.call_args_list)
 
         mock_cell_mapping_get_by_uuid.assert_not_called()
+
+    def test_validate_transport_url_in_conf(self):
+        from_conf = 'fake://user:pass@host:port/'
+        self.flags(transport_url=from_conf)
+        self.assertEqual(from_conf,
+                         self.commands._validate_transport_url(None))
+
+    def test_validate_transport_url_on_command_line(self):
+        from_cli = 'fake://user:pass@host:port/'
+        self.assertEqual(from_cli,
+                         self.commands._validate_transport_url(from_cli))
+
+    def test_validate_transport_url_missing(self):
+        self.assertIsNone(self.commands._validate_transport_url(None))
+
+    def test_validate_transport_url_favors_command_line(self):
+        self.flags(transport_url='fake://user:pass@host:port/')
+        from_cli = 'fake://otheruser:otherpass@otherhost:otherport'
+        self.assertEqual(from_cli,
+                         self.commands._validate_transport_url(from_cli))

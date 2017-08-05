@@ -32,11 +32,11 @@ class JsonFileVendorData(vendordata.VendorDataDriver):
     def __init__(self, *args, **kwargs):
         super(JsonFileVendorData, self).__init__(*args, **kwargs)
         data = {}
-        fpath = CONF.vendordata_jsonfile_path
+        fpath = CONF.api.vendordata_jsonfile_path
         logprefix = "vendordata_jsonfile_path[%s]:" % fpath
         if fpath:
             try:
-                with open(fpath, "r") as fp:
+                with open(fpath, "rb") as fp:
                     data = jsonutils.load(fp)
             except IOError as e:
                 if e.errno == errno.ENOENT:

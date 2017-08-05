@@ -80,9 +80,13 @@ class BuildRequest(base.NovaObject):
             LOG.exception(_LE('Could not deserialize instance in '
                               'BuildRequest'))
             raise exception.BuildRequestNotFound(uuid=self.instance_uuid)
+        # NOTE(sbauza): The instance primitive should already have the deleted
+        # field being set, so when hydrating it back here, we should get the
+        # right value but in case we don't have it, let's suppose that the
+        # instance is not deleted, which is the default value for that field.
+        self.instance.obj_set_defaults('deleted')
         # NOTE(alaski): Set some fields on instance that are needed by the api,
         # not lazy-loadable, and don't change.
-        self.instance.deleted = 0
         self.instance.disable_terminate = False
         self.instance.terminated_at = None
         self.instance.host = None
@@ -210,6 +214,21 @@ class BuildRequest(base.NovaObject):
         updates = self._get_update_primitives()
         db_req = self._save_in_db(self._context, self.id, updates)
         self._from_db_object(self._context, self, db_req)
+
+    def get_new_instance(self, context):
+        # NOTE(danms): This is a hack to make sure that the returned
+        # instance has all dirty fields. There are probably better
+        # ways to do this, but they kinda involve o.vo internals
+        # so this is okay for the moment.
+        instance = objects.Instance(context)
+        for field in self.instance.obj_fields:
+            # NOTE(danms): Don't copy the defaulted tags field
+            # as instance.create() won't handle it properly.
+            if field == 'tags':
+                continue
+            if self.instance.obj_attr_is_set(field):
+                setattr(instance, field, getattr(self.instance, field))
+        return instance
 
 
 @base.NovaObjectRegistry.register

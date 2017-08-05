@@ -16,11 +16,11 @@
 
 """Instance Metadata information."""
 
-import base64
 import os
 import posixpath
 
 from oslo_log import log as logging
+from oslo_serialization import base64
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import timeutils
@@ -138,7 +138,7 @@ class InstanceMetadata(object):
         self.mappings = _format_instance_mapping(ctxt, instance)
 
         if instance.user_data is not None:
-            self.userdata_raw = base64.b64decode(instance.user_data)
+            self.userdata_raw = base64.decode_as_bytes(instance.user_data)
         else:
             self.userdata_raw = None
 
@@ -365,7 +365,7 @@ class InstanceMetadata(object):
         metadata['availability_zone'] = self.availability_zone
 
         if self._check_os_version(GRIZZLY, version):
-            metadata['random_seed'] = base64.b64encode(os.urandom(512))
+            metadata['random_seed'] = base64.encode_as_text(os.urandom(512))
 
         if self._check_os_version(LIBERTY, version):
             metadata['project_id'] = self.instance.project_id
@@ -483,8 +483,8 @@ class InstanceMetadata(object):
             # specified an old style driver here, then use that. This second
             # bit can be removed once old style vendordata is fully deprecated
             # and removed.
-            if (CONF.vendordata_providers and
-                'StaticJSON' in CONF.vendordata_providers):
+            if (CONF.api.vendordata_providers and
+                'StaticJSON' in CONF.api.vendordata_providers):
                 return jsonutils.dump_as_bytes(
                     self.vendordata_providers['StaticJSON'].get())
             else:
@@ -499,7 +499,7 @@ class InstanceMetadata(object):
             self.set_mimetype(MIME_TYPE_APPLICATION_JSON)
 
             j = {}
-            for provider in CONF.vendordata_providers:
+            for provider in CONF.api.vendordata_providers:
                 if provider == 'StaticJSON':
                     j['static'] = self.vendordata_providers['StaticJSON'].get()
                 else:
@@ -576,7 +576,7 @@ class InstanceMetadata(object):
         """Yields (path, value) tuples for metadata elements."""
         # EC2 style metadata
         for version in VERSIONS + ["latest"]:
-            if version in CONF.config_drive_skip_versions.split(' '):
+            if version in CONF.api.config_drive_skip_versions.split(' '):
                 continue
 
             data = self.get_ec2_metadata(version)
@@ -694,6 +694,8 @@ def ec2_md_print(data):
         return output[:-1]
     elif isinstance(data, list):
         return '\n'.join(data)
+    elif isinstance(data, (bytes, six.text_type)):
+        return data
     else:
         return str(data)
 

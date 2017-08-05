@@ -491,8 +491,8 @@ class API(base_api.NetworkAPI):
                 continue
             port_req_body = {'port': {'device_id': '', 'device_owner': ''}}
             if port_binding:
-                port_req_body['port']['binding:host_id'] = None
-                port_req_body['port']['binding:profile'] = {}
+                port_req_body['port'][BINDING_HOST_ID] = None
+                port_req_body['port'][BINDING_PROFILE] = {}
             if constants.DNS_INTEGRATION in self.extensions:
                 port_req_body['port']['dns_name'] = ''
             try:
@@ -1036,7 +1036,7 @@ class API(base_api.NetworkAPI):
             pci_dev = pci_manager.get_instance_pci_devs(
                 instance, pci_request_id).pop()
             profile = self._get_pci_device_profile(pci_dev)
-            port_req_body['port']['binding:profile'] = profile
+            port_req_body['port'][BINDING_PROFILE] = profile
 
     @staticmethod
     def _populate_pci_mac_address(instance, pci_request_id, port_req_body):
@@ -1086,7 +1086,7 @@ class API(base_api.NetworkAPI):
         has_port_binding_extension = (
             self._has_port_binding_extension(context, neutron=neutron))
         if has_port_binding_extension:
-            port_req_body['port']['binding:host_id'] = bind_host_id
+            port_req_body['port'][BINDING_HOST_ID] = bind_host_id
             self._populate_neutron_binding_profile(instance,
                                                    pci_request_id,
                                                    port_req_body)
@@ -1283,7 +1283,7 @@ class API(base_api.NetworkAPI):
         return network_model.NetworkInfo.hydrate(nw_info)
 
     def _gather_port_ids_and_networks(self, context, instance, networks=None,
-                                      port_ids=None):
+                                      port_ids=None, neutron=None):
         """Return an instance's complete list of port_ids and networks."""
 
         if ((networks is None and port_ids is not None) or
@@ -1302,7 +1302,7 @@ class API(base_api.NetworkAPI):
         if networks is None:
             networks = self._get_available_networks(context,
                                                     instance.project_id,
-                                                    net_ids)
+                                                    net_ids, neutron)
         # an interface was added/removed from instance.
         else:
 
@@ -1423,7 +1423,7 @@ class API(base_api.NetworkAPI):
         Create a PCI request object for each SR-IOV port, and add it to the
         pci_requests object that contains a list of PCI request object.
         """
-        if not requested_networks:
+        if not requested_networks or requested_networks.no_allocate:
             return
 
         neutron = get_client(context, admin=True)
@@ -2049,8 +2049,8 @@ class API(base_api.NetworkAPI):
             network_IPs.append(fixed)
         return network_IPs
 
-    def _nw_info_get_subnets(self, context, port, network_IPs):
-        subnets = self._get_subnets_from_port(context, port)
+    def _nw_info_get_subnets(self, context, port, network_IPs, client=None):
+        subnets = self._get_subnets_from_port(context, port, client)
         for subnet in subnets:
             subnet['ips'] = [fixed_ip for fixed_ip in network_IPs
                              if fixed_ip.is_in_subnet(subnet)]
@@ -2111,7 +2111,7 @@ class API(base_api.NetworkAPI):
             mtu=network_mtu
             )
         network['subnets'] = subnets
-        port_profile = port.get('binding:profile')
+        port_profile = port.get(BINDING_PROFILE)
         if port_profile:
             physical_network = port_profile.get('physical_network')
             if physical_network:
@@ -2167,7 +2167,7 @@ class API(base_api.NetworkAPI):
         current_neutron_ports = data.get('ports', [])
         nw_info_refresh = networks is None and port_ids is None
         networks, port_ids = self._gather_port_ids_and_networks(
-                context, instance, networks, port_ids)
+                context, instance, networks, port_ids, client)
         nw_info = network_model.NetworkInfo()
 
         if preexisting_port_ids is None:
@@ -2192,7 +2192,7 @@ class API(base_api.NetworkAPI):
                                                     current_neutron_port)
                 subnets = self._nw_info_get_subnets(context,
                                                     current_neutron_port,
-                                                    network_IPs)
+                                                    network_IPs, client)
 
                 devname = "tap" + current_neutron_port['id']
                 devname = devname[:network_model.NIC_NAME_LEN]
@@ -2210,7 +2210,7 @@ class API(base_api.NetworkAPI):
                     vnic_type=current_neutron_port.get('binding:vnic_type',
                         network_model.VNIC_TYPE_NORMAL),
                     type=current_neutron_port.get('binding:vif_type'),
-                    profile=current_neutron_port.get('binding:profile'),
+                    profile=current_neutron_port.get(BINDING_PROFILE),
                     details=current_neutron_port.get('binding:vif_details'),
                     ovs_interfaceid=ovs_interfaceid,
                     devname=devname,
@@ -2225,7 +2225,7 @@ class API(base_api.NetworkAPI):
 
         return nw_info
 
-    def _get_subnets_from_port(self, context, port):
+    def _get_subnets_from_port(self, context, port, client=None):
         """Return the subnets for a given port."""
 
         fixed_ips = port['fixed_ips']
@@ -2236,8 +2236,10 @@ class API(base_api.NetworkAPI):
         # related to the port. To avoid this, the method returns here.
         if not fixed_ips:
             return []
+        if not client:
+            client = get_client(context)
         search_opts = {'id': [ip['subnet_id'] for ip in fixed_ips]}
-        data = get_client(context).list_subnets(**search_opts)
+        data = client.list_subnets(**search_opts)
         ipam_subnets = data.get('subnets', [])
         subnets = []
 
@@ -2251,7 +2253,7 @@ class API(base_api.NetworkAPI):
             # attempt to populate DHCP server field
             search_opts = {'network_id': subnet['network_id'],
                            'device_owner': 'network:dhcp'}
-            data = get_client(context).list_ports(**search_opts)
+            data = client.list_ports(**search_opts)
             dhcp_ports = data.get('ports', [])
             for p in dhcp_ports:
                 for ip_pair in p['fixed_ips']:

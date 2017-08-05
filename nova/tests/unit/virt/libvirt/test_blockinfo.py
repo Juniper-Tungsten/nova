@@ -19,10 +19,10 @@ import fixtures
 import mock
 
 from nova import block_device
-from nova.compute import arch
 from nova import context
 from nova import exception
 from nova import objects
+from nova.objects import fields as obj_fields
 from nova import test
 from nova.tests.unit import fake_block_device
 import nova.tests.unit.image.fake
@@ -124,10 +124,6 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
         dev = blockinfo.find_disk_dev_for_disk_bus(mapping, 'scsi')
         self.assertEqual('sdb', dev)
 
-        dev = blockinfo.find_disk_dev_for_disk_bus(mapping, 'scsi',
-                                                   last_device=True)
-        self.assertEqual('sdz', dev)
-
         dev = blockinfo.find_disk_dev_for_disk_bus(mapping, 'virtio')
         self.assertEqual('vda', dev)
 
@@ -164,9 +160,8 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
 
         mapping['disk.config'] = blockinfo.get_next_disk_info(mapping,
                                                               'ide',
-                                                              'cdrom',
-                                                              True)
-        self.assertEqual({'dev': 'hdd', 'bus': 'ide', 'type': 'cdrom'},
+                                                              'cdrom')
+        self.assertEqual({'dev': 'hda', 'bus': 'ide', 'type': 'cdrom'},
                          mapping['disk.config'])
 
     def test_get_next_disk_dev_boot_index(self):
@@ -262,7 +257,7 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
             'disk.rescue': {'bus': 'virtio', 'dev': 'vda',
                             'type': 'disk', 'boot_index': '1'},
             'disk': {'bus': 'virtio', 'dev': 'vdb', 'type': 'disk'},
-            'disk.config.rescue': {'bus': 'ide', 'dev': 'hdd',
+            'disk.config.rescue': {'bus': 'ide', 'dev': 'hda',
                                    'type': 'cdrom'},
             'root': {'bus': 'virtio', 'dev': 'vda',
                      'type': 'disk', 'boot_index': '1'},
@@ -379,17 +374,17 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
                                              "virtio", "ide",
                                              image_meta)
 
-        # The last device is selected for this. on x86 is the last ide
-        # device (hdd). Since power only support scsi, the last device
-        # is sdz
+        # Pick the first drive letter on the bus that is available
+        # as the config drive. Delete the last device hardcode as
+        # the config drive here.
 
-        bus_ppc = ("scsi", "sdz")
-        bus_aarch64 = ("scsi", "sdz")
+        bus_ppc = ("scsi", "sda")
+        bus_aarch64 = ("scsi", "sda")
         expect_bus = {"ppc": bus_ppc, "ppc64": bus_ppc,
                         "ppc64le": bus_ppc, "aarch64": bus_aarch64}
 
         bus, dev = expect_bus.get(blockinfo.libvirt_utils.get_arch({}),
-                                  ("ide", "hdd"))
+                                  ("ide", "hda"))
 
         expect = {
             'disk': {'bus': 'virtio', 'dev': 'vda',
@@ -418,13 +413,13 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
                                              "virtio", "ide",
                                              image_meta)
 
-        bus_ppc = ("scsi", "sdz")
-        bus_aarch64 = ("scsi", "sdz")
+        bus_ppc = ("scsi", "sda")
+        bus_aarch64 = ("scsi", "sda")
         expect_bus = {"ppc": bus_ppc, "ppc64": bus_ppc,
                         "ppc64le": bus_ppc, "aarch64": bus_aarch64}
 
         bus, dev = expect_bus.get(blockinfo.libvirt_utils.get_arch({}),
-                                  ("ide", "hdd"))
+                                  ("ide", "hda"))
 
         expect = {
             'disk': {'bus': 'virtio', 'dev': 'vda',
@@ -454,7 +449,7 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
             'disk': {'bus': 'virtio', 'dev': 'vda',
                      'type': 'disk', 'boot_index': '1'},
             'disk.local': {'bus': 'virtio', 'dev': 'vdb', 'type': 'disk'},
-            'disk.config': {'bus': 'virtio', 'dev': 'vdz', 'type': 'disk'},
+            'disk.config': {'bus': 'virtio', 'dev': 'vdc', 'type': 'disk'},
             'root': {'bus': 'virtio', 'dev': 'vda',
                      'type': 'disk', 'boot_index': '1'},
             }
@@ -727,23 +722,23 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
     def test_get_disk_bus(self):
         instance = objects.Instance(**self.test_instance)
         expected = (
-                (arch.X86_64, 'disk', 'virtio'),
-                (arch.X86_64, 'cdrom', 'ide'),
-                (arch.X86_64, 'floppy', 'fdc'),
-                (arch.PPC, 'disk', 'virtio'),
-                (arch.PPC, 'cdrom', 'scsi'),
-                (arch.PPC64, 'disk', 'virtio'),
-                (arch.PPC64, 'cdrom', 'scsi'),
-                (arch.PPCLE, 'disk', 'virtio'),
-                (arch.PPCLE, 'cdrom', 'scsi'),
-                (arch.PPC64LE, 'disk', 'virtio'),
-                (arch.PPC64LE, 'cdrom', 'scsi'),
-                (arch.S390, 'disk', 'virtio'),
-                (arch.S390, 'cdrom', 'scsi'),
-                (arch.S390X, 'disk', 'virtio'),
-                (arch.S390X, 'cdrom', 'scsi'),
-                (arch.AARCH64, 'disk', 'virtio'),
-                (arch.AARCH64, 'cdrom', 'scsi')
+                (obj_fields.Architecture.X86_64, 'disk', 'virtio'),
+                (obj_fields.Architecture.X86_64, 'cdrom', 'ide'),
+                (obj_fields.Architecture.X86_64, 'floppy', 'fdc'),
+                (obj_fields.Architecture.PPC, 'disk', 'virtio'),
+                (obj_fields.Architecture.PPC, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.PPC64, 'disk', 'virtio'),
+                (obj_fields.Architecture.PPC64, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.PPCLE, 'disk', 'virtio'),
+                (obj_fields.Architecture.PPCLE, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.PPC64LE, 'disk', 'virtio'),
+                (obj_fields.Architecture.PPC64LE, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.S390, 'disk', 'virtio'),
+                (obj_fields.Architecture.S390, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.S390X, 'disk', 'virtio'),
+                (obj_fields.Architecture.S390X, 'cdrom', 'scsi'),
+                (obj_fields.Architecture.AARCH64, 'disk', 'virtio'),
+                (obj_fields.Architecture.AARCH64, 'cdrom', 'scsi')
                 )
         image_meta = objects.ImageMeta.from_dict(self.test_image_meta)
         for guestarch, dev, res in expected:
@@ -755,11 +750,15 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
                 self.assertEqual(res, bus)
 
         expected = (
-                ('scsi', None, 'disk', 'scsi'),
-                (None, 'scsi', 'cdrom', 'scsi'),
-                ('usb', None, 'disk', 'usb')
+                ('kvm', 'scsi', None, 'disk', 'scsi'),
+                ('kvm', None, 'scsi', 'cdrom', 'scsi'),
+                ('kvm', 'usb', None, 'disk', 'usb'),
+                ('parallels', 'scsi', None, 'disk', 'scsi'),
+                ('parallels', None, None, 'disk', 'scsi'),
+                ('parallels', None, 'ide', 'cdrom', 'ide'),
+                ('parallels', None, None, 'cdrom', 'ide')
                 )
-        for dbus, cbus, dev, res in expected:
+        for hv, dbus, cbus, dev, res in expected:
             props = {}
             if dbus is not None:
                 props['hw_disk_bus'] = dbus
@@ -768,7 +767,7 @@ class LibvirtBlockInfoTest(test.NoDBTestCase):
             image_meta = objects.ImageMeta.from_dict(
                 {'properties': props})
             bus = blockinfo.get_disk_bus_for_device_type(
-                instance, 'kvm', image_meta, device_type=dev)
+                instance, hv, image_meta, device_type=dev)
             self.assertEqual(res, bus)
 
         image_meta = objects.ImageMeta.from_dict(

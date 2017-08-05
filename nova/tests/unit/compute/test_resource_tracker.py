@@ -18,19 +18,17 @@ from oslo_config import cfg
 from oslo_utils import timeutils
 from oslo_utils import units
 
-from nova.compute import arch
 from nova.compute import claims
-from nova.compute import hv_type
 from nova.compute.monitors import base as monitor_base
 from nova.compute import power_state
 from nova.compute import resource_tracker
 from nova.compute import task_states
-from nova.compute import vm_mode
 from nova.compute import vm_states
 from nova import context
 from nova import exception as exc
 from nova import objects
 from nova.objects import base as obj_base
+from nova.objects import fields as obj_fields
 from nova.objects import pci_device
 from nova.pci import manager as pci_manager
 from nova import test
@@ -78,7 +76,10 @@ _COMPUTE_NODE_FIXTURES = [
         disk_available_least=0,
         host_ip='1.1.1.1',
         supported_hv_specs=[
-            objects.HVSpec.from_list([arch.I686, hv_type.KVM, vm_mode.HVM])
+            objects.HVSpec.from_list([
+                obj_fields.Architecture.I686,
+                obj_fields.HVType.KVM,
+                obj_fields.VMMode.HVM])
         ],
         metrics=None,
         pci_device_pools=None,
@@ -2053,6 +2054,7 @@ class TestUpdateUsageFromMigrations(BaseTestCase):
         instance = objects.Instance(vm_state=vm_states.RESIZED,
                                     task_state=None)
         ts1 = timeutils.utcnow()
+        ts0 = ts1 - datetime.timedelta(seconds=10)
         ts2 = ts1 + datetime.timedelta(seconds=10)
 
         migrations = [
@@ -2061,6 +2063,7 @@ class TestUpdateUsageFromMigrations(BaseTestCase):
                               dest_compute=_HOSTNAME,
                               dest_node=_NODENAME,
                               instance_uuid=uuids.instance,
+                              created_at=ts0,
                               updated_at=ts1,
                               instance=instance),
             objects.Migration(source_compute=_HOSTNAME,
@@ -2068,6 +2071,7 @@ class TestUpdateUsageFromMigrations(BaseTestCase):
                               dest_compute=_HOSTNAME,
                               dest_node=_NODENAME,
                               instance_uuid=uuids.instance,
+                              created_at=ts0,
                               updated_at=ts2,
                               instance=instance)
         ]
@@ -2077,10 +2081,7 @@ class TestUpdateUsageFromMigrations(BaseTestCase):
         upd_mock.assert_called_once_with(mock.sentinel.ctx, instance, mig2)
 
         upd_mock.reset_mock()
-        mig1.updated_at = None
-
-        # For some reason, the code thinks None should always take
-        # precedence over any datetime in the updated_at attribute...
+        mig2.updated_at = None
         self.rt._update_usage_from_migrations(mock.sentinel.ctx, mig_list)
         upd_mock.assert_called_once_with(mock.sentinel.ctx, instance, mig1)
 

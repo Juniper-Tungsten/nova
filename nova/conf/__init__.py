@@ -24,7 +24,6 @@ from nova.conf import availability_zone
 from nova.conf import base
 from nova.conf import cache
 from nova.conf import cells
-from nova.conf import cert
 from nova.conf import cinder
 from nova.conf import cloudpipe
 from nova.conf import compute
@@ -35,7 +34,6 @@ from nova.conf import consoleauth
 from nova.conf import crypto
 from nova.conf import database
 from nova.conf import ephemeral_storage
-from nova.conf import exceptions
 from nova.conf import flavors
 from nova.conf import floating_ips
 from nova.conf import glance
@@ -81,7 +79,6 @@ availability_zone.register_opts(CONF)
 base.register_opts(CONF)
 cache.register_opts(CONF)
 cells.register_opts(CONF)
-cert.register_opts(CONF)
 cinder.register_opts(CONF)
 cloudpipe.register_opts(CONF)
 compute.register_opts(CONF)
@@ -92,7 +89,6 @@ consoleauth.register_opts(CONF)
 crypto.register_opts(CONF)
 database.register_opts(CONF)
 ephemeral_storage.register_opts(CONF)
-exceptions.register_opts(CONF)
 floating_ips.register_opts(CONF)
 flavors.register_opts(CONF)
 glance.register_opts(CONF)

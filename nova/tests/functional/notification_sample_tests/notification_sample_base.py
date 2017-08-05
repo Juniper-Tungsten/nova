@@ -15,7 +15,6 @@
 import os
 import time
 
-import mock
 from oslo_config import cfg
 from oslo_serialization import jsonutils
 from oslo_utils import fixture as utils_fixture
@@ -52,12 +51,10 @@ class NotificationSampleTestBase(test.TestCase,
 
     ANY = object()
 
+    REQUIRES_LOCKING = True
+
     def setUp(self):
         super(NotificationSampleTestBase, self).setUp()
-        # Needs to mock this to avoid REQUIRES_LOCKING to be set to True
-        patcher = mock.patch('oslo_concurrency.lockutils.lock')
-        self.addCleanup(patcher.stop)
-        patcher.start()
 
         api_fixture = self.useFixture(nova_fixtures.OSAPIFixture(
                 api_version='v2.1'))
@@ -74,9 +71,9 @@ class NotificationSampleTestBase(test.TestCase,
         nova.tests.unit.image.fake.stub_out_image_service(self)
         self.addCleanup(nova.tests.unit.image.fake.FakeImageService_reset)
 
-        self.start_service('conductor', manager=CONF.conductor.manager)
+        self.start_service('conductor')
         self.start_service('scheduler')
-        self.start_service('network')
+        self.start_service('network', manager=CONF.network_manager)
         self.compute = self.start_service('compute')
 
     def _get_notification_sample(self, sample):
@@ -188,3 +185,10 @@ class NotificationSampleTestBase(test.TestCase,
         return [notification for notification
                     in fake_notifier.VERSIONED_NOTIFICATIONS
                     if notification['event_type'] == event_type]
+
+    def _wait_for_notification(self, event_type, timeout=1.0):
+        received = fake_notifier.wait_for_versioned_notification(
+            event_type, timeout)
+        self.assertTrue(
+            received,
+            'notification %s hasn\'t been received' % event_type)

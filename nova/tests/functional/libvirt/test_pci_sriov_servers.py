@@ -89,6 +89,8 @@ class SRIOVServersTest(ServersTestBase):
            fakelibvirt))
         self.useFixture(fakelibvirt.FakeLibvirtFixture())
 
+        self.compute_started = False
+
     def _setup_compute_service(self):
         pass
 
@@ -111,7 +113,10 @@ class SRIOVServersTest(ServersTestBase):
 
     def _run_build_test(self, flavor_id, filter_mock, end_status='ACTIVE'):
 
-        self.compute = self.start_service('compute', host='test_compute0')
+        if not self.compute_started:
+            self.compute = self.start_service('compute', host='test_compute0')
+            self.compute_started = True
+
         fake_network.set_stub_network_methods(self)
 
         # Create server
@@ -256,3 +261,69 @@ class SRIOVServersTest(ServersTestBase):
 
         self._delete_server(pf_server['id'])
         self._delete_server(vf_server['id'])
+
+    @mock.patch('nova.virt.libvirt.LibvirtDriver._create_image')
+    def test_create_server_with_pci_dev_and_numa(self, img_mock):
+        """Verifies that an instance can be booted with cpu pinning and with an
+           assigned pci device.
+        """
+
+        host_info = NumaHostInfo(cpu_nodes=2, cpu_sockets=1, cpu_cores=2,
+                                 cpu_threads=2, kB_mem=15740000)
+        pci_info = fakelibvirt.HostPciSRIOVDevicesInfo()
+        pci_info.create_pci_devices(num_pfs=1, numa_node=1)
+        fake_connection = self._get_connection(host_info, pci_info)
+
+        # Create a flavor
+        extra_spec = {"pci_passthrough:alias": "%s:1" % self.pfs_alias_name,
+                      'hw:numa_nodes': '1',
+                      'hw:cpu_policy': 'dedicated',
+                      'hw:cpu_thread_policy': 'prefer'}
+        flavor_id = self._create_flavor(extra_spec=extra_spec)
+        host_pass_mock = self._get_pci_passthrough_filter_spy()
+        with test.nested(
+            mock.patch('nova.virt.libvirt.host.Host.get_connection',
+                       return_value=fake_connection),
+            mock.patch('nova.scheduler.filters'
+                       '.pci_passthrough_filter.PciPassthroughFilter'
+                       '.host_passes',
+                       side_effect=host_pass_mock)) as (conn_mock,
+                                                       filter_mock):
+            pf_server = self._run_build_test(flavor_id, filter_mock)
+        self._delete_server(pf_server['id'])
+
+    @mock.patch('nova.virt.libvirt.LibvirtDriver._create_image')
+    def test_create_server_with_pci_dev_and_numa_fails(self, img_mock):
+        """This test ensures that it is not possible to allocated CPU and
+           memory resources from one NUMA node and a PCI device from another.
+        """
+
+        host_info = NumaHostInfo(cpu_nodes=2, cpu_sockets=1, cpu_cores=2,
+                                 cpu_threads=2, kB_mem=15740000)
+        pci_info = fakelibvirt.HostPciSRIOVDevicesInfo()
+        pci_info.create_pci_devices(num_pfs=1, numa_node=0)
+        fake_connection = self._get_connection(host_info, pci_info)
+
+        # Create a flavor
+        extra_spec_vm = {'hw:cpu_policy': 'dedicated',
+                         'hw:numa_node': '1'}
+        extra_spec = {'pci_passthrough:alias': '%s:1' % self.pfs_alias_name,
+                      'hw:numa_nodes': '1',
+                      'hw:cpu_policy': 'dedicated',
+                      'hw:cpu_thread_policy': 'prefer'}
+        vm_flavor_id = self._create_flavor(vcpu=4, extra_spec=extra_spec_vm)
+        pf_flavor_id = self._create_flavor(extra_spec=extra_spec)
+        host_pass_mock = self._get_pci_passthrough_filter_spy()
+        with test.nested(
+            mock.patch('nova.virt.libvirt.host.Host.get_connection',
+                       return_value=fake_connection),
+            mock.patch('nova.scheduler.filters'
+                       '.pci_passthrough_filter.PciPassthroughFilter'
+                       '.host_passes',
+                       side_effect=host_pass_mock)) as (conn_mock,
+                                                        filter_mock):
+            vm_server = self._run_build_test(vm_flavor_id, filter_mock)
+            pf_server = self._run_build_test(pf_flavor_id, filter_mock,
+                                             end_status='ERROR')
+        self._delete_server(vm_server['id'])
+        self._delete_server(pf_server['id'])

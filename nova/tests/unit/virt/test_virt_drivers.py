@@ -104,6 +104,10 @@ class _FakeDriverBackendTestCase(object):
             'nova.virt.libvirt.driver.connector',
             fake_os_brick_connector))
 
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.virt.libvirt.host.Host._conn_event_thread',
+            lambda *args: None))
+
         self.flags(rescue_image_id="2",
                    rescue_kernel_id="3",
                    rescue_ramdisk_id=None,
@@ -646,7 +650,8 @@ class _VirtDriverTestCase(_FakeDriverBackendTestCase):
         fake_context = context.RequestContext('fake', 'fake')
         migration = objects.Migration(context=fake_context, id=1)
         migrate_data = objects.LibvirtLiveMigrateData(
-            migration=migration, bdms=[], block_migration=False)
+            migration=migration, bdms=[], block_migration=False,
+            serial_listen_addr='127.0.0.1')
         self.connection.live_migration(self.ctxt, instance_ref, 'otherhost',
                                        lambda *a: None, lambda *a: None,
                                        migrate_data=migrate_data)
