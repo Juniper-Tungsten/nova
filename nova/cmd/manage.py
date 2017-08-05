@@ -1152,19 +1152,16 @@ class CellV2Commands(object):
             # based on the database connection url.
             # The cell0 database will use the same database scheme and
             # netloc as the main database, with a related path.
+            # NOTE(sbauza): The URL has to be RFC1738 compliant in order to
+            # be usable by sqlalchemy.
             connection = CONF.database.connection
             # sqlalchemy has a nice utility for parsing database connection
             # URLs so we use that here to get the db name so we don't have to
             # worry about parsing and splitting a URL which could have special
             # characters in the password, which makes parsing a nightmare.
             url = sqla_url.make_url(connection)
-            cell0_db_name = url.database + '_cell0'
-            # We need to handle multiple occurrences of the substring, e.g. if
-            # the username and db name are both 'nova' we need to only replace
-            # the last one, which is the database name in the URL, not the
-            # username.
-            connection = connection.rstrip(url.database)
-            return connection + cell0_db_name
+            url.database = url.database + '_cell0'
+            return urlparse.unquote(str(url))
 
         dbc = database_connection or cell0_default_connection()
         ctxt = context.RequestContext()
@@ -1384,7 +1381,11 @@ class CellV2Commands(object):
                'map.')
     @args('--verbose', action='store_true',
           help=_('Provide detailed output when discovering hosts.'))
-    def discover_hosts(self, cell_uuid=None, verbose=False):
+    @args('--strict', action='store_true',
+          help=_('Considered successful (exit code 0) only when an unmapped '
+                 'host is discovered. Any other outcome will be considered a '
+                 'failure (exit code 1).'))
+    def discover_hosts(self, cell_uuid=None, verbose=False, strict=False):
         """Searches cells, or a single cell, and maps found hosts.
 
         When a new host is added to a deployment it will add a service entry
@@ -1397,7 +1398,10 @@ class CellV2Commands(object):
                 print(msg)
 
         ctxt = context.RequestContext()
-        host_mapping_obj.discover_hosts(ctxt, cell_uuid, status_fn)
+        hosts = host_mapping_obj.discover_hosts(ctxt, cell_uuid, status_fn)
+        # discover_hosts will return an empty list if no hosts are discovered
+        if strict:
+            return int(not hosts)
 
     @action_description(
         _("Add a new cell to nova API database. "

@@ -1242,7 +1242,7 @@ class LibvirtDriver(driver.ComputeDriver):
             with excutils.save_and_reraise_exception():
                 self._disconnect_volume(connection_info, disk_dev)
 
-    def _swap_volume(self, guest, disk_path, new_path, resize_to):
+    def _swap_volume(self, guest, disk_path, conf, resize_to):
         """Swap existing disk with a new block device."""
         dev = guest.get_block_device(disk_path)
 
@@ -1265,20 +1265,31 @@ class LibvirtDriver(driver.ComputeDriver):
                 support_uefi = self._has_uefi_support()
                 guest.delete_configuration(support_uefi)
 
-            # Start copy with VIR_DOMAIN_REBASE_REUSE_EXT flag to
-            # allow writing to existing external volume file
-            dev.rebase(new_path, copy=True, reuse_ext=True)
+            try:
+                # Start copy with VIR_DOMAIN_BLOCK_REBASE_REUSE_EXT flag to
+                # allow writing to existing external volume file. Use
+                # VIR_DOMAIN_BLOCK_REBASE_COPY_DEV if it's a block device to
+                # make sure XML is generated correctly (bug 1691195)
+                copy_dev = conf.source_type == 'block'
+                dev.rebase(conf.source_path, copy=True, reuse_ext=True,
+                           copy_dev=copy_dev)
+                while not dev.is_job_complete():
+                    time.sleep(0.5)
 
-            while not dev.is_job_complete():
-                time.sleep(0.5)
-
-            dev.abort_job(pivot=True)
-            if resize_to:
+                dev.abort_job(pivot=True)
                 # NOTE(alex_xu): domain.blockJobAbort isn't sync call. This
                 # is bug in libvirt. So we need waiting for the pivot is
                 # finished. libvirt bug #1119173
                 while not dev.is_job_complete():
                     time.sleep(0.5)
+
+            except Exception as exc:
+                LOG.exception(_LE("Failure rebasing volume %(new_path)s on "
+                    "%(new_path)s."), {'new_path': conf.source_path,
+                                       'old_path': disk_path})
+                raise exception.VolumeRebaseFailed(reason=six.text_type(exc))
+
+            if resize_to:
                 dev.resize(resize_to * units.Gi / units.Ki)
         finally:
             self._host.write_instance_config(xml)
@@ -1310,7 +1321,12 @@ class LibvirtDriver(driver.ComputeDriver):
             self._disconnect_volume(new_connection_info, disk_dev)
             raise NotImplementedError(_("Swap only supports host devices"))
 
-        self._swap_volume(guest, disk_dev, conf.source_path, resize_to)
+        try:
+            self._swap_volume(guest, disk_dev, conf, resize_to)
+        except exception.VolumeRebaseFailed:
+            with excutils.save_and_reraise_exception():
+                self._disconnect_volume(new_connection_info, disk_dev)
+
         self._disconnect_volume(old_connection_info, disk_dev)
 
     def _get_existing_domain_xml(self, instance, network_info,
@@ -2964,7 +2980,7 @@ class LibvirtDriver(driver.ComputeDriver):
         # NOTE(sfinucan): We can safely ignore permission issues here and
         # assume that it is libvirt that has taken ownership of this file.
         except IOError as ex:
-            if ex.errno != errno.EPERM:
+            if ex.errno != errno.EACCES:
                 raise
             LOG.debug('Console file already exists: %s.', console_file)
 
@@ -5808,10 +5824,8 @@ class LibvirtDriver(driver.ComputeDriver):
                     raise exception.MigrationPreCheckError(reason=msg)
         elif not (dest_check_data.is_shared_block_storage or
                   dest_check_data.is_shared_instance_path):
-            reason = _("Live migration can not be used "
-                       "without shared storage except "
-                       "a booted from volume VM which "
-                       "does not have a local disk.")
+            reason = _("Shared storage live-migration requires either shared "
+                       "storage or boot-from-volume with no local disks.")
             raise exception.InvalidSharedStorage(reason=reason, path=source)
 
         # NOTE(mikal): include the instance directory name here because it
@@ -7132,7 +7146,7 @@ class LibvirtDriver(driver.ComputeDriver):
         """Return total over committed disk size for all instances."""
         # Disk size that all instance uses : virtual_size - disk_size
         disk_over_committed_size = 0
-        instance_domains = self._host.list_instance_domains()
+        instance_domains = self._host.list_instance_domains(only_running=False)
         if not instance_domains:
             return disk_over_committed_size
 

@@ -10926,7 +10926,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         with test.nested(
                 mock.patch.object(drvr, '_get_console_log_path'),
                 mock.patch.object(fake_libvirt_utils, 'file_open',
-                                  side_effect=IOError(errno.EPERM, 'exc'))
+                                  side_effect=IOError(errno.EACCES, 'exc'))
             ) as (mock_path, mock_open):
             drvr._ensure_console_log_for_instance(mock.ANY)
             mock_path.assert_called_once()
@@ -12350,7 +12350,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
 
             result = drvr._get_disk_over_committed_size_total()
             self.assertEqual(result, 10653532160)
-            mock_list.assert_called_once_with()
+            mock_list.assert_called_once_with(only_running=False)
             self.assertEqual(2, mock_info.call_count)
 
         filters = {'uuid': instance_uuids}
@@ -12461,7 +12461,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
 
         result = drvr._get_disk_over_committed_size_total()
         self.assertEqual(42949672960, result)
-        mock_list.assert_called_once_with()
+        mock_list.assert_called_once_with(only_running=False)
         self.assertEqual(5, get_disk_info.call_count)
         filters = {'uuid': instance_uuids}
         mock_get.assert_called_once_with(mock.ANY, filters, use_slave=True)
@@ -14745,7 +14745,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         save.assert_called_once_with()
 
     @mock.patch('nova.virt.libvirt.guest.BlockDevice.is_job_complete')
-    def test_swap_volume(self, mock_is_job_complete):
+    def test_swap_volume_file(self, mock_is_job_complete):
         drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI())
 
         mock_dom = mock.MagicMock()
@@ -14761,7 +14761,10 @@ class LibvirtConnTestCase(test.NoDBTestCase):
             mock_dom.isPersistent.return_value = True
             mock_is_job_complete.return_value = True
 
-            drvr._swap_volume(guest, srcfile, dstfile, 1)
+            drvr._swap_volume(guest, srcfile,
+                              mock.MagicMock(source_type='file',
+                                             source_path=dstfile),
+                              1)
 
             mock_dom.XMLDesc.assert_called_once_with(
                 flags=(fakelibvirt.VIR_DOMAIN_XML_INACTIVE |
@@ -14769,6 +14772,44 @@ class LibvirtConnTestCase(test.NoDBTestCase):
             mock_dom.blockRebase.assert_called_once_with(
                 srcfile, dstfile, 0, flags=(
                     fakelibvirt.VIR_DOMAIN_BLOCK_REBASE_COPY |
+                    fakelibvirt.VIR_DOMAIN_BLOCK_REBASE_REUSE_EXT))
+            mock_dom.blockResize.assert_called_once_with(
+                srcfile, 1 * units.Gi / units.Ki)
+            mock_define.assert_called_once_with(xmldoc)
+
+    @mock.patch('nova.virt.libvirt.guest.BlockDevice.is_job_complete')
+    def test_swap_volume_block(self, mock_is_job_complete):
+        """If the swapped volume is type="block", make sure that we give
+        libvirt the correct VIR_DOMAIN_BLOCK_REBASE_COPY_DEV flag to ensure the
+        correct type="block" XML is generated (bug 1691195)
+        """
+        drvr = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI())
+
+        mock_dom = mock.MagicMock()
+        guest = libvirt_guest.Guest(mock_dom)
+
+        with mock.patch.object(drvr._conn, 'defineXML',
+                               create=True) as mock_define:
+            xmldoc = "<domain/>"
+            srcfile = "/first/path"
+            dstfile = "/second/path"
+
+            mock_dom.XMLDesc.return_value = xmldoc
+            mock_dom.isPersistent.return_value = True
+            mock_is_job_complete.return_value = True
+
+            drvr._swap_volume(guest, srcfile,
+                              mock.MagicMock(source_type='block',
+                                             source_path=dstfile),
+                              1)
+
+            mock_dom.XMLDesc.assert_called_once_with(
+                flags=(fakelibvirt.VIR_DOMAIN_XML_INACTIVE |
+                       fakelibvirt.VIR_DOMAIN_XML_SECURE))
+            mock_dom.blockRebase.assert_called_once_with(
+                srcfile, dstfile, 0, flags=(
+                    fakelibvirt.VIR_DOMAIN_BLOCK_REBASE_COPY |
+                    fakelibvirt.VIR_DOMAIN_BLOCK_REBASE_COPY_DEV |
                     fakelibvirt.VIR_DOMAIN_BLOCK_REBASE_REUSE_EXT))
             mock_dom.blockResize.assert_called_once_with(
                 srcfile, 1 * units.Gi / units.Ki)
@@ -14807,8 +14848,8 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         mock_dom.UUIDString.return_value = 'uuid'
         get_guest.return_value = guest
         disk_info = {'bus': 'virtio', 'type': 'disk', 'dev': 'vdb'}
-        get_volume_config.return_value = mock.MagicMock(
-            source_path='/fake-new-volume')
+        conf = mock.MagicMock(source_path='/fake-new-volume')
+        get_volume_config.return_value = conf
 
         conn.swap_volume(old_connection_info, new_connection_info, instance,
                          '/dev/vdb', 1)
@@ -14816,8 +14857,7 @@ class LibvirtConnTestCase(test.NoDBTestCase):
         get_guest.assert_called_once_with(instance)
         connect_volume.assert_called_once_with(new_connection_info, disk_info)
 
-        swap_volume.assert_called_once_with(guest, 'vdb',
-                                            '/fake-new-volume', 1)
+        swap_volume.assert_called_once_with(guest, 'vdb', conf, 1)
         disconnect_volume.assert_called_once_with(old_connection_info, 'vdb')
 
     def test_swap_volume_driver_source_is_volume(self):
@@ -14828,6 +14868,70 @@ class LibvirtConnTestCase(test.NoDBTestCase):
 
     def test_swap_volume_driver_source_is_snapshot(self):
         self._test_swap_volume_driver(source_type='snapshot')
+
+    @mock.patch('nova.virt.libvirt.guest.BlockDevice.rebase')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._disconnect_volume')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._connect_volume')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._get_volume_config')
+    @mock.patch('nova.virt.libvirt.guest.Guest.get_disk')
+    @mock.patch('nova.virt.libvirt.host.Host.get_guest')
+    @mock.patch('nova.virt.libvirt.host.Host.write_instance_config')
+    def test_swap_volume_disconnect_new_volume_on_rebase_error(self,
+            write_config, get_guest, get_disk, get_volume_config,
+            connect_volume, disconnect_volume, rebase):
+        """Assert that disconnect_volume is called for the new volume if an
+           error is encountered while rebasing
+        """
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI())
+        instance = objects.Instance(**self.test_instance)
+        guest = libvirt_guest.Guest(mock.MagicMock())
+        get_guest.return_value = guest
+        exc = fakelibvirt.make_libvirtError(fakelibvirt.libvirtError,
+              'internal error', error_code=fakelibvirt.VIR_ERR_INTERNAL_ERROR)
+        rebase.side_effect = exc
+
+        self.assertRaises(exception.VolumeRebaseFailed, conn.swap_volume,
+                          mock.sentinel.old_connection_info,
+                          mock.sentinel.new_connection_info,
+                          instance, '/dev/vdb', 0)
+        connect_volume.assert_called_once_with(
+                mock.sentinel.new_connection_info,
+                {'dev': 'vdb', 'type': 'disk', 'bus': 'virtio'})
+        disconnect_volume.assert_called_once_with(
+                mock.sentinel.new_connection_info, 'vdb')
+
+    @mock.patch('nova.virt.libvirt.guest.BlockDevice.is_job_complete')
+    @mock.patch('nova.virt.libvirt.guest.BlockDevice.abort_job')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._disconnect_volume')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._connect_volume')
+    @mock.patch('nova.virt.libvirt.driver.LibvirtDriver._get_volume_config')
+    @mock.patch('nova.virt.libvirt.guest.Guest.get_disk')
+    @mock.patch('nova.virt.libvirt.host.Host.get_guest')
+    @mock.patch('nova.virt.libvirt.host.Host.write_instance_config')
+    def test_swap_volume_disconnect_new_volume_on_pivot_error(self,
+            write_config, get_guest, get_disk, get_volume_config,
+            connect_volume, disconnect_volume, abort_job, is_job_complete):
+        """Assert that disconnect_volume is called for the new volume if an
+           error is encountered while pivoting to the new volume
+        """
+        conn = libvirt_driver.LibvirtDriver(fake.FakeVirtAPI())
+        instance = objects.Instance(**self.test_instance)
+        guest = libvirt_guest.Guest(mock.MagicMock())
+        get_guest.return_value = guest
+        exc = fakelibvirt.make_libvirtError(fakelibvirt.libvirtError,
+              'internal error', error_code=fakelibvirt.VIR_ERR_INTERNAL_ERROR)
+        is_job_complete.return_value = True
+        abort_job.side_effect = [None, exc]
+
+        self.assertRaises(exception.VolumeRebaseFailed, conn.swap_volume,
+                          mock.sentinel.old_connection_info,
+                          mock.sentinel.new_connection_info,
+                          instance, '/dev/vdb', 0)
+        connect_volume.assert_called_once_with(
+                mock.sentinel.new_connection_info,
+                {'dev': 'vdb', 'type': 'disk', 'bus': 'virtio'})
+        disconnect_volume.assert_called_once_with(
+                mock.sentinel.new_connection_info, 'vdb')
 
     @mock.patch('nova.virt.libvirt.guest.BlockDevice.is_job_complete')
     def _test_live_snapshot(self, mock_is_job_complete,
