@@ -30,11 +30,13 @@ from nova import objects
 from nova.objects import fields as obj_fields
 from nova import test
 from nova.tests.unit import fake_instance
+from nova.tests.unit.virt.libvirt import fakelibvirt
 from nova.tests import uuidsentinel as uuids
 from nova import utils
 from nova.virt.disk import api as disk
 from nova.virt import images
 from nova.virt.libvirt import config as vconfig
+from nova.virt.libvirt import guest as libvirt_guest
 from nova.virt.libvirt import utils as libvirt_utils
 
 CONF = cfg.CONF
@@ -685,8 +687,8 @@ disk size: 4.4M
 
         target = 't.qcow2'
         self.executes = []
-        expected_commands = [('qemu-img', 'convert', '-O', 'raw',
-                              '-f', 'qcow2',
+        expected_commands = [('qemu-img', 'convert', '-t', 'none',
+                              '-O', 'raw', '-f', 'qcow2',
                               't.qcow2.part', 't.qcow2.converted'),
                              ('rm', 't.qcow2.part'),
                              ('mv', 't.qcow2.converted', 't.qcow2')]
@@ -826,3 +828,114 @@ sunrpc /var/lib/nfs/rpc_pipefs rpc_pipefs rw,relatime 0 0
             proc_umnt = mock.mock_open(read_data=proc_without_mnt)
             with mock.patch.object(six.moves.builtins, "open", proc_umnt):
                 self.assertFalse(libvirt_utils.is_mounted(mount_path, source))
+
+    def test_find_disk_file_device(self):
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        xml = """
+          <domain type='kvm'>
+            <os>
+              <type>linux</type>
+            </os>
+            <devices>
+              <disk type="file" device="disk">
+                <driver name="qemu" type="qcow2" cache="none" io="native"/>
+                <source file="/tmp/hello"/>
+                <target bus="ide" dev="/dev/hda"/>
+              </disk>
+            </devices>
+          </domain>
+        """
+        virt_dom = mock.Mock(XMLDesc=mock.Mock(return_value=xml))
+        guest = libvirt_guest.Guest(virt_dom)
+        disk_path, format = libvirt_utils.find_disk(guest)
+        self.assertEqual('/tmp/hello', disk_path)
+        self.assertEqual('qcow2', format)
+
+    def test_find_disk_block_device(self):
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        xml = """
+          <domain type='kvm'>
+            <os>
+              <type>linux</type>
+            </os>
+            <devices>
+              <disk type="block" device="disk">
+                <driver name="qemu" type="raw"/>
+                <source dev="/dev/nova-vg/hello"/>
+                <target bus="ide" dev="/dev/hda"/>
+              </disk>
+            </devices>
+          </domain>
+        """
+        virt_dom = mock.Mock(XMLDesc=mock.Mock(return_value=xml))
+        guest = libvirt_guest.Guest(virt_dom)
+        disk_path, format = libvirt_utils.find_disk(guest)
+        self.assertEqual('/dev/nova-vg/hello', disk_path)
+        self.assertEqual('raw', format)
+
+    def test_find_disk_rbd(self):
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        xml = """
+          <domain type='kvm'>
+            <os>
+              <type>linux</type>
+            </os>
+            <devices>
+              <disk type="network" device="disk">
+                <driver name="qemu" type="raw"/>
+                <source name="pool/image" protocol="rbd">
+                  <host name="1.2.3.4" port="456"/>
+                </source>
+                <target bus="virtio" dev="/dev/vda"/>
+              </disk>
+            </devices>
+          </domain>
+        """
+        virt_dom = mock.Mock(XMLDesc=mock.Mock(return_value=xml))
+        guest = libvirt_guest.Guest(virt_dom)
+        disk_path, format = libvirt_utils.find_disk(guest)
+        self.assertEqual('rbd:pool/image', disk_path)
+        self.assertEqual('raw', format)
+
+    def test_find_disk_lxc(self):
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        xml = """
+          <domain type='lxc'>
+            <os>
+              <type>exe</type>
+            </os>
+            <devices>
+              <filesystem type="mount">
+                <source dir="/myhome/rootfs"/>
+                <target dir="/"/>
+              </filesystem>
+            </devices>
+          </domain>
+        """
+        virt_dom = mock.Mock(XMLDesc=mock.Mock(return_value=xml))
+        guest = libvirt_guest.Guest(virt_dom)
+        disk_path, format = libvirt_utils.find_disk(guest)
+        self.assertEqual('/myhome/disk', disk_path)
+        self.assertIsNone(format)
+
+    def test_find_disk_parallels(self):
+        self.useFixture(fakelibvirt.FakeLibvirtFixture())
+        xml = """
+          <domain type='parallels'>
+            <os>
+              <type>exe</type>
+            </os>
+            <devices>
+              <filesystem type='file'>"
+                <driver format='ploop' type='ploop'/>"
+                <source file='/test/disk'/>"
+                <target dir='/'/>
+              </filesystem>"
+            </devices>
+          </domain>
+        """
+        virt_dom = mock.Mock(XMLDesc=mock.Mock(return_value=xml))
+        guest = libvirt_guest.Guest(virt_dom)
+        disk_path, format = libvirt_utils.find_disk(guest)
+        self.assertEqual('/test/disk', disk_path)
+        self.assertEqual('ploop', format)

@@ -159,6 +159,44 @@ class FloatingIpTestNeutronV21(test.NoDBTestCase):
         ex = exception.InvalidID(id=1)
         self._test_floatingip_delete_not_found(ex, webob.exc.HTTPBadRequest)
 
+    def _test_floatingip_delete_error_disassociate(self, raised_exc,
+                                                   expected_exc):
+        """Ensure that various exceptions are correctly transformed.
+
+        Handle the myriad exceptions that could be raised from the
+        'disassociate_and_release_floating_ip' call.
+        """
+        req = fakes.HTTPRequest.blank('')
+        with mock.patch.object(self.controller.network_api,
+                               'get_floating_ip',
+                               return_value={'address': 'foo'}), \
+             mock.patch.object(self.controller.network_api,
+                               'get_instance_id_by_floating_address',
+                               return_value=None), \
+             mock.patch.object(self.controller.network_api,
+                               'disassociate_and_release_floating_ip',
+                               side_effect=raised_exc):
+            self.assertRaises(expected_exc,
+                              self.controller.delete, req, 1)
+
+    def test_floatingip_delete_error_disassociate_1(self):
+        raised_exc = exception.Forbidden
+        expected_exc = webob.exc.HTTPForbidden
+        self._test_floatingip_delete_error_disassociate(raised_exc,
+                                                        expected_exc)
+
+    def test_floatingip_delete_error_disassociate_2(self):
+        raised_exc = exception.CannotDisassociateAutoAssignedFloatingIP
+        expected_exc = webob.exc.HTTPForbidden
+        self._test_floatingip_delete_error_disassociate(raised_exc,
+                                                        expected_exc)
+
+    def test_floatingip_delete_error_disassociate_3(self):
+        raised_exc = exception.FloatingIpNotFoundForAddress(address='1.1.1.1')
+        expected_exc = webob.exc.HTTPNotFound
+        self._test_floatingip_delete_error_disassociate(raised_exc,
+                                                        expected_exc)
+
 
 class FloatingIpTestV21(test.TestCase):
     floating_ip = "10.10.10.10"
@@ -634,6 +672,15 @@ class FloatingIpTestV21(test.TestCase):
                           self.manager._add_floating_ip, self.fake_req,
                           TEST_INST, body=body)
 
+    @mock.patch.object(network.api.API, 'associate_floating_ip',
+                       side_effect=exception.FloatingIpAssociateFailed(
+                           address='10.10.10.11'))
+    def test_associate_floating_ip_failed(self, associate_mock):
+        body = dict(addFloatingIp=dict(address='10.10.10.11'))
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.manager._add_floating_ip, self.fake_req,
+                          TEST_INST, body=body)
+
     def test_associate_floating_ip_bad_address_key(self):
         body = dict(addFloatingIp=dict(bad_address='10.10.10.11'))
         req = fakes.HTTPRequest.blank('/v2/fake/servers/test_inst/action')
@@ -987,3 +1034,22 @@ class FloatingIpsDeprecationTest(test.NoDBTestCase):
             self.controller.create, self.req, {})
         self.assertRaises(exception.VersionNotFoundForAPIMethod,
             self.controller.delete, self.req, fakes.FAKE_UUID)
+
+
+class FloatingIpActionDeprecationTest(test.NoDBTestCase):
+
+    def setUp(self):
+        super(FloatingIpActionDeprecationTest, self).setUp()
+        self.req = fakes.HTTPRequest.blank('', version='2.44')
+        self.controller = fips_v21.FloatingIPActionController()
+
+    def test_add_floating_ip_not_found(self):
+        body = dict(addFloatingIp=dict(address='10.10.10.11'))
+        self.assertRaises(exception.VersionNotFoundForAPIMethod,
+            self.controller._add_floating_ip, self.req, FAKE_UUID, body=body)
+
+    def test_remove_floating_ip_not_found(self):
+        body = dict(removeFloatingIp=dict(address='10.10.10.10'))
+        self.assertRaises(exception.VersionNotFoundForAPIMethod,
+            self.controller._remove_floating_ip, self.req, FAKE_UUID,
+            body=body)

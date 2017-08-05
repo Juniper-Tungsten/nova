@@ -154,10 +154,25 @@ There are many standard filter classes which may be used
   a set of instances.
 * |RetryFilter| - filters hosts that have been attempted for scheduling.
   Only passes hosts that have not been previously attempted.
-* |TrustedFilter| (EXPERIMENTAL) - filters hosts based on their trust.  Only passes hosts
-  that meet the trust requirements specified in the instance properties.
+* |TrustedFilter| (EXPERIMENTAL) - filters hosts based on their trust.  Only
+  passes hosts that meet the trust requirements specified in the instance
+  properties.
+
+  .. warning:: TrustedFilter is deprecated for removal in the 17.0.0 Queens
+     release. There is no replacement planned for this filter. It has been
+     marked experimental since its inception. It is incomplete and not tested.
+
 * |TypeAffinityFilter| - Only passes hosts that are not already running an
   instance of the requested type.
+
+  .. warning:: TypeAffinityFilter is deprecated for removal in the
+    17.0.0 Queens release. There is no replacement planned for this
+    filter. It is fundamentally flawed in that it relies on the
+    ``flavors.id`` primary key and if a flavor "changed", i.e. deleted
+    and re-created with new values, it will result in this filter
+    thinking it is a different flavor, thus breaking the usefulness of
+    this filter.
+
 * |AggregateTypeAffinityFilter| - limits instance_type by aggregate.
    This filter passes hosts if no instance_type key is set or
    the instance_type aggregate metadata value contains the name of the
@@ -361,9 +376,9 @@ settings:
    filters shipped with nova.
 
 With these settings, nova will use the ``FilterScheduler`` for the scheduler
-driver.  The standard nova filters and MyFilter are available to the
-FilterScheduler.  The RamFilter, ComputeFilter, and MyFilter are used by
-default when no filters are specified in the request.
+driver. All of the standard nova filters and MyFilter are available to the
+FilterScheduler, but just the RamFilter, ComputeFilter, and MyFilter will be
+used on each request.
 
 Each filter selects hosts in a different way and has different costs. The order
 of ``filter_scheduler.enabled_filters`` affects scheduling performance. The
@@ -417,6 +432,24 @@ The Filter Scheduler weighs hosts based on the config option
   host's workload. The default is to preferably choose light workload compute
   hosts. If the multiplier is positive, the weigher prefer choosing heavy
   workload compute hosts, the weighing has the opposite effect of the default.
+
+* |PCIWeigher| Compute a weighting based on the number of PCI devices on the
+  host and the number of PCI devices requested by the instance. For example,
+  given three hosts - one with a single PCI device, one with many PCI devices,
+  and one with no PCI devices - nova should prioritise these differently based
+  on the demands of the instance. If the instance requests a single PCI device,
+  then the first of the hosts should be preferred. Similarly, if the instance
+  requests multiple PCI devices, then the second of these hosts would be
+  preferred. Finally, if the instance does not request a PCI device, then the
+  last of these hosts should be preferred.
+
+  For this to be of any value, at least one of the |PciPassthroughFilter| or
+  |NUMATopologyFilter| filters must be enabled.
+
+  :Configuration Option: ``[filter_scheduler] pci_weight_multiplier``. Only
+    positive values are allowed for the multiplier as a negative value would
+    force non-PCI instances away from non-PCI hosts, thus, causing future
+    scheduling issues.
 
 * |ServerGroupSoftAffinityWeigher| The weigher can compute the weight based
   on the number of instances that run on the same server group. The largest
@@ -481,6 +514,7 @@ in :mod:`nova.tests.scheduler`.
 .. |MetricsFilter| replace:: :class:`MetricsFilter <nova.scheduler.filters.metrics_filter.MetricsFilter>`
 .. |MetricsWeigher| replace:: :class:`MetricsWeigher <nova.scheduler.weights.metrics.MetricsWeigher>`
 .. |IoOpsWeigher| replace:: :class:`IoOpsWeigher <nova.scheduler.weights.io_ops.IoOpsWeigher>`
+.. |PCIWeigher| replace:: :class:`PCIWeigher <nova.scheduler.weights.pci.PCIWeigher>`
 .. |ServerGroupSoftAffinityWeigher| replace:: :class:`ServerGroupSoftAffinityWeigher <nova.scheduler.weights.affinity.ServerGroupSoftAffinityWeigher>`
 .. |ServerGroupSoftAntiAffinityWeigher| replace:: :class:`ServerGroupSoftAntiAffinityWeigher <nova.scheduler.weights.affinity.ServerGroupSoftAntiAffinityWeigher>`
 .. |DiskWeigher| replace:: :class:`DiskWeigher <nova.scheduler.weights.disk.DiskWeigher>`

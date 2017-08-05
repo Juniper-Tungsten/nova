@@ -27,9 +27,9 @@ from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_serialization import jsonutils
 
+from nova import cells
 import nova.conf
 from nova import exception
-from nova.i18n import _LE
 from nova import objects
 from nova.objects import base as objects_base
 from nova import profiler
@@ -136,7 +136,7 @@ class CellsAPI(object):
 
     def __init__(self):
         super(CellsAPI, self).__init__()
-        target = messaging.Target(topic=CONF.cells.topic, version='1.0')
+        target = messaging.Target(topic=cells.TOPIC, version='1.0')
         version_cap = self.VERSION_ALIASES.get(CONF.upgrade_levels.cells,
                                                CONF.upgrade_levels.cells)
         # NOTE(sbauza): Yes, this is ugly but cells_utils is calling cells.db
@@ -328,8 +328,7 @@ class CellsAPI(object):
         return cctxt.call(ctxt, 'proxy_rpc_to_manager',
                           topic=topic,
                           rpc_message=rpc_message,
-                          call=call,
-                          timeout=timeout)
+                          call=call)
 
     def task_log_get_all(self, ctxt, task_name, period_beginning,
                          period_ending, host=None, state=None):
@@ -420,7 +419,7 @@ class CellsAPI(object):
             cctxt.cast(ctxt, 'bdm_update_or_create_at_top',
                        bdm=bdm, create=create)
         except Exception:
-            LOG.exception(_LE("Failed to notify cells of BDM update/create."))
+            LOG.exception("Failed to notify cells of BDM update/create.")
 
     def bdm_destroy_at_top(self, ctxt, instance_uuid, device_name=None,
                            volume_id=None):
@@ -434,7 +433,7 @@ class CellsAPI(object):
                        device_name=device_name,
                        volume_id=volume_id)
         except Exception:
-            LOG.exception(_LE("Failed to notify cells of BDM destroy."))
+            LOG.exception("Failed to notify cells of BDM destroy.")
 
     def get_migrations(self, ctxt, filters):
         """Get all migrations applying the filters."""

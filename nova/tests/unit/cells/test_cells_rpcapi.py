@@ -34,9 +34,9 @@ class CellsAPITestCase(test.NoDBTestCase):
 
     def setUp(self):
         super(CellsAPITestCase, self).setUp()
-        self.fake_topic = 'fake_topic'
+        self.fake_topic = 'cells'
         self.fake_context = 'fake_context'
-        self.flags(topic=self.fake_topic, enable=True, group='cells')
+        self.flags(enable=True, group='cells')
         self.cells_rpcapi = cells_rpcapi.CellsAPI()
 
     def _stub_rpc_method(self, rpc_method, result):
@@ -317,11 +317,10 @@ class CellsAPITestCase(test.NoDBTestCase):
         call_info = self._stub_rpc_method('call', 'fake_response')
         result = self.cells_rpcapi.proxy_rpc_to_manager(
                 self.fake_context, rpc_message='fake-msg',
-                topic='fake-topic', call=True, timeout=-1)
+                topic='fake-topic', call=True)
         expected_args = {'rpc_message': 'fake-msg',
                          'topic': 'fake-topic',
-                         'call': True,
-                         'timeout': -1}
+                         'call': True}
         self._check_result(call_info, 'proxy_rpc_to_manager',
                            expected_args,
                            version='1.2')

@@ -20,6 +20,7 @@ from nova import context
 from nova import exception
 from nova import objects
 from nova import test
+from nova.tests import uuidsentinel as uuids
 
 
 class ContextTestCase(test.NoDBTestCase):
@@ -197,66 +198,9 @@ class ContextTestCase(test.NoDBTestCase):
                            'user_id': 111,
                            'user_identity': '111 222 - - -',
                            'user_name': None}
-        self.assertEqual(expected_values, values2)
-
-    def test_convert_from_dict_to_dict_version_2_4_x(self):
-        # fake dict() created with oslo.context 2.4.x, Missing is_admin_project
-        # key
-        values = {'user': '111',
-                  'user_id': '111',
-                  'tenant': '222',
-                  'project_id': '222',
-                  'domain': None, 'project_domain': None,
-                  'auth_token': None,
-                  'resource_uuid': None, 'read_only': False,
-                  'user_identity': '111 222 - - -',
-                  'instance_lock_checked': False,
-                  'user_name': None, 'project_name': None,
-                  'timestamp': '2015-03-02T20:03:59.416299',
-                  'remote_address': None, 'quota_class': None,
-                  'is_admin': True,
-                  'service_catalog': [],
-                  'read_deleted': 'no', 'show_deleted': False,
-                  'roles': [],
-                  'request_id': 'req-956637ad-354a-4bc5-b969-66fd1cc00f50',
-                  'user_domain': None}
-        ctx = context.RequestContext.from_dict(values)
-        self.assertEqual('111', ctx.user)
-        self.assertEqual('222', ctx.tenant)
-        self.assertEqual('111', ctx.user_id)
-        self.assertEqual('222', ctx.project_id)
-        # to_dict() will add is_admin_project
-        values.update({'is_admin_project': True})
-        values2 = ctx.to_dict()
-        self.assertEqual(values, values2)
-
-    def test_convert_from_dict_then_to_dict(self):
-        values = {'user': '111',
-                  'user_id': '111',
-                  'tenant': '222',
-                  'project_id': '222',
-                  'domain': None, 'project_domain': None,
-                  'auth_token': None,
-                  'resource_uuid': None, 'read_only': False,
-                  'user_identity': '111 222 - - -',
-                  'instance_lock_checked': False,
-                  'user_name': None, 'project_name': None,
-                  'timestamp': '2015-03-02T20:03:59.416299',
-                  'remote_address': None, 'quota_class': None,
-                  'is_admin': True,
-                  'is_admin_project': True,
-                  'service_catalog': [],
-                  'read_deleted': 'no', 'show_deleted': False,
-                  'roles': [],
-                  'request_id': 'req-956637ad-354a-4bc5-b969-66fd1cc00f50',
-                  'user_domain': None}
-        ctx = context.RequestContext.from_dict(values)
-        self.assertEqual('111', ctx.user)
-        self.assertEqual('222', ctx.tenant)
-        self.assertEqual('111', ctx.user_id)
-        self.assertEqual('222', ctx.project_id)
-        values2 = ctx.to_dict()
-        self.assertEqual(values, values2)
+        for k, v in expected_values.items():
+            self.assertIn(k, values2)
+            self.assertEqual(values2[k], v)
 
     @mock.patch.object(context.policy, 'authorize')
     def test_can(self, mock_authorize):
@@ -302,10 +246,11 @@ class ContextTestCase(test.NoDBTestCase):
         ctxt.db_connection = mock.sentinel.db_conn
         ctxt.mq_connection = mock.sentinel.mq_conn
         mapping = objects.CellMapping(database_connection='fake://',
-                                      transport_url='fake://')
-        with context.target_cell(ctxt, mapping):
-            self.assertEqual(ctxt.db_connection, mock.sentinel.cdb)
-            self.assertEqual(ctxt.mq_connection, mock.sentinel.cmq)
+                                      transport_url='fake://',
+                                      uuid=uuids.cell)
+        with context.target_cell(ctxt, mapping) as cctxt:
+            self.assertEqual(cctxt.db_connection, mock.sentinel.cdb)
+            self.assertEqual(cctxt.mq_connection, mock.sentinel.cmq)
         self.assertEqual(mock.sentinel.db_conn, ctxt.db_connection)
         self.assertEqual(mock.sentinel.mq_conn, ctxt.mq_connection)
 
@@ -322,9 +267,9 @@ class ContextTestCase(test.NoDBTestCase):
                                       roles=['admin', 'weasel'])
         ctxt.db_connection = mock.sentinel.db_conn
         ctxt.mq_connection = mock.sentinel.mq_conn
-        with context.target_cell(ctxt, None):
-            self.assertIsNone(ctxt.db_connection)
-            self.assertIsNone(ctxt.mq_connection)
+        with context.target_cell(ctxt, None) as cctxt:
+            self.assertIsNone(cctxt.db_connection)
+            self.assertIsNone(cctxt.mq_connection)
         self.assertEqual(mock.sentinel.db_conn, ctxt.db_connection)
         self.assertEqual(mock.sentinel.mq_conn, ctxt.mq_connection)
 
@@ -333,3 +278,27 @@ class ContextTestCase(test.NoDBTestCase):
         self.assertIsNone(ctxt.user_id)
         self.assertIsNone(ctxt.project_id)
         self.assertFalse(ctxt.is_admin)
+
+    @mock.patch('nova.rpc.create_transport')
+    @mock.patch('nova.db.create_context_manager')
+    def test_target_cell_caching(self, mock_create_cm, mock_create_tport):
+        mock_create_cm.return_value = mock.sentinel.db_conn_obj
+        mock_create_tport.return_value = mock.sentinel.mq_conn_obj
+        ctxt = context.get_context()
+        mapping = objects.CellMapping(database_connection='fake://db',
+                                      transport_url='fake://mq',
+                                      uuid=uuids.cell)
+        # First call should create new connection objects.
+        with context.target_cell(ctxt, mapping) as cctxt:
+            self.assertEqual(mock.sentinel.db_conn_obj, cctxt.db_connection)
+            self.assertEqual(mock.sentinel.mq_conn_obj, cctxt.mq_connection)
+        mock_create_cm.assert_called_once_with('fake://db')
+        mock_create_tport.assert_called_once_with('fake://mq')
+        # Second call should use cached objects.
+        mock_create_cm.reset_mock()
+        mock_create_tport.reset_mock()
+        with context.target_cell(ctxt, mapping) as cctxt:
+            self.assertEqual(mock.sentinel.db_conn_obj, cctxt.db_connection)
+            self.assertEqual(mock.sentinel.mq_conn_obj, cctxt.mq_connection)
+        mock_create_cm.assert_not_called()
+        mock_create_tport.assert_not_called()

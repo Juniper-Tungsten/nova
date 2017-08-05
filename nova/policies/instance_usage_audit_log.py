@@ -13,22 +13,28 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_policy import policy
-
 from nova.policies import base
 
 
 BASE_POLICY_NAME = 'os_compute_api:os-instance-usage-audit-log'
-POLICY_ROOT = 'os_compute_api:os-instance-usage-audit-log:%s'
 
 
 instance_usage_audit_log_policies = [
-    policy.RuleDefault(
-        name=BASE_POLICY_NAME,
-        check_str=base.RULE_ADMIN_API),
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'discoverable',
-        check_str=base.RULE_ANY),
+    base.create_rule_default(
+        BASE_POLICY_NAME,
+        base.RULE_ADMIN_API,
+        """Lists all usage audits and that occurred before a specified time
+for all servers on all compute hosts where usage auditing is configured.""",
+        [
+            {
+                'method': 'GET',
+                'path': '/os-instance_usage_audit_log'
+            },
+            {
+                'method': 'GET',
+                'path': '/os-instance_usage_audit_log/{before_timestamp}'
+            }
+        ]),
 ]
 
 

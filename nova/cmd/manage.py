@@ -70,6 +70,7 @@ from oslo_utils import uuidutils
 import prettytable
 
 import six.moves.urllib.parse as urlparse
+from sqlalchemy.engine import url as sqla_url
 
 from nova.api.ec2 import ec2utils
 from nova import availability_zones
@@ -118,6 +119,12 @@ def param2id(object_id):
 
 
 class ShellCommands(object):
+
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The shell commands are deprecated since '
+                   'Pike as they serve no useful purpose in modern nova. '
+                   'They will be removed in an upcoming release.')
+
     def bpython(self):
         """Runs a bpython shell.
 
@@ -199,8 +206,41 @@ def _db_error(caught_exception):
     sys.exit(1)
 
 
+class QuotaCommands(object):
+    """Class for managing quotas."""
+
+    @args('--project', dest='project_id', metavar='<Project Id>',
+            help='Project Id', required=True)
+    @args('--user', dest='user_id', metavar='<User Id>',
+            help='User Id')
+    @args('--key', metavar='<key>', help='Key')
+    def refresh(self, project_id, user_id=None, key=None):
+        """Refresh the quotas for a project or user.
+
+        If no quota key is provided, all the quota usages will be refreshed.
+        If a valid quota key is provided and it does not exist, it will be
+        created. Otherwise, it will be refreshed.
+        """
+        ctxt = context.get_admin_context()
+
+        keys = None
+        if key:
+            keys = [key]
+
+        try:
+            QUOTAS.usage_refresh(ctxt, project_id, user_id, keys)
+        except exception.QuotaUsageRefreshNotAllowed as e:
+            print(e.format_message())
+            return 2
+
+
 class ProjectCommands(object):
     """Class for managing projects."""
+
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The project commands are deprecated since '
+                   'Pike as this information is available over the API. They '
+                   'will be removed in an upcoming release.')
 
     @args('--project', dest='project_id', metavar='<Project name>',
             help='Project name')
@@ -280,8 +320,11 @@ class ProjectCommands(object):
         """Refresh the quotas for project/user
 
         If no quota key is provided, all the quota usages will be refreshed.
-        If a valid quota key is provided and it does not exist,
-        it will be created. Otherwise, it will be refreshed.
+        If a valid quota key is provided and it does not exist, it will be
+        created. Otherwise, it will be refreshed.
+
+        DEPRECATED: This command is deprecated. Use ``nova-manage quota
+        refresh`` instead.
         """
         ctxt = context.get_admin_context()
 
@@ -296,7 +339,13 @@ class ProjectCommands(object):
             return 2
 
 
-AccountCommands = ProjectCommands
+class AccountCommands(ProjectCommands):
+    """Class for managing projects."""
+
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The account commands are deprecated since '
+                   'Pike as this information is available over the API. They '
+                   'will be removed in an upcoming release.')
 
 
 class FloatingIpCommands(object):
@@ -570,6 +619,11 @@ class NetworkCommands(object):
 class HostCommands(object):
     """List hosts."""
 
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The host commands are deprecated since '
+                   'Pike as this information is available over the API. They '
+                   'will be removed in an upcoming release.')
+
     def list(self, zone=None):
         """Show a list of all physical hosts. Filter by zone.
         args: [zone]
@@ -594,8 +648,6 @@ class DbCommands(object):
     """Class for managing the main database."""
 
     online_migrations = (
-        # Added in Mitaka
-        db.aggregate_uuids_online_data_migration,
         # Added in Newton
         flavor_obj.migrate_flavors,
         # Added in Newton
@@ -616,6 +668,8 @@ class DbCommands(object):
         # NOTE(mriedem): This online migration is going to be backported to
         # Newton also since it's an upgrade issue when upgrading from Mitaka.
         build_request_obj.delete_build_requests_with_no_instance_uuid,
+        # Added in Pike
+        db.service_uuids_online_data_migration,
     )
 
     def __init__(self):
@@ -634,8 +688,8 @@ class DbCommands(object):
             try:
                 cell_mapping = objects.CellMapping.get_by_uuid(ctxt,
                                             objects.CellMapping.CELL0_UUID)
-                with context.target_cell(ctxt, cell_mapping):
-                    migration.db_sync(version, context=ctxt)
+                with context.target_cell(ctxt, cell_mapping) as cctxt:
+                    migration.db_sync(version, context=cctxt)
             except exception.CellMappingNotFound:
                 print(_('WARNING: cell0 mapping not found - not'
                         ' syncing cell0.'))
@@ -817,6 +871,11 @@ class ApiDbCommands(object):
 class AgentBuildCommands(object):
     """Class for managing agent builds."""
 
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The agent commands are deprecated since '
+                   'Pike as this information is available over the API. They '
+                   'will be removed in an upcoming release.')
+
     @args('--os', metavar='<os>', help='os')
     @args('--architecture', dest='architecture',
             metavar='<architecture>', help='architecture')
@@ -900,6 +959,11 @@ class AgentBuildCommands(object):
 
 class GetLogCommands(object):
     """Get logging information."""
+
+    # TODO(stephenfin): Remove this during the Queens cycle
+    description = ('DEPRECATED: The log commands are deprecated since '
+                   'Pike as they are not maintained. They will be removed '
+                   'in an upcoming release.')
 
     def errors(self):
         """Get all of the errors from the log files."""
@@ -1104,9 +1168,9 @@ class CellV2Commands(object):
                 ctxt, objects.CellMapping.CELL0_UUID)
 
         # Run migrations so cell0 is usable
-        with context.target_cell(ctxt, cell0_mapping):
+        with context.target_cell(ctxt, cell0_mapping) as cctxt:
             try:
-                migration.db_sync(None, context=ctxt)
+                migration.db_sync(None, context=cctxt)
             except db_exc.DBError as ex:
                 print(_('Unable to sync cell0 schema: %s') % ex)
 
@@ -1152,12 +1216,16 @@ class CellV2Commands(object):
             # based on the database connection url.
             # The cell0 database will use the same database scheme and
             # netloc as the main database, with a related path.
-            scheme, netloc, path, query, fragment = \
-                urlparse.urlsplit(CONF.database.connection)
-            root, ext = os.path.splitext(path)
-            path = root + "_cell0" + ext
-            return urlparse.urlunsplit((scheme, netloc, path, query,
-                                        fragment))
+            # NOTE(sbauza): The URL has to be RFC1738 compliant in order to
+            # be usable by sqlalchemy.
+            connection = CONF.database.connection
+            # sqlalchemy has a nice utility for parsing database connection
+            # URLs so we use that here to get the db name so we don't have to
+            # worry about parsing and splitting a URL which could have special
+            # characters in the password, which makes parsing a nightmare.
+            url = sqla_url.make_url(connection)
+            url.database = url.database + '_cell0'
+            return urlparse.unquote(str(url))
 
         dbc = database_connection or cell0_default_connection()
         ctxt = context.RequestContext()
@@ -1360,7 +1428,8 @@ class CellV2Commands(object):
                 ctxt, uuid)
         except exception.InstanceMappingNotFound:
             say('Instance %s is not mapped to a cell '
-                '(upgrade is incomplete)' % uuid)
+                '(upgrade is incomplete) or instance '
+                'does not exist' % uuid)
             return 1
         if mapping.cell_mapping is None:
             say('Instance %s is not mapped to a cell' % uuid)
@@ -1377,7 +1446,11 @@ class CellV2Commands(object):
                'map.')
     @args('--verbose', action='store_true',
           help=_('Provide detailed output when discovering hosts.'))
-    def discover_hosts(self, cell_uuid=None, verbose=False):
+    @args('--strict', action='store_true',
+          help=_('Considered successful (exit code 0) only when an unmapped '
+                 'host is discovered. Any other outcome will be considered a '
+                 'failure (exit code 1).'))
+    def discover_hosts(self, cell_uuid=None, verbose=False, strict=False):
         """Searches cells, or a single cell, and maps found hosts.
 
         When a new host is added to a deployment it will add a service entry
@@ -1390,7 +1463,10 @@ class CellV2Commands(object):
                 print(msg)
 
         ctxt = context.RequestContext()
-        host_mapping_obj.discover_hosts(ctxt, cell_uuid, status_fn)
+        hosts = host_mapping_obj.discover_hosts(ctxt, cell_uuid, status_fn)
+        # discover_hosts will return an empty list if no hosts are discovered
+        if strict:
+            return int(not hosts)
 
     @action_description(
         _("Add a new cell to nova API database. "
@@ -1464,17 +1540,11 @@ class CellV2Commands(object):
     def delete_cell(self, cell_uuid):
         """Delete an empty cell by the given uuid.
 
-        If the cell is cell0 this command will return a non-zero exit code.
-
         If the cell is not found by uuid or it is not empty (it has host or
         instance mappings) this command will return a non-zero exit code.
 
         Returns 0 if the empty cell is found and deleted successfully.
         """
-        if cell_uuid == objects.CellMapping.CELL0_UUID:
-            print(_('Cell 0 can not be deleted.'))
-            return 5
-
         ctxt = context.get_admin_context()
         # Find the CellMapping given the uuid.
         try:
@@ -1566,6 +1636,7 @@ CATEGORIES = {
     'network': NetworkCommands,
     'project': ProjectCommands,
     'shell': ShellCommands,
+    'quota': QuotaCommands,
 }
 
 

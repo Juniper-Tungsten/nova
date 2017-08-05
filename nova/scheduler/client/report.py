@@ -86,7 +86,7 @@ def safe_connect(f):
     return wrapper
 
 
-def _convert_mb_to_ceil_gb(mb_value):
+def convert_mb_to_ceil_gb(mb_value):
     gb_int = 0
     if mb_value:
         gb_float = mb_value / 1024.0
@@ -108,7 +108,7 @@ def _compute_node_to_inventory_dict(compute_node):
     if compute_node.vcpus > 0:
         result[VCPU] = {
             'total': compute_node.vcpus,
-            'reserved': 0,
+            'reserved': CONF.reserved_host_cpus,
             'min_unit': 1,
             'max_unit': compute_node.vcpus,
             'step_size': 1,
@@ -126,7 +126,7 @@ def _compute_node_to_inventory_dict(compute_node):
     if compute_node.local_gb > 0:
         # TODO(johngarbutt) We should either move to reserved_host_disk_gb
         # or start tracking DISK_MB.
-        reserved_disk_gb = _convert_mb_to_ceil_gb(CONF.reserved_host_disk_mb)
+        reserved_disk_gb = convert_mb_to_ceil_gb(CONF.reserved_host_disk_mb)
         result[DISK_GB] = {
             'total': compute_node.local_gb,
             'reserved': reserved_disk_gb,
@@ -149,7 +149,7 @@ def _instance_to_allocations_dict(instance):
                                                      instance)
     # TODO(johngarbutt) we have to round up swap MB to the next GB.
     # It would be better to claim disk in MB, but that is hard now.
-    swap_in_gb = _convert_mb_to_ceil_gb(instance.flavor.swap)
+    swap_in_gb = convert_mb_to_ceil_gb(instance.flavor.swap)
     disk = ((0 if is_bfv else instance.flavor.root_gb) +
             swap_in_gb + instance.flavor.ephemeral_gb)
     alloc_dict = {
@@ -232,14 +232,24 @@ class SchedulerReportClient(object):
             url, json=data,
             endpoint_filter=self.ks_filter, raise_exc=False, **kwargs)
 
-    def put(self, url, data):
+    def put(self, url, data, version=None):
         # NOTE(sdague): using json= instead of data= sets the
         # media type to application/json for us. Placement API is
         # more sensitive to this than other APIs in the OpenStack
         # ecosystem.
+        kwargs = {}
+        if version is not None:
+            # TODO(mriedem): Perform some version discovery at some point.
+            kwargs = {
+                'headers': {
+                    'OpenStack-API-Version': 'placement %s' % version
+                },
+            }
+        if data:
+            kwargs['json'] = data
         return self._client.put(
-            url, json=data,
-            endpoint_filter=self.ks_filter, raise_exc=False)
+            url, endpoint_filter=self.ks_filter, raise_exc=False,
+            **kwargs)
 
     def delete(self, url):
         return self._client.delete(
@@ -678,20 +688,53 @@ class SchedulerReportClient(object):
         """
         self._ensure_resource_provider(rp_uuid, rp_name)
 
-        new_inv = {}
-        for rc_name, inv in inv_data.items():
-            if rc_name not in fields.ResourceClass.STANDARD:
-                # Auto-create custom resource classes coming from a virt driver
-                self._get_or_create_resource_class(rc_name)
+        # Auto-create custom resource classes coming from a virt driver
+        list(map(self._ensure_resource_class,
+                 (rc_name for rc_name in inv_data
+                  if rc_name not in fields.ResourceClass.STANDARD)))
 
-            new_inv[rc_name] = inv
-
-        if new_inv:
-            self._update_inventory(rp_uuid, new_inv)
+        if inv_data:
+            self._update_inventory(rp_uuid, inv_data)
         else:
             self._delete_inventory(rp_uuid)
 
     @safe_connect
+    def _ensure_resource_class(self, name):
+        """Make sure a custom resource class exists.
+
+        First attempt to PUT the resource class using microversion 1.7. If
+        this results in a 406, fail over to a GET and POST with version 1.2.
+
+        Returns the name of the resource class if it was successfully
+        created or already exists. Otherwise None.
+
+        :param name: String name of the resource class to check/create.
+        :raises: `exception.InvalidResourceClass` upon error.
+        """
+        # no payload on the put request
+        response = self.put("/resource_classes/%s" % name, None, version="1.7")
+        if 200 <= response.status_code < 300:
+            return name
+        elif response.status_code == 406:
+            # microversion 1.7 not available so try the earlier way
+            # TODO(cdent): When we're happy that all placement
+            # servers support microversion 1.7 we can remove this
+            # call and the associated code.
+            LOG.debug('Falling back to placement API microversion 1.2 '
+                      'for resource class management.')
+            return self._get_or_create_resource_class(name)
+        else:
+            msg = _LE("Failed to ensure resource class record with "
+                      "placement API for resource class %(rc_name)s. "
+                      "Got %(status_code)d: %(err_text)s.")
+            args = {
+                'rc_name': name,
+                'status_code': response.status_code,
+                'err_text': response.text,
+            }
+            LOG.error(msg, args)
+            raise exception.InvalidResourceClass(resource_class=name)
+
     def _get_or_create_resource_class(self, name):
         """Queries the placement API for a resource class supplied resource
         class string name. If the resource class does not exist, creates it.
@@ -796,13 +839,13 @@ class SchedulerReportClient(object):
         LOG.debug('Sending allocation for instance %s',
                   my_allocations,
                   instance=instance)
-        res = self._put_allocations(rp_uuid, instance.uuid, my_allocations)
+        res = self.put_allocations(rp_uuid, instance.uuid, my_allocations)
         if res:
             LOG.info(_LI('Submitted allocation for instance'),
                      instance=instance)
 
     @safe_connect
-    def _put_allocations(self, rp_uuid, consumer_uuid, alloc_data):
+    def put_allocations(self, rp_uuid, consumer_uuid, alloc_data):
         """Creates allocation records for the supplied instance UUID against
         the supplied resource provider.
 
@@ -830,15 +873,15 @@ class SchedulerReportClient(object):
         r = self.put(url, payload)
         if r.status_code != 204:
             LOG.warning(
-                _LW('Unable to submit allocation for instance '
-                    '%(uuid)s (%(code)i %(text)s)'),
+                'Unable to submit allocation for instance '
+                    '%(uuid)s (%(code)i %(text)s)',
                 {'uuid': consumer_uuid,
                  'code': r.status_code,
                  'text': r.text})
         return r.status_code == 204
 
     @safe_connect
-    def _delete_allocation_for_instance(self, uuid):
+    def delete_allocation_for_instance(self, uuid):
         url = '/allocations/%s' % uuid
         r = self.delete(url)
         if r:
@@ -859,30 +902,16 @@ class SchedulerReportClient(object):
         if sign > 0:
             self._allocate_for_instance(compute_node.uuid, instance)
         else:
-            self._delete_allocation_for_instance(instance.uuid)
+            self.delete_allocation_for_instance(instance.uuid)
 
     @safe_connect
-    def _get_allocations(self, rp_uuid):
+    def get_allocations_for_resource_provider(self, rp_uuid):
         url = '/resource_providers/%s/allocations' % rp_uuid
         resp = self.get(url)
         if not resp:
             return {}
         else:
             return resp.json()['allocations']
-
-    def remove_deleted_instances(self, compute_node, instance_uuids):
-        allocations = self._get_allocations(compute_node.uuid)
-        if allocations is None:
-            allocations = {}
-
-        instance_dict = {instance['uuid']: instance
-                         for instance in instance_uuids}
-        removed_instances = set(allocations.keys()) - set(instance_dict.keys())
-
-        for uuid in removed_instances:
-            LOG.warning(_LW('Deleting stale allocation for instance %s'),
-                        uuid)
-            self._delete_allocation_for_instance(uuid)
 
     @safe_connect
     def delete_resource_provider(self, context, compute_node, cascade=False):
@@ -905,7 +934,7 @@ class SchedulerReportClient(object):
             instances = objects.InstanceList.get_by_host_and_node(context,
                     host, nodename)
             for instance in instances:
-                self._delete_allocation_for_instance(instance.uuid)
+                self.delete_allocation_for_instance(instance.uuid)
         url = "/resource_providers/%s" % rp_uuid
         resp = self.delete(url)
         if resp:

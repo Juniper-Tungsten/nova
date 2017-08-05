@@ -22,6 +22,7 @@ except ImportError:
 
 from eventlet import greenthread
 import mock
+from os_xenapi.client import host_xenstore
 from os_xenapi.client import session as xenapi_session
 import six
 
@@ -1307,48 +1308,59 @@ class XenstoreCallsTestCase(VMOpsTestBase):
     from vmops.
     """
 
-    @mock.patch.object(vmops.VMOps, '_make_plugin_call')
-    def test_read_from_xenstore(self, fake_xapi_call):
-        fake_xapi_call.return_value = "fake_xapi_return"
+    @mock.patch.object(vmops.VMOps, '_get_dom_id')
+    @mock.patch.object(host_xenstore, 'read_record')
+    def test_read_from_xenstore(self, mock_read_record, mock_dom_id):
+        mock_read_record.return_value = "fake_xapi_return"
+        mock_dom_id.return_value = "fake_dom_id"
         fake_instance = {"name": "fake_instance"}
         path = "attr/PVAddons/MajorVersion"
         self.assertEqual("fake_xapi_return",
                          self.vmops._read_from_xenstore(fake_instance, path,
                                                         vm_ref="vm_ref"))
+        mock_dom_id.assert_called_once_with(fake_instance, "vm_ref")
 
-    @mock.patch.object(vmops.VMOps, '_make_plugin_call')
-    def test_read_from_xenstore_ignore_missing_path(self, fake_xapi_call):
+    @mock.patch.object(vmops.VMOps, '_get_dom_id')
+    @mock.patch.object(host_xenstore, 'read_record')
+    def test_read_from_xenstore_ignore_missing_path(self, mock_read_record,
+                                                    mock_dom_id):
+        mock_read_record.return_value = "fake_xapi_return"
+        mock_dom_id.return_value = "fake_dom_id"
         fake_instance = {"name": "fake_instance"}
         path = "attr/PVAddons/MajorVersion"
         self.vmops._read_from_xenstore(fake_instance, path, vm_ref="vm_ref")
-        fake_xapi_call.assert_called_once_with('xenstore.py', 'read_record',
-                                               fake_instance, vm_ref="vm_ref",
-                                               path=path,
-                                               ignore_missing_path='True')
+        mock_read_record.assert_called_once_with(
+            self._session, "fake_dom_id", path, ignore_missing_path=True)
 
-    @mock.patch.object(vmops.VMOps, '_make_plugin_call')
-    def test_read_from_xenstore_missing_path(self, fake_xapi_call):
+    @mock.patch.object(vmops.VMOps, '_get_dom_id')
+    @mock.patch.object(host_xenstore, 'read_record')
+    def test_read_from_xenstore_missing_path(self, mock_read_record,
+                                             mock_dom_id):
+        mock_read_record.return_value = "fake_xapi_return"
+        mock_dom_id.return_value = "fake_dom_id"
         fake_instance = {"name": "fake_instance"}
         path = "attr/PVAddons/MajorVersion"
         self.vmops._read_from_xenstore(fake_instance, path, vm_ref="vm_ref",
                                        ignore_missing_path=False)
-        fake_xapi_call.assert_called_once_with('xenstore.py', 'read_record',
-                                               fake_instance, vm_ref="vm_ref",
-                                               path=path,
-                                               ignore_missing_path='False')
+        mock_read_record.assert_called_once_with(self._session, "fake_dom_id",
+                                                 path,
+                                                 ignore_missing_path=False)
 
 
 class LiveMigrateTestCase(VMOpsTestBase):
 
+    @mock.patch.object(vmops.VMOps, '_get_network_ref')
     @mock.patch.object(vmops.VMOps, '_ensure_host_in_aggregate')
     def _test_check_can_live_migrate_destination_shared_storage(
                                                 self,
                                                 shared,
-                                                mock_ensure_host):
+                                                mock_ensure_host,
+                                                mock_net_ref):
         fake_instance = {"name": "fake_instance", "host": "fake_host"}
         block_migration = None
         disk_over_commit = False
         ctxt = 'ctxt'
+        mock_net_ref.return_value = 'fake_net_ref'
 
         with mock.patch.object(self._session, 'get_rec') as fake_sr_rec:
             fake_sr_rec.return_value = {'shared': shared}
@@ -1359,6 +1371,8 @@ class LiveMigrateTestCase(VMOpsTestBase):
             self.assertFalse(migrate_data_ret.block_migration)
         else:
             self.assertTrue(migrate_data_ret.block_migration)
+        self.assertEqual({'': 'fake_net_ref'},
+                         migrate_data_ret.vif_uuid_map)
 
     def test_check_can_live_migrate_destination_shared_storage(self):
         self._test_check_can_live_migrate_destination_shared_storage(True)
@@ -1366,15 +1380,18 @@ class LiveMigrateTestCase(VMOpsTestBase):
     def test_check_can_live_migrate_destination_shared_storage_false(self):
         self._test_check_can_live_migrate_destination_shared_storage(False)
 
+    @mock.patch.object(vmops.VMOps, '_get_network_ref')
     @mock.patch.object(vmops.VMOps, '_ensure_host_in_aggregate',
                        side_effect=exception.MigrationPreCheckError(reason=""))
     def test_check_can_live_migrate_destination_block_migration(
                                                 self,
-                                                mock_ensure_host):
+                                                mock_ensure_host,
+                                                mock_net_ref):
         fake_instance = {"name": "fake_instance", "host": "fake_host"}
         block_migration = None
         disk_over_commit = False
         ctxt = 'ctxt'
+        mock_net_ref.return_value = 'fake_net_ref'
 
         migrate_data_ret = self.vmops.check_can_live_migrate_destination(
             ctxt, fake_instance, block_migration, disk_over_commit)
@@ -1384,6 +1401,8 @@ class LiveMigrateTestCase(VMOpsTestBase):
                          migrate_data_ret.destination_sr_ref)
         self.assertEqual({'value': 'fake_migrate_data'},
                          migrate_data_ret.migrate_send_data)
+        self.assertEqual({'': 'fake_net_ref'},
+                         migrate_data_ret.vif_uuid_map)
 
     @mock.patch.object(vmops.objects.AggregateList, 'get_by_host')
     def test_get_host_uuid_from_aggregate_no_aggr(self, mock_get_by_host):
@@ -1626,8 +1645,8 @@ class LiveMigrateHelperTestCase(VMOpsTestBase):
                                'get_other_config') as mock_other_config, \
              mock.patch.object(self._session.VM,
                               'get_VIFs') as mock_get_vif:
-            mock_other_config.side_effect = [{'nicira-iface-id': 'vif_id_a'},
-                                             {'nicira-iface-id': 'vif_id_b'}]
+            mock_other_config.side_effect = [{'neutron-port-id': 'vif_id_a'},
+                                             {'neutron-port-id': 'vif_id_b'}]
             mock_get_vif.return_value = ['vif_ref1', 'vif_ref2']
             vif_uuid_map = {'vif_id_b': 'dest_net_ref2',
                             'vif_id_a': 'dest_net_ref1'}
@@ -1637,13 +1656,27 @@ class LiveMigrateHelperTestCase(VMOpsTestBase):
                         'vif_ref2': 'dest_net_ref2'}
             self.assertEqual(vif_map, expected)
 
-    def test_generate_vif_network_map_exception(self):
+    def test_generate_vif_network_map_default_net(self):
         with mock.patch.object(self._session.VIF,
                                'get_other_config') as mock_other_config, \
              mock.patch.object(self._session.VM,
                               'get_VIFs') as mock_get_vif:
             mock_other_config.side_effect = [{'nicira-iface-id': 'vif_id_a'},
                                              {'nicira-iface-id': 'vif_id_b'}]
+            mock_get_vif.return_value = ['vif_ref1']
+            vif_uuid_map = {'': 'default_net_ref'}
+            vif_map = self.vmops._generate_vif_network_map('vm_ref',
+                                                           vif_uuid_map)
+            expected = {'vif_ref1': 'default_net_ref'}
+            self.assertEqual(vif_map, expected)
+
+    def test_generate_vif_network_map_exception(self):
+        with mock.patch.object(self._session.VIF,
+                               'get_other_config') as mock_other_config, \
+             mock.patch.object(self._session.VM,
+                              'get_VIFs') as mock_get_vif:
+            mock_other_config.side_effect = [{'neutron-port-id': 'vif_id_a'},
+                                             {'neutron-port-id': 'vif_id_b'}]
             mock_get_vif.return_value = ['vif_ref1', 'vif_ref2']
             vif_uuid_map = {'vif_id_c': 'dest_net_ref2',
                             'vif_id_d': 'dest_net_ref1'}

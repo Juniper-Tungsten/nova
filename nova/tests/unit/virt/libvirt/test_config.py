@@ -1027,6 +1027,37 @@ class LibvirtConfigGuestDiskTest(LibvirtConfigBaseTest):
                                                 obj.device_addr.unit))
         self.assertIsNone(obj.device_addr.format_address())
 
+    def test_config_disk_device_address_drive(self):
+        obj = config.LibvirtConfigGuestDeviceAddressDrive()
+        obj.controller = 1
+        obj.bus = 2
+        obj.target = 3
+        obj.unit = 4
+
+        xml = """
+        <address type="drive" controller="1" bus="2" target="3" unit="4"/>
+        """
+        self.assertXmlEqual(xml, obj.to_xml())
+
+    def test_config_disk_device_address_drive_added(self):
+        obj = config.LibvirtConfigGuestDisk()
+        obj.source_type = "file"
+        obj.source_path = "/tmp/hello"
+        obj.target_dev = "/dev/hda"
+        obj.target_bus = "scsi"
+        obj.device_addr = config.LibvirtConfigGuestDeviceAddressDrive()
+        obj.device_addr.controller = 1
+        obj.device_addr.bus = 2
+        obj.device_addr.target = 3
+        obj.device_addr.unit = 4
+
+        self.assertXmlEqual("""
+        <disk type="file" device="disk">
+          <source file="/tmp/hello"/>
+          <target bus="scsi" dev="/dev/hda"/>
+          <address type="drive" controller="1" bus="2" target="3" unit="4"/>
+        </disk>""", obj.to_xml())
+
     def test_config_disk_device_address_type_virtio_mmio(self):
         xml = """
             <disk type='file' device='disk'>
@@ -1127,12 +1158,12 @@ class LibvirtConfigGuestDiskBackingStoreTest(LibvirtConfigBaseTest):
     def test_config_network_parse(self):
         xml = """<backingStore type='network' index='1'>
                    <format type='qcow2'/>
-                   <source protocol='gluster' name='volume1/img1'>
+                   <source protocol='netfs' name='volume1/img1'>
                      <host name='host1' port='24007'/>
                    </source>
                    <backingStore type='network' index='2'>
                      <format type='qcow2'/>
-                     <source protocol='gluster' name='volume1/img2'>
+                     <source protocol='netfs' name='volume1/img2'>
                        <host name='host1' port='24007'/>
                      </source>
                      <backingStore/>
@@ -1145,7 +1176,7 @@ class LibvirtConfigGuestDiskBackingStoreTest(LibvirtConfigBaseTest):
         obj.parse_dom(xmldoc)
 
         self.assertEqual(obj.source_type, 'network')
-        self.assertEqual(obj.source_protocol, 'gluster')
+        self.assertEqual(obj.source_protocol, 'netfs')
         self.assertEqual(obj.source_name, 'volume1/img1')
         self.assertEqual(obj.source_hosts[0], 'host1')
         self.assertEqual(obj.source_ports[0], '24007')
@@ -2100,6 +2131,7 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
             config.LibvirtConfigGuestFeatureACPI(),
             config.LibvirtConfigGuestFeatureAPIC(),
             config.LibvirtConfigGuestFeaturePAE(),
+            config.LibvirtConfigGuestFeatureKvmHidden()
         ]
 
         obj.sysinfo = config.LibvirtConfigGuestSysinfo()
@@ -2158,6 +2190,9 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
                 <acpi/>
                 <apic/>
                 <pae/>
+                <kvm>
+                  <hidden state='on'/>
+                </kvm>
               </features>
               <cputune>
                 <shares>100</shares>
@@ -2474,7 +2509,7 @@ class LibvirtConfigGuestSnapshotTest(LibvirtConfigBaseTest):
         disk.source_type = 'network'
         disk.source_hosts = ['host1']
         disk.source_ports = ['12345']
-        disk.source_protocol = 'glusterfs'
+        disk.source_protocol = 'netfs'
         disk.snapshot = 'external'
         disk.driver_name = 'qcow2'
         obj.add_disk(disk)
@@ -2490,7 +2525,7 @@ class LibvirtConfigGuestSnapshotTest(LibvirtConfigBaseTest):
               <name>Demo</name>
               <disks>
                <disk name='vda' snapshot='external' type='network'>
-                <source protocol='glusterfs' name='source-file'>
+                <source protocol='netfs' name='source-file'>
                  <host name='host1' port='12345'/>
                 </source>
                </disk>

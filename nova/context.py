@@ -34,6 +34,10 @@ from nova import policy
 from nova import utils
 
 LOG = logging.getLogger(__name__)
+# TODO(melwitt): This cache should be cleared whenever WSGIService receives a
+# SIGHUP and periodically based on an expiration time. Currently, none of the
+# cell caches are purged, so neither is this one, for now.
+CELL_CACHE = {}
 
 
 class _ContextAuthPlugin(plugin.BaseAuthPlugin):
@@ -200,21 +204,17 @@ class RequestContext(context.RequestContext):
 
     @classmethod
     def from_dict(cls, values):
-        return cls(
+        return super(RequestContext, cls).from_dict(
+            values,
             user_id=values.get('user_id'),
-            user=values.get('user'),
             project_id=values.get('project_id'),
-            tenant=values.get('tenant'),
-            is_admin=values.get('is_admin'),
+            # TODO(sdague): oslo.context has show_deleted, if
+            # possible, we should migrate to that in the future so we
+            # don't need to be different here.
             read_deleted=values.get('read_deleted', 'no'),
-            roles=values.get('roles'),
             remote_address=values.get('remote_address'),
             timestamp=values.get('timestamp'),
-            request_id=values.get('request_id'),
-            auth_token=values.get('auth_token'),
             quota_class=values.get('quota_class'),
-            user_name=values.get('user_name'),
-            project_name=values.get('project_name'),
             service_catalog=values.get('service_catalog'),
             instance_lock_checked=values.get('instance_lock_checked', False),
         )
@@ -370,15 +370,31 @@ def set_target_cell(context, cell_mapping):
     :param context: The RequestContext to add connection information
     :param cell_mapping: An objects.CellMapping object or None
     """
+    global CELL_CACHE
     if cell_mapping is not None:
         # avoid circular import
         from nova import db
         from nova import rpc
-        db_connection_string = cell_mapping.database_connection
-        context.db_connection = db.create_context_manager(db_connection_string)
-        if not cell_mapping.transport_url.startswith('none'):
-            context.mq_connection = rpc.create_transport(
-                cell_mapping.transport_url)
+
+        # Synchronize access to the cache by multiple API workers.
+        @utils.synchronized(cell_mapping.uuid)
+        def get_or_set_cached_cell_and_set_connections():
+            try:
+                cell_tuple = CELL_CACHE[cell_mapping.uuid]
+            except KeyError:
+                db_connection_string = cell_mapping.database_connection
+                context.db_connection = db.create_context_manager(
+                    db_connection_string)
+                if not cell_mapping.transport_url.startswith('none'):
+                    context.mq_connection = rpc.create_transport(
+                        cell_mapping.transport_url)
+                CELL_CACHE[cell_mapping.uuid] = (context.db_connection,
+                                                 context.mq_connection)
+            else:
+                context.db_connection = cell_tuple[0]
+                context.mq_connection = cell_tuple[1]
+
+        get_or_set_cached_cell_and_set_connections()
     else:
         context.db_connection = None
         context.mq_connection = None
@@ -386,22 +402,16 @@ def set_target_cell(context, cell_mapping):
 
 @contextmanager
 def target_cell(context, cell_mapping):
-    """Temporarily adds database connection information to the context
-    for communicating with the given target cell.
+    """Yields a new context with connection information for a specific cell.
 
-    This context manager makes a temporary change to the context
-    and restores it when complete.
+    This function yields a copy of the provided context, which is targeted to
+    the referenced cell for MQ and DB connections.
 
-    Passing None for cell_mapping will untarget the context temporarily.
+    Passing None for cell_mapping will yield an untargetd copy of the context.
 
     :param context: The RequestContext to add connection information
     :param cell_mapping: An objects.CellMapping object or None
     """
-    original_db_connection = context.db_connection
-    original_mq_connection = context.mq_connection
-    set_target_cell(context, cell_mapping)
-    try:
-        yield context
-    finally:
-        context.db_connection = original_db_connection
-        context.mq_connection = original_mq_connection
+    cctxt = copy.copy(context)
+    set_target_cell(cctxt, cell_mapping)
+    yield cctxt

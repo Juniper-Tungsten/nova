@@ -90,7 +90,7 @@ def _reservation_get(context, uuid):
 
 def _make_compute_node(host, node, hv_type, service_id):
     compute_node_dict = dict(vcpus=2, memory_mb=1024, local_gb=2048,
-                        uuid=uuidsentinel.fake_compute_node,
+                        uuid=uuidutils.generate_uuid(),
                         vcpus_used=0, memory_mb_used=0,
                         local_gb_used=0, free_ram_mb=1024,
                         free_disk_gb=2048, hypervisor_type=hv_type,
@@ -3182,7 +3182,7 @@ class InstanceTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self.assertIsNone(new['host'])
 
     def test_instance_update_and_get_original_expected_task_state_deleting(self):  # noqa
-        # Ensure that we raise UnepectedDeletingTaskStateError when task state
+        # Ensure that we raise UnexpectedDeletingTaskStateError when task state
         # is not as expected, and it is DELETING
         instance = self.create_instance_with_args(
             task_state=task_states.DELETING)
@@ -3572,6 +3572,22 @@ class ServiceTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self._assertEqualObjects(service1, real_service1,
                                  ignored_keys=['compute_node'])
 
+    def test_service_get_by_uuid(self):
+        service1 = self._create_service({'uuid': uuidsentinel.service1_uuid})
+        self._create_service({'host': 'some_other_fake_host',
+                              'uuid': uuidsentinel.other_uuid})
+        real_service1 = db.service_get_by_uuid(
+            self.ctxt, uuidsentinel.service1_uuid)
+        self._assertEqualObjects(service1, real_service1,
+                                 ignored_keys=['compute_node'])
+
+    def test_service_get_by_uuid_not_found(self):
+        """Asserts that ServiceNotFound is raised if a service is not found by
+        a given uuid.
+        """
+        self.assertRaises(exception.ServiceNotFound, db.service_get_by_uuid,
+                          self.ctxt, uuidsentinel.service_not_found)
+
     def test_service_get_minimum_version(self):
         self._create_service({'version': 1,
                               'host': 'host3',
@@ -3763,6 +3779,43 @@ class ServiceTestCase(test.TestCase, ModelsObjectComparatorMixin):
         values.update({'binary': 'bin1'})
         self.assertRaises(exception.ServiceTopicExists, db.service_create,
                           self.ctxt, values)
+
+    def test_migrate_service_uuids(self):
+        # Start with nothing.
+        total, done = db.service_uuids_online_data_migration(self.ctxt, 10)
+        self.assertEqual(0, total)
+        self.assertEqual(0, done)
+
+        # Create two services, one with a uuid and one without.
+        db.service_create(self.ctxt,
+                          dict(host='host1', binary='nova-compute',
+                               topic='compute', report_count=1,
+                               disabled=False))
+        db.service_create(self.ctxt,
+                          dict(host='host2', binary='nova-compute',
+                               topic='compute', report_count=1,
+                               disabled=False, uuid=uuidsentinel.host2))
+
+        # Now migrate them, we should find one and update one.
+        total, done = db.service_uuids_online_data_migration(
+            self.ctxt, 10)
+        self.assertEqual(1, total)
+        self.assertEqual(1, done)
+
+        # Get the services back to make sure the original uuid didn't change.
+        services = db.service_get_all_by_binary(self.ctxt, 'nova-compute')
+        self.assertEqual(2, len(services))
+        for service in services:
+            if service['host'] == 'host2':
+                self.assertEqual(uuidsentinel.host2, service['uuid'])
+            else:
+                self.assertIsNotNone(service['uuid'])
+
+        # Run the online migration again to see nothing was processed.
+        total, done = db.service_uuids_online_data_migration(
+            self.ctxt, 10)
+        self.assertEqual(0, total)
+        self.assertEqual(0, done)
 
 
 class BaseInstanceTypeTestCase(test.TestCase, ModelsObjectComparatorMixin):
@@ -7787,7 +7840,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
                             disabled=False)
         self.service = db.service_create(self.ctxt, self.service_dict)
         self.compute_node_dict = dict(vcpus=2, memory_mb=1024, local_gb=2048,
-                                 uuid=uuidsentinel.fake_compute_node,
+                                 uuid=uuidutils.generate_uuid(),
                                  vcpus_used=0, memory_mb_used=0,
                                  local_gb_used=0, free_ram_mb=1024,
                                  free_disk_gb=2048, hypervisor_type="xen",
@@ -7801,6 +7854,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
                                  supported_instances='',
                                  pci_stats='',
                                  metrics='',
+                                 mapped=0,
                                  extra_resources='',
                                  cpu_allocation_ratio=16.0,
                                  ram_allocation_ratio=1.5,
@@ -7830,6 +7884,22 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
         new_stats = jsonutils.loads(node['stats'])
         self.assertEqual(self.stats, new_stats)
 
+    def test_compute_node_get_all_mapped_less_than(self):
+        cn = dict(self.compute_node_dict,
+                  hostname='foo',
+                  hypervisor_hostname='foo',
+                  mapped=None,
+                  uuid=uuidutils.generate_uuid())
+        db.compute_node_create(self.ctxt, cn)
+        cn = dict(self.compute_node_dict,
+                  hostname='bar',
+                  hypervisor_hostname='nar',
+                  mapped=3,
+                  uuid=uuidutils.generate_uuid())
+        db.compute_node_create(self.ctxt, cn)
+        cns = db.compute_node_get_all_mapped_less_than(self.ctxt, 1)
+        self.assertEqual(2, len(cns))
+
     def test_compute_node_get_all_by_pagination(self):
         service_dict = dict(host='host2', binary='nova-compute',
                             topic=CONF.compute_topic, report_count=1,
@@ -7850,6 +7920,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
                                  supported_instances='',
                                  pci_stats='',
                                  metrics='',
+                                 mapped=0,
                                  extra_resources='',
                                  cpu_allocation_ratio=16.0,
                                  ram_allocation_ratio=1.5,
@@ -7893,6 +7964,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
             # Create a compute node
             compute_node_data = self.compute_node_dict.copy()
+            compute_node_data['uuid'] = uuidutils.generate_uuid()
             compute_node_data['service_id'] = service['id']
             compute_node_data['stats'] = jsonutils.dumps(self.stats.copy())
             compute_node_data['hypervisor_hostname'] = 'hypervisor-%s' % x
@@ -7927,6 +7999,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
         for name in ['bm_node1', 'bm_node2']:
             compute_node_data = self.compute_node_dict.copy()
+            compute_node_data['uuid'] = uuidutils.generate_uuid()
             compute_node_data['service_id'] = service['id']
             compute_node_data['stats'] = jsonutils.dumps(self.stats)
             compute_node_data['hypervisor_hostname'] = name
@@ -7948,6 +8021,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
         service2['host'] = 'host2'
         db.service_create(self.ctxt, service2)
         compute_node_another_host = self.compute_node_dict.copy()
+        compute_node_another_host['uuid'] = uuidutils.generate_uuid()
         compute_node_another_host['stats'] = jsonutils.dumps(self.stats)
         compute_node_another_host['hypervisor_hostname'] = 'node_2'
         compute_node_another_host['host'] = 'host2'
@@ -7962,6 +8036,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
     def test_compute_node_get_all_by_host_with_same_host(self):
         # Create another node on top of the same service
         compute_node_same_host = self.compute_node_dict.copy()
+        compute_node_same_host['uuid'] = uuidutils.generate_uuid()
         compute_node_same_host['stats'] = jsonutils.dumps(self.stats)
         compute_node_same_host['hypervisor_hostname'] = 'node_3'
 
@@ -7992,6 +8067,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
     def test_compute_nodes_get_by_service_id_multiple_results(self):
         # Create another node on top of the same service
         compute_node_same_host = self.compute_node_dict.copy()
+        compute_node_same_host['uuid'] = uuidutils.generate_uuid()
         compute_node_same_host['stats'] = jsonutils.dumps(self.stats)
         compute_node_same_host['hypervisor_hostname'] = 'node_2'
 
@@ -8014,6 +8090,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
     def test_compute_node_get_by_host_and_nodename(self):
         # Create another node on top of the same service
         compute_node_same_host = self.compute_node_dict.copy()
+        compute_node_same_host['uuid'] = uuidutils.generate_uuid()
         compute_node_same_host['stats'] = jsonutils.dumps(self.stats)
         compute_node_same_host['hypervisor_hostname'] = 'node_2'
 
@@ -8073,6 +8150,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
             self.compute_node_dict['service_id'] = service['id']
             self.compute_node_dict['hypervisor_hostname'] = 'testhost' + str(i)
             self.compute_node_dict['stats'] = jsonutils.dumps(self.stats)
+            self.compute_node_dict['uuid'] = uuidutils.generate_uuid()
             node = db.compute_node_create(self.ctxt, self.compute_node_dict)
             nodes_created.append(node)
         nodes = db.compute_node_search_by_hypervisor(self.ctxt, 'host')
@@ -8175,6 +8253,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
         service2['host'] = 'host2'
         db_service2 = db.service_create(self.ctxt, service2)
         compute_node_old_host = self.compute_node_dict.copy()
+        compute_node_old_host['uuid'] = uuidutils.generate_uuid()
         compute_node_old_host['stats'] = jsonutils.dumps(self.stats)
         compute_node_old_host['hypervisor_hostname'] = 'node_2'
         compute_node_old_host['service_id'] = db_service2['id']
@@ -8205,6 +8284,55 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 'memory_mb_used': 0}
         for key, value in data.items():
             self.assertEqual(value, stats.pop(key))
+
+    def test_compute_node_statistics_delete_and_recreate_service(self):
+        # Test added for bug #1692397, this test tests that deleted
+        # service record will not be selected when calculate compute
+        # node statistics.
+
+        # Let's first assert what we expect the setup to look like.
+        self.assertEqual(1, len(db.service_get_all_by_binary(
+            self.ctxt, 'nova-compute')))
+        self.assertEqual(1, len(db.compute_node_get_all_by_host(
+            self.ctxt, 'host1')))
+        # Get the statistics for the original node/service before we delete
+        # the service.
+        original_stats = db.compute_node_statistics(self.ctxt)
+
+        # At this point we have one compute_nodes record and one services
+        # record pointing at the same host. Now we need to simulate the user
+        # deleting the service record in the API, which will only delete very
+        # old compute_nodes records where the service and compute node are
+        # linked via the compute_nodes.service_id column, which is the case
+        # in this test class; at some point we should decouple those to be more
+        # modern.
+        db.service_destroy(self.ctxt, self.service['id'])
+
+        # Now we're going to simulate that the nova-compute service was
+        # restarted, which will create a new services record with a unique
+        # uuid but it will have the same host, binary and topic values as the
+        # deleted service. The unique constraints don't fail in this case since
+        # they include the deleted column and this service and the old service
+        # have a different deleted value.
+        service2_dict = self.service_dict.copy()
+        service2_dict['uuid'] = uuidsentinel.service2_uuid
+        db.service_create(self.ctxt, service2_dict)
+
+        # Again, because of the way the setUp is done currently, the compute
+        # node was linked to the original now-deleted service, so when we
+        # deleted that service it also deleted the compute node record, so we
+        # have to simulate the ResourceTracker in the nova-compute worker
+        # re-creating the compute nodes record.
+        new_compute_node = self.compute_node_dict.copy()
+        del new_compute_node['service_id']  # make it a new style compute node
+        new_compute_node['uuid'] = uuidsentinel.new_compute_uuid
+        db.compute_node_create(self.ctxt, new_compute_node)
+
+        # Now get the stats for all compute nodes (we just have one) and it
+        # should just be for a single service, not double, as we should ignore
+        # the (soft) deleted service.
+        stats = db.compute_node_statistics(self.ctxt)
+        self.assertDictEqual(original_stats, stats)
 
     def test_compute_node_not_found(self):
         self.assertRaises(exception.ComputeHostNotFound, db.compute_node_get,
@@ -8241,6 +8369,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
         # This test could be removed once we are sure that all compute nodes
         # are populating the host field thanks to the ResourceTracker
         compute_node_old_host_dict = self.compute_node_dict.copy()
+        compute_node_old_host_dict['uuid'] = uuidutils.generate_uuid()
         compute_node_old_host_dict.pop('host')
         item_old = db.compute_node_create(self.ctxt,
                                           compute_node_old_host_dict)
@@ -9819,19 +9948,6 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
             db.pci_device_update(self.admin_context, v['compute_node_id'],
                                  v['address'], v)
 
-    def test_migrate_aggregates(self):
-        db.aggregate_create(self.context, {'name': 'foo'})
-        db.aggregate_create(self.context, {'name': 'bar',
-                                           'uuid': 'fake-uuid'})
-        total, done = db.aggregate_uuids_online_data_migration(
-            self.context, 10)
-        self.assertEqual(1, total)
-        self.assertEqual(1, done)
-        total, done = db.aggregate_uuids_online_data_migration(
-            self.context, 10)
-        self.assertEqual(0, total)
-        self.assertEqual(0, done)
-
 
 @mock.patch('time.sleep', new=lambda x: None)
 class RetryOnDeadlockTestCase(test.TestCase):
@@ -10344,6 +10460,32 @@ class TestInstanceTagsFiltering(test.TestCase):
 
         result = db.instance_get_all_by_filters(
             self.ctxt, {'not-tags': [u't1', u't2']})
+
+        self._assertEqualInstanceUUIDs([uuids[0], uuids[1], uuids[3], uuids[4],
+                                        uuids[6], uuids[7]], result)
+
+    def test_instance_get_all_by_filters_not_tags_multiple_cells(self):
+        """Test added for bug 1682693.
+
+        In cells v2 scenario, db.instance_get_all_by_filters() will
+        be called multiple times to search across all cells. This
+        test tests that filters for all cells remain the same in the
+        loop.
+        """
+        uuids = self._create_instances(8)
+
+        db.instance_tag_set(self.ctxt, uuids[0], [u't1'])
+        db.instance_tag_set(self.ctxt, uuids[1], [u't2'])
+        db.instance_tag_set(self.ctxt, uuids[2], [u't1', u't2'])
+        db.instance_tag_set(self.ctxt, uuids[3], [u't2', u't3'])
+        db.instance_tag_set(self.ctxt, uuids[4], [u't3'])
+        db.instance_tag_set(self.ctxt, uuids[5], [u't1', u't2', u't3'])
+        db.instance_tag_set(self.ctxt, uuids[6], [u't3', u't4'])
+        db.instance_tag_set(self.ctxt, uuids[7], [])
+
+        filters = {'not-tags': [u't1', u't2']}
+
+        result = db.instance_get_all_by_filters(self.ctxt, filters)
 
         self._assertEqualInstanceUUIDs([uuids[0], uuids[1], uuids[3], uuids[4],
                                         uuids[6], uuids[7]], result)

@@ -230,9 +230,9 @@ def if_notifications_enabled(f):
 
 def create_transport(url):
     exmods = get_allowed_exmods()
-    return messaging.get_transport(CONF,
-                                   url=url,
-                                   allowed_remote_exmods=exmods)
+    return messaging.get_rpc_transport(CONF,
+                                       url=url,
+                                       allowed_remote_exmods=exmods)
 
 
 class LegacyValidatingNotifier(object):
@@ -410,24 +410,11 @@ class ClientRouter(periodic_task.PeriodicTasks):
         # Prevent this empty context from overwriting the thread local copy
         self.run_periodic_tasks(nova.context.RequestContext(overwrite=False))
 
-    def _client(self, context, transport=None):
+    def client(self, context):
+        transport = context.mq_connection
         if transport:
             return messaging.RPCClient(transport, self.target,
                                        version_cap=self.version_cap,
                                        serializer=self.serializer)
-        else:
-            return self.default_client
-
-    def by_instance(self, context, instance):
-        """Deprecated."""
-        if context.mq_connection:
-            return self._client(context, transport=context.mq_connection)
-        else:
-            return self.default_client
-
-    def by_host(self, context, host):
-        """Deprecated."""
-        if context.mq_connection:
-            return self._client(context, transport=context.mq_connection)
         else:
             return self.default_client

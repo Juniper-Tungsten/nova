@@ -68,6 +68,9 @@ deployments and there is a migration path.
 Cells V2
 ========
 
+* `Newton Summit Video - Nova Cells V2: What's Going On? <https://www.openstack.org/videos/austin-2016/nova-cells-v2-whats-going-on>`_
+* `Pike Summit Video - Scaling Nova: How CellsV2 Affects Your Deployment <https://www.openstack.org/videos/boston-2017/scaling-nova-how-cellsv2-affects-your-deployment>`_
+
 Manifesto
 ~~~~~~~~~
 
@@ -386,7 +389,8 @@ database yet. This will set up a single cell Nova deployment.
    configuration file if not specified on the command line.
 
 6. Configure and start your compute hosts. Before step 7, make sure you have
-   compute hosts in the database by running ``nova hypervisor-list``.
+   compute hosts in the database by running
+   ``nova service-list --binary nova-compute``.
 
 7. Run the ``discover_hosts`` command to map compute hosts to the single cell::
 
@@ -552,3 +556,47 @@ References
 ~~~~~~~~~~
 
 * `man pages for the cells v2 commands <http://docs.openstack.org/developer/nova/man/nova-manage.html#nova-cells-v2>`_
+
+FAQs
+====
+
+#. How do I find out which hosts are bound to which cell?
+
+   There are a couple of ways to do this.
+
+   1. Run ``nova-manage --config-file <cell config> host list``. This will
+      only lists hosts in the provided cell nova.conf. Note, however, that
+      this command is deprecated as of the 16.0.0 Pike release.
+
+   2. Run ``nova-manage cell_v2 discover_hosts --verbose``. This does not
+      produce a report but if you are trying to determine if a host is in a
+      cell you can run this and it will report any hosts that are not yet
+      mapped to a cell and map them. This command is idempotent.
+
+   In the future, we may add a flag to the ``nova-manage cell_v2 list_cells``
+   command or add another command to list hosts in a specific cell (or all
+   cells).
+
+#. I updated the database_connection and/or transport_url in a cell using the
+   ``nova-manage cell_v2 update_cell`` command but the API is still trying to
+   use the old settings.
+
+   The cell mappings are cached in the nova-api service worker so you will need
+   to restart the worker process to rebuild the cache. Note that there is
+   another global cache tied to request contexts, which is used in the
+   nova-conductor and nova-scheduler services, so you might need to do the same
+   if you are having the same issue in those services. As of the 16.0.0 Pike
+   release there is no timer on the cache or hook to refresh the cache using a
+   SIGHUP to the service.
+
+#. I have upgraded from Newton to Ocata and I can list instances but I get a
+   404 NotFound error when I try to get details on a specific instance.
+
+   Instances need to be mapped to cells so the API knows which cell an instance
+   lives in. When upgrading, the ``nova-manage cell_v2 simple_cell_setup``
+   command will automatically map the instances to the single cell which is
+   backed by the existing nova database. If you have already upgraded
+   and did not use the ``simple_cell_setup`` command, you can run the
+   ``nova-manage cell_v2 map_instances --cell_uuid <cell_uuid>`` command to
+   map all instances in the given cell. See the :ref:`man-page-cells-v2` man
+   page for details on command usage.

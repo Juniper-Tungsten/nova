@@ -1034,15 +1034,11 @@ class API(base.Base):
                     self._bdm_validate_set_size_and_instance(context,
                         instance, instance_type, block_device_mapping))
 
-                # NOTE(danms): BDMs are still not created, so we need to pass
-                # a clone and then reset them on our object after create so
-                # that they're still dirty for later in this process
                 build_request = objects.BuildRequest(context,
                         instance=instance, instance_uuid=instance.uuid,
                         project_id=instance.project_id,
-                        block_device_mappings=block_device_mapping.obj_clone())
+                        block_device_mappings=block_device_mapping)
                 build_request.create()
-                build_request.block_device_mappings = block_device_mapping
 
                 # Create an instance_mapping.  The null cell_mapping indicates
                 # that the instance doesn't yet exist in a cell, and lookups
@@ -1061,13 +1057,14 @@ class API(base.Base):
 
                 if instance_group:
                     if check_server_group_quota:
-                        count = objects.Quotas.count(context,
+                        count = objects.Quotas.count_as_dict(context,
                                              'server_group_members',
                                              instance_group,
                                              context.user_id)
+                        count_value = count['user']['server_group_members']
                         try:
-                            objects.Quotas.limit_check(context,
-                                               server_group_members=count + 1)
+                            objects.Quotas.limit_check(
+                                context, server_group_members=count_value + 1)
                         except exception.OverQuota:
                             msg = _("Quota exceeded, too many servers in "
                                     "group")
@@ -1532,8 +1529,15 @@ class API(base.Base):
         instance.old_flavor = None
         instance.new_flavor = None
         if CONF.ephemeral_storage_encryption.enabled:
+            # NOTE(kfarr): dm-crypt expects the cipher in a
+            # hyphenated format: cipher-chainmode-ivmode
+            # (ex: aes-xts-plain64). The algorithm needs
+            # to be parsed out to pass to the key manager (ex: aes).
+            cipher = CONF.ephemeral_storage_encryption.cipher
+            algorithm = cipher.split('-')[0] if cipher else None
             instance.ephemeral_key_uuid = self.key_manager.create_key(
                 context,
+                algorithm=algorithm,
                 length=CONF.ephemeral_storage_encryption.key_size)
         else:
             instance.ephemeral_key_uuid = None
@@ -1734,10 +1738,9 @@ class API(base.Base):
                 return None, None
         else:
             cell = inst_map.cell_mapping
-            with nova_context.target_cell(context, cell):
+            with nova_context.target_cell(context, cell) as cctxt:
                 try:
-                    instance = objects.Instance.get_by_uuid(context,
-                                                            uuid)
+                    instance = objects.Instance.get_by_uuid(cctxt, uuid)
                 except exception.InstanceNotFound:
                     # Since the cell_mapping exists we know the instance is in
                     # the cell, however InstanceNotFound means it's already
@@ -1796,9 +1799,11 @@ class API(base.Base):
                 if instance is not None:
                     # If instance is None it has already been deleted.
                     if cell:
-                        with nova_context.target_cell(context, cell):
+                        with nova_context.target_cell(context, cell) as cctxt:
+                            # FIXME: When the instance context is targeted,
+                            # we can remove this
                             with compute_utils.notify_about_instance_delete(
-                                    self.notifier, context, instance):
+                                    self.notifier, cctxt, instance):
                                 instance.destroy()
                     else:
                         instance.destroy()
@@ -1834,6 +1839,7 @@ class API(base.Base):
                      instance=instance)
             return
 
+        cell = None
         # If there is an instance.host (or the instance is shelved-offloaded),
         # the instance has been scheduled and sent to a cell/compute which
         # means it was pulled from the cell db.
@@ -1870,32 +1876,23 @@ class API(base.Base):
 
                     # We have to get the flavor from the instance while the
                     # context is still targeted to where the instance lives.
-                    with nova_context.target_cell(context, cell):
-                        # If the instance has the targeted context in it then
-                        # we don't need the context manager.
-                        quota_flavor = self._get_flavor_for_reservation(
-                            instance)
+                    quota_flavor = self._get_flavor_for_reservation(instance)
 
-                    with nova_context.target_cell(context, None):
+                    with nova_context.target_cell(context, None) as cctxt:
                         # This is confusing but actually decrements quota usage
                         quotas = self._create_reservations(
-                            context, instance, instance.task_state,
+                            cctxt, instance, instance.task_state,
                             project_id, user_id, flavor=quota_flavor)
 
                     try:
                         # Now destroy the instance from the cell it lives in.
-                        with nova_context.target_cell(context, cell):
-                            # If the instance has the targeted context in it
-                            # then we don't need the context manager.
-                            with compute_utils.notify_about_instance_delete(
-                                    self.notifier, context, instance):
-                                instance.destroy()
+                        with compute_utils.notify_about_instance_delete(
+                                self.notifier, context, instance):
+                            instance.destroy()
                         # Now commit the quota reservation to decrement usage.
-                        with nova_context.target_cell(context, None):
-                            quotas.commit()
+                        quotas.commit()
                     except exception.InstanceNotFound:
-                        with nova_context.target_cell(context, None):
-                            quotas.rollback()
+                        quotas.rollback()
                     # The instance was deleted or is already gone.
                     return
                 if not instance:
@@ -2028,8 +2025,23 @@ class API(base.Base):
                 # If instance is in shelved_offloaded state or compute node
                 # isn't up, delete instance from db and clean bdms info and
                 # network info
-                self._local_delete(context, instance, bdms, delete_type, cb)
-                quotas.commit()
+                if cell is None:
+                    # NOTE(danms): If we didn't get our cell from one of the
+                    # paths above, look it up now.
+                    try:
+                        im = objects.InstanceMapping.get_by_instance_uuid(
+                            context, instance.uuid)
+                        cell = im.cell_mapping
+                    except exception.InstanceMappingNotFound:
+                        LOG.warning('During local delete, failed to find '
+                                    'instance mapping', instance=instance)
+                        return
+
+                LOG.debug('Doing local delete in cell %s', cell.identity,
+                          instance=instance)
+                with nova_context.target_cell(context, cell) as cctxt:
+                    self._local_delete(cctxt, instance, bdms, delete_type, cb)
+                    quotas.commit()
 
         except exception.InstanceNotFound:
             # NOTE(comstud): Race condition. Instance already gone.
@@ -2114,7 +2126,8 @@ class API(base.Base):
         else:
             flavor = flavor or instance.flavor
             instance_vcpus = flavor.vcpus
-            instance_memory_mb = flavor.memory_mb
+            vram_mb = int(flavor.get('extra_specs', {}).get(VIDEO_RAM, 0))
+            instance_memory_mb = flavor.memory_mb + vram_mb
 
         quotas = objects.Quotas(context=context)
         quotas.reserve(project_id=project_id,
@@ -2158,21 +2171,26 @@ class API(base.Base):
         for bdm in bdms:
             if bdm.is_volume:
                 try:
-                    connector = self._get_stashed_volume_connector(
-                        bdm, instance)
-                    if connector:
-                        self.volume_api.terminate_connection(context,
-                                                             bdm.volume_id,
-                                                             connector)
+                    if bdm.attachment_id:
+                        self.volume_api.attachment_delete(context,
+                                                          bdm.attachment_id)
                     else:
-                        LOG.debug('Unable to find connector for volume %s, '
-                                  'not attempting terminate_connection.',
-                                  bdm.volume_id, instance=instance)
-                    # Attempt to detach the volume. If there was no connection
-                    # made in the first place this is just cleaning up the
-                    # volume state in the Cinder database.
-                    self.volume_api.detach(elevated, bdm.volume_id,
-                                           instance.uuid)
+                        connector = self._get_stashed_volume_connector(
+                            bdm, instance)
+                        if connector:
+                            self.volume_api.terminate_connection(context,
+                                                                 bdm.volume_id,
+                                                                 connector)
+                        else:
+                            LOG.debug('Unable to find connector for volume %s,'
+                                      ' not attempting terminate_connection.',
+                                      bdm.volume_id, instance=instance)
+                        # Attempt to detach the volume. If there was no
+                        # connection made in the first place this is just
+                        # cleaning up the volume state in the Cinder DB.
+                        self.volume_api.detach(elevated, bdm.volume_id,
+                                               instance.uuid)
+
                     if bdm.delete_on_termination:
                         self.volume_api.delete(context, bdm.volume_id)
                 except Exception as exc:
@@ -2548,12 +2566,15 @@ class API(base.Base):
         except exception.CellMappingNotFound:
             cell0_instances = objects.InstanceList(objects=[])
         else:
-            with nova_context.target_cell(context, cell0_mapping):
+            with nova_context.target_cell(context, cell0_mapping) as cctxt:
                 try:
                     cell0_instances = self._get_instances_by_filters(
-                        context, filters, limit=limit, marker=marker,
+                        cctxt, filters, limit=limit, marker=marker,
                         expected_attrs=expected_attrs, sort_keys=sort_keys,
                         sort_dirs=sort_dirs)
+                    # If we found the marker in cell0 we need to set it to None
+                    # so we don't expect to find it in the cells below.
+                    marker = None
                 except exception.MarkerNotFound:
                     # We can ignore this since we need to look in the cell DB
                     cell0_instances = objects.InstanceList(objects=[])
@@ -2705,8 +2726,10 @@ class API(base.Base):
             # look up the instance in the cell database
             if inst_map and (inst_map.cell_mapping is not None) and (
                     not CONF.cells.enable):
-                with nova_context.target_cell(context, inst_map.cell_mapping):
-                    instance.save()
+                with nova_context.target_cell(context,
+                                              inst_map.cell_mapping) as cctxt:
+                    with instance.obj_alternate_context(cctxt):
+                        instance.save()
             else:
                 # If inst_map.cell_mapping does not point at a cell then cell
                 # migration has not happened yet.
@@ -2747,10 +2770,11 @@ class API(base.Base):
                 inst_map = self._get_instance_map_or_none(context,
                                                           instance.uuid)
                 if inst_map and (inst_map.cell_mapping is not None):
-                    with nova_context.target_cell(context,
-                                                  inst_map.cell_mapping):
+                    with nova_context.target_cell(
+                            context,
+                            inst_map.cell_mapping) as cctxt:
                         instance = objects.Instance.get_by_uuid(
-                            context, instance.uuid,
+                            cctxt, instance.uuid,
                             expected_attrs=expected_attrs)
                         instance.update(updates)
                         instance.save()
@@ -2788,7 +2812,8 @@ class API(base.Base):
         if compute_utils.is_volume_backed_instance(context, instance):
             LOG.info(_LI("It's not supported to backup volume backed "
                          "instance."), instance=instance)
-            raise exception.InvalidRequest()
+            raise exception.InvalidRequest(
+                _('Backup is not supported for volume-backed instances.'))
         else:
             image_meta = self._create_image(context, instance,
                                             name, 'backup',
@@ -4151,9 +4176,9 @@ class API(base.Base):
         for cell in CELLS:
             if cell.uuid == objects.CellMapping.CELL0_UUID:
                 continue
-            with nova_context.target_cell(context, cell):
+            with nova_context.target_cell(context, cell) as cctxt:
                 migrations.extend(objects.MigrationList.get_by_filters(
-                    context, filters).objects)
+                    cctxt, filters).objects)
         return objects.MigrationList(objects=migrations)
 
     def get_migrations_in_progress_by_instance(self, context, instance_uuid,
@@ -4229,9 +4254,9 @@ class API(base.Base):
             # TODO(salv-orlando): Handle exceptions raised by the rpc api layer
             # in order to ensure that a failure in processing events on a host
             # will not prevent processing events on other hosts
-            with nova_context.target_cell(context, cell_mapping):
+            with nova_context.target_cell(context, cell_mapping) as cctxt:
                 self.compute_rpcapi.external_instance_event(
-                    context, instances_by_host[host], events_by_host[host],
+                    cctxt, instances_by_host[host], events_by_host[host],
                     host=host)
 
     def _get_relevant_hosts(self, context, instance):
@@ -4297,6 +4322,65 @@ def target_host_cell(fn):
         nova_context.set_target_cell(context, mapping.cell_mapping)
         return fn(self, context, host, *args, **kwargs)
     return targeted
+
+
+def _find_service_in_cell(context, service_id=None, service_host=None):
+    """Find a service by id or hostname by searching all cells.
+
+    If one matching service is found, return it. If none or multiple
+    are found, raise an exception.
+
+    :param context: A context.RequestContext
+    :param service_id: If not none, the DB ID of the service to find
+    :param service_host: If not None, the hostname of the service to find
+    :returns: An objects.Service
+    :raises: ServiceNotUnique if multiple matching IDs are found
+    :raises: NotFound if no matches are found
+    :raises: NovaException if called with neither search option
+    """
+
+    load_cells()
+    service = None
+    found_in_cell = None
+
+    is_uuid = False
+    if service_id is not None:
+        is_uuid = uuidutils.is_uuid_like(service_id)
+        if is_uuid:
+            lookup_fn = lambda c: objects.Service.get_by_uuid(c, service_id)
+        else:
+            lookup_fn = lambda c: objects.Service.get_by_id(c, service_id)
+    elif service_host is not None:
+        lookup_fn = lambda c: (
+            objects.Service.get_by_compute_host(c, service_host))
+    else:
+        LOG.exception('_find_service_in_cell called with no search parameters')
+        # This is intentionally cryptic so we don't leak implementation details
+        # out of the API.
+        raise exception.NovaException()
+
+    for cell in CELLS:
+        # NOTE(danms): Services can be in cell0, so don't skip it here
+        try:
+            with nova_context.target_cell(context, cell):
+                cell_service = lookup_fn(context)
+        except exception.NotFound:
+            # NOTE(danms): Keep looking in other cells
+            continue
+        if service and cell_service:
+            raise exception.ServiceNotUnique()
+        service = cell_service
+        found_in_cell = cell
+        if service and is_uuid:
+            break
+
+    if service:
+        # NOTE(danms): Set the cell on the context so it remains
+        # when we return to our caller
+        nova_context.set_target_cell(context, found_in_cell)
+        return service
+    else:
+        raise exception.NotFound()
 
 
 class HostAPI(base.Base):
@@ -4396,9 +4480,9 @@ class HostAPI(base.Base):
             load_cells()
             services = []
             for cell in CELLS:
-                with nova_context.target_cell(context, cell):
+                with nova_context.target_cell(context, cell) as cctxt:
                     cell_services = objects.ServiceList.get_all(
-                        context, disabled, set_zones=set_zones)
+                        cctxt, disabled, set_zones=set_zones)
                 services.extend(cell_services)
         else:
             services = objects.ServiceList.get_all(context, disabled,
@@ -4413,49 +4497,12 @@ class HostAPI(base.Base):
                 ret_services.append(service)
         return ret_services
 
-    def _find_service(self, context, service_id):
-        """Find a service by id by searching all cells.
-
-        If one matching service is found, return it. If none or multiple
-        are found, raise an exception.
-
-        :param context: A context.RequestContext
-        :param service_id: The DB ID of the service to find
-        :returns: An objects.Service
-        :raises: ServiceNotUnique if multiple matches are found
-        :raises: ServiceNotFound if no matches are found
-        """
-
-        load_cells()
-        # NOTE(danms): Unfortunately this API exposes database identifiers
-        # which means we really can't do something efficient here
-        service = None
-        found_in_cell = None
-        for cell in CELLS:
-            # NOTE(danms): Services can be in cell0, so don't skip it here
-            try:
-                with nova_context.target_cell(context, cell):
-                    cell_service = objects.Service.get_by_id(context,
-                                                             service_id)
-            except exception.ServiceNotFound:
-                # NOTE(danms): Keep looking in other cells
-                continue
-            if service and cell_service:
-                raise exception.ServiceNotUnique()
-            service = cell_service
-            found_in_cell = cell
-
-        if service:
-            # NOTE(danms): Set the cell on the context so it remains
-            # when we return to our caller
-            nova_context.set_target_cell(context, found_in_cell)
-            return service
-        else:
-            raise exception.ServiceNotFound(service_id=service_id)
-
     def service_get_by_id(self, context, service_id):
-        """Get service entry for the given service id."""
-        return self._find_service(context, service_id)
+        """Get service entry for the given service id or uuid."""
+        try:
+            return _find_service_in_cell(context, service_id=service_id)
+        except exception.NotFound:
+            raise exception.ServiceNotFound(service_id=service_id)
 
     @target_host_cell
     def service_get_by_compute_host(self, context, host_name):
@@ -4481,11 +4528,14 @@ class HostAPI(base.Base):
 
     def _service_delete(self, context, service_id):
         """Performs the actual Service deletion operation."""
-        service = self._find_service(context, service_id)
+        try:
+            service = _find_service_in_cell(context, service_id=service_id)
+        except exception.NotFound:
+            raise exception.ServiceNotFound(service_id=service_id)
         service.destroy()
 
     def service_delete(self, context, service_id):
-        """Deletes the specified service."""
+        """Deletes the specified service found via id or uuid."""
         self._service_delete(context, service_id)
 
     @target_host_cell
@@ -4513,9 +4563,9 @@ class HostAPI(base.Base):
         for cell in CELLS:
             if cell.uuid == objects.CellMapping.CELL0_UUID:
                 continue
-            with nova_context.target_cell(context, cell):
+            with nova_context.target_cell(context, cell) as cctxt:
                 try:
-                    return objects.ComputeNode.get_by_id(context,
+                    return objects.ComputeNode.get_by_id(cctxt,
                                                          int(compute_id))
                 except exception.ComputeHostNotFound:
                     # NOTE(danms): Keep looking in other cells
@@ -4530,10 +4580,10 @@ class HostAPI(base.Base):
         for cell in CELLS:
             if cell.uuid == objects.CellMapping.CELL0_UUID:
                 continue
-            with nova_context.target_cell(context, cell):
+            with nova_context.target_cell(context, cell) as cctxt:
                 try:
                     cell_computes = objects.ComputeNodeList.get_by_pagination(
-                        context, limit=limit, marker=marker)
+                        cctxt, limit=limit, marker=marker)
                 except exception.MarkerNotFound:
                     # NOTE(danms): Keep looking through cells
                     continue
@@ -4560,9 +4610,9 @@ class HostAPI(base.Base):
         for cell in CELLS:
             if cell.uuid == objects.CellMapping.CELL0_UUID:
                 continue
-            with nova_context.target_cell(context, cell):
+            with nova_context.target_cell(context, cell) as cctxt:
                 cell_computes = objects.ComputeNodeList.get_by_hypervisor(
-                    context, hypervisor_match)
+                    cctxt, hypervisor_match)
             computes.extend(cell_computes)
         return objects.ComputeNodeList(objects=computes)
 
@@ -4748,9 +4798,16 @@ class AggregateAPI(base.Base):
                                                     aggregate_payload)
         # validates the host; HostMappingNotFound or ComputeHostNotFound
         # is raised if invalid
-        mapping = objects.HostMapping.get_by_host(context, host_name)
-        nova_context.set_target_cell(context, mapping.cell_mapping)
-        objects.Service.get_by_compute_host(context, host_name)
+        try:
+            mapping = objects.HostMapping.get_by_host(context, host_name)
+            nova_context.set_target_cell(context, mapping.cell_mapping)
+            objects.Service.get_by_compute_host(context, host_name)
+        except exception.HostMappingNotFound:
+            try:
+                # NOTE(danms): This targets our cell
+                _find_service_in_cell(context, service_host=host_name)
+            except exception.NotFound:
+                raise exception.ComputeHostNotFound(host=host_name)
 
         aggregate = objects.Aggregate.get_by_id(context, aggregate_id)
         self.is_safe_to_update_az(context, aggregate.metadata,
@@ -4824,10 +4881,11 @@ class KeypairAPI(base.Base):
                 reason=_('Keypair name must be string and between '
                          '1 and 255 characters long'))
 
-        count = objects.Quotas.count(context, 'key_pairs', user_id)
+        count = objects.Quotas.count_as_dict(context, 'key_pairs', user_id)
+        count_value = count['user']['key_pairs']
 
         try:
-            objects.Quotas.limit_check(context, key_pairs=count + 1)
+            objects.Quotas.limit_check(context, key_pairs=count_value + 1)
         except exception.OverQuota:
             raise exception.KeypairLimitExceeded()
 
@@ -5152,9 +5210,11 @@ class SecurityGroupAPI(base.Base, security_group_base.SecurityGroupBase):
         this function is written to support both.
         """
 
-        count = objects.Quotas.count(context, 'security_group_rules', id)
+        count = objects.Quotas.count_as_dict(context,
+                                             'security_group_rules', id)
+        count_value = count['user']['security_group_rules']
         try:
-            projected = count + len(vals)
+            projected = count_value + len(vals)
             objects.Quotas.limit_check(context, security_group_rules=projected)
         except exception.OverQuota:
             msg = _("Quota exceeded, too many security group rules.")

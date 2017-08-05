@@ -482,3 +482,85 @@ user documentation.
   2.37 and for block_device_mapping_v2 starting with version 2.33. Microversion
   2.42 restores the tag parameter to both networks and block_device_mapping_v2,
   allowing networks and block devices to be tagged again.
+
+2.43
+----
+
+  The ``os-hosts`` API is deprecated as of the 2.43 microversion. Requests
+  made with microversion >= 2.43 will result in a 404 error. To list and show
+  host details, use the ``os-hypervisors`` API. To enable or disable a
+  service, use the ``os-services`` API. There is no replacement for the
+  `shutdown`, `startup`, `reboot`, or `maintenance_mode` actions as those are
+  system-level operations which should be outside of the control of the
+  compute service.
+
+2.44
+----
+
+  The following APIs which are considered as proxies of Neutron networking API,
+  are deprecated and will result in a 404 error response in new Microversion::
+
+    POST /servers/{server_uuid}/action
+    {
+        "addFixedIp": {...}
+    }
+
+    POST /servers/{server_uuid}/action
+    {
+        "removeFixedIp": {...}
+    }
+
+    POST /servers/{server_uuid}/action
+    {
+        "addFloatingIp": {...}
+    }
+
+    POST /servers/{server_uuid}/action
+    {
+        "removeFloatingIp": {...}
+    }
+
+  Those server actions can be replaced by calling the Neutron API directly.
+
+  The nova-network specific API to query the server's interfaces is
+  deprecated::
+
+    GET /servers/{server_uuid}/os-virtual-interfaces
+
+  To query attached neutron interfaces for a specific server, the API
+  `GET /servers/{server_uuid}/os-interface` can be used.
+
+2.45
+----
+
+  The ``createImage`` and ``createBackup`` server action APIs no longer return
+  a ``Location`` header in the response for the snapshot image, they now return
+  a json dict in the response body with an ``image_id`` key and uuid value.
+
+2.46
+----
+
+  The request_id created for every inbound request is now returned in
+  ``X-OpenStack-Request-ID`` in addition to ``X-Compute-Request-ID``
+  to be consistent with the rest of OpenStack. This is a signaling
+  only microversion, as these header settings happen well before
+  microversion processing.
+
+2.47
+----
+
+  Replace the ``flavor`` name/ref with the actual flavor details from the embedded
+  flavor object when displaying server details.  Requests made with microversion
+  >= 2.47 will no longer return the flavor ID/link but instead will return a
+  subset of the flavor details.  If the user is prevented by policy from
+  indexing extra-specs, then the ``extra_specs`` field will not be included in the
+  flavor information.
+
+2.48
+----
+
+  Before version 2.48, VM diagnostics response was just a 'blob' of data
+  returned by each hypervisor. From this version VM diagnostics response is
+  standardized. It has a set of fields which each hypervisor will try to fill.
+  If a hypervisor driver is unable to provide a specific field then this field
+  will be reported as 'None'.

@@ -13,22 +13,23 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_policy import policy
-
 from nova.policies import base
 
 
 BASE_POLICY_NAME = 'os_compute_api:os-floating-ip-pools'
-POLICY_ROOT = 'os_compute_api:os-floating-ip-pools:%s'
 
 
 floating_ip_pools_policies = [
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'discoverable',
-        check_str=base.RULE_ANY),
-    policy.RuleDefault(
-        name=BASE_POLICY_NAME,
-        check_str=base.RULE_ADMIN_OR_OWNER),
+    base.create_rule_default(
+        BASE_POLICY_NAME,
+        base.RULE_ADMIN_OR_OWNER,
+        "List floating IP pools. This API is deprecated.",
+        [
+            {
+                'method': 'GET',
+                'path': '/os-floating-ip-pools'
+            }
+        ]),
 ]
 
 

@@ -15,6 +15,8 @@ import copy
 # used over RPC. Remote manipulation is done with the placement HTTP
 # API. The 'remotable' decorators should not be used.
 
+import os_traits
+from oslo_concurrency import lockutils
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 from oslo_utils import versionutils
@@ -34,13 +36,17 @@ from nova import objects
 from nova.objects import base
 from nova.objects import fields
 
+_TRAIT_TBL = models.Trait.__table__
 _ALLOC_TBL = models.Allocation.__table__
 _INV_TBL = models.Inventory.__table__
 _RP_TBL = models.ResourceProvider.__table__
 _RC_TBL = models.ResourceClass.__table__
 _AGG_TBL = models.PlacementAggregate.__table__
 _RP_AGG_TBL = models.ResourceProviderAggregate.__table__
+_RP_TRAIT_TBL = models.ResourceProviderTrait.__table__
 _RC_CACHE = None
+_TRAIT_LOCK = 'trait_sync'
+_TRAITS_SYNCED = False
 
 LOG = logging.getLogger(__name__)
 
@@ -57,6 +63,70 @@ def _ensure_rc_cache(ctx):
     if _RC_CACHE is not None:
         return
     _RC_CACHE = rc_cache.ResourceClassCache(ctx)
+
+
+@db_api.api_context_manager.writer
+def _trait_sync(ctx):
+    """Sync the os_traits symbols to the database.
+
+    Reads all symbols from the os_traits library, checks if any of them do
+    not exist in the database and bulk-inserts those that are not. This is
+    done once per process using this code if either Trait.get_by_name or
+    TraitList.get_all is called.
+
+    :param ctx: `nova.context.RequestContext` that may be used to grab a DB
+                connection.
+    """
+    # Create a set of all traits in the os_traits library.
+    std_traits = set(os_traits.get_traits())
+    conn = ctx.session.connection()
+    sel = sa.select([_TRAIT_TBL.c.name])
+    res = conn.execute(sel).fetchall()
+    # Create a set of all traits in the db that are not custom
+    # traits.
+    db_traits = set(
+        r[0] for r in res
+        if not os_traits.is_custom(r[0])
+    )
+    # Determine those traits which are in os_traits but not
+    # currently in the database, and insert them.
+    need_sync = std_traits - db_traits
+    ins = _TRAIT_TBL.insert()
+    batch_args = [
+        {'name': six.text_type(trait)}
+        for trait in need_sync
+    ]
+    if batch_args:
+        try:
+            conn.execute(ins, batch_args)
+            LOG.info("Synced traits from os_traits into API DB: %s",
+                     need_sync)
+        except db_exc.DBDuplicateEntry:
+            pass  # some other process sync'd, just ignore
+
+
+def _ensure_trait_sync(ctx):
+    """Ensures that the os_traits library is synchronized to the traits db.
+
+    If _TRAITS_SYNCED is False then this process has not tried to update the
+    traits db. Do so by calling _trait_sync. Since the placement API server
+    could be multi-threaded, lock around testing _TRAITS_SYNCED to avoid
+    duplicating work.
+
+    Different placement API server processes that talk to the same database
+    will avoid issues through the power of transactions.
+
+    :param ctx: `nova.context.RequestContext` that may be used to grab a DB
+                connection.
+    """
+    global _TRAITS_SYNCED
+    # If another thread is doing this work, wait for it to complete.
+    # When that thread is done _TRAITS_SYNCED will be true in this
+    # thread and we'll simply return.
+    with lockutils.lock(_TRAIT_LOCK):
+        if not _TRAITS_SYNCED:
+            _trait_sync(ctx)
+            _TRAITS_SYNCED = True
 
 
 def _get_current_inventory_resources(conn, rp):
@@ -584,6 +654,472 @@ class ResourceProvider(base.NovaObject):
         self._set_traits_to_db(self._context, self, self.id, traits)
 
 
+@db_api.api_context_manager.reader
+def _get_providers_with_shared_capacity(ctx, rc_id, amount):
+    """Returns a list of resource provider IDs (internal IDs, not UUIDs)
+    that have capacity for a requested amount of a resource and indicate that
+    they share resource via an aggregate association.
+
+    Shared resource providers are marked with a standard trait called
+    MISC_SHARES_VIA_AGGREGATE. This indicates that the provider allows its
+    inventory to be consumed by other resource providers associated via an
+    aggregate link.
+
+    For example, assume we have two compute nodes, CN_1 and CN_2, each with
+    inventory of VCPU and MEMORY_MB but not DISK_GB (in other words, these are
+    compute nodes with no local disk). There is a resource provider called
+    "NFS_SHARE" that has an inventory of DISK_GB and has the
+    MISC_SHARES_VIA_AGGREGATE trait. Both the "CN_1" and "CN_2" compute node
+    resource providers and the "NFS_SHARE" resource provider are associated
+    with an aggregate called "AGG_1".
+
+    The scheduler needs to determine the resource providers that can fulfill a
+    request for 2 VCPU, 1024 MEMORY_MB and 100 DISK_GB.
+
+    Clearly, no single provider can satisfy the request for all three
+    resources, since neither compute node has DISK_GB inventory and the
+    NFS_SHARE provider has no VCPU or MEMORY_MB inventories.
+
+    However, if we consider the NFS_SHARE resource provider as providing
+    inventory of DISK_GB for both CN_1 and CN_2, we can include CN_1 and CN_2
+    as potential fits for the requested set of resources.
+
+    To facilitate that matching query, this function returns all providers that
+    indicate they share their inventory with providers in some aggregate and
+    have enough capacity for the requested amount of a resource.
+
+    To follow the example above, if we were to call
+    _get_providers_with_shared_capacity(ctx, "DISK_GB", 100), we would want to
+    get back the ID for the NFS_SHARE resource provider.
+    """
+    # The SQL we need to generate here looks like this:
+    #
+    # SELECT rp.id
+    # FROM resource_providers AS rp
+    #   INNER JOIN resource_provider_traits AS rpt
+    #     ON rp.id = rpt.resource_provider_id
+    #   INNER JOIN traits AS t
+    #     AND rpt.trait_id = t.id
+    #     AND t.name = "MISC_SHARES_VIA_AGGREGATE"
+    #   INNER JOIN inventories AS inv
+    #     ON rp.id = inv.resource_provider_id
+    #     AND inv.resource_class_id = $rc_id
+    #   LEFT JOIN (
+    #     SELECT resource_provider_id, SUM(used) as used
+    #     FROM allocations
+    #     WHERE resource_class_id = $rc_id
+    #     GROUP BY resource_provider_id
+    #   ) AS usage
+    #     ON rp.id = usage.resource_provider_id
+    # WHERE COALESCE(usage.used, 0) + $amount <= (
+    #   inv.total + inv.reserved) * inv.allocation_ratio
+    # ) AND
+    #   inv.min_unit <= $amount AND
+    #   inv.max_unit >= $amount AND
+    #   $amount % inv.step_size = 0
+    # GROUP BY rp.id
+
+    rp_tbl = sa.alias(_RP_TBL, name='rp')
+    inv_tbl = sa.alias(_INV_TBL, name='inv')
+    t_tbl = sa.alias(_TRAIT_TBL, name='t')
+    rpt_tbl = sa.alias(_RP_TRAIT_TBL, name='rpt')
+
+    rp_to_rpt_join = sa.join(
+        rp_tbl, rpt_tbl,
+        rp_tbl.c.id == rpt_tbl.c.resource_provider_id,
+    )
+
+    rpt_to_t_join = sa.join(
+        rp_to_rpt_join, t_tbl,
+        sa.and_(
+            rpt_tbl.c.trait_id == t_tbl.c.id,
+            # TODO(jaypipes): Replace with os_traits.MISC_SHARE_VIA_AGGREGATE
+            # once os-traits released with that trait.
+            t_tbl.c.name == six.text_type('MISC_SHARES_VIA_AGGREGATE'),
+        ),
+    )
+
+    rp_to_inv_join = sa.join(
+        rpt_to_t_join, inv_tbl,
+        sa.and_(
+            rpt_tbl.c.resource_provider_id == inv_tbl.c.resource_provider_id,
+            inv_tbl.c.resource_class_id == rc_id,
+        ),
+    )
+
+    usage = sa.select([_ALLOC_TBL.c.resource_provider_id,
+                       sql.func.sum(_ALLOC_TBL.c.used).label('used')])
+    usage = usage.where(_ALLOC_TBL.c.resource_class_id == rc_id)
+    usage = usage.group_by(_ALLOC_TBL.c.resource_provider_id)
+    usage = sa.alias(usage, name='usage')
+
+    inv_to_usage_join = sa.outerjoin(
+        rp_to_inv_join, usage,
+        inv_tbl.c.resource_provider_id == usage.c.resource_provider_id,
+    )
+
+    sel = sa.select([rp_tbl.c.id]).select_from(inv_to_usage_join)
+    sel = sel.where(
+        sa.and_(
+            func.coalesce(usage.c.used, 0) + amount <= (
+                inv_tbl.c.total - inv_tbl.c.reserved
+            ) * inv_tbl.c.allocation_ratio,
+            inv_tbl.c.min_unit <= amount,
+            inv_tbl.c.max_unit >= amount,
+            amount % inv_tbl.c.step_size == 0,
+        ),
+    )
+    sel = sel.group_by(rp_tbl.c.id)
+    return [r[0] for r in ctx.session.execute(sel)]
+
+
+@db_api.api_context_manager.reader
+def _get_all_with_shared(ctx, resources):
+    """Uses some more advanced SQL to find providers that either have the
+    requested resources "locally" or are associated with a provider that shares
+    those requested resources.
+
+    :param resources: Dict keyed by resource class integer ID of requested
+                      amounts of that resource
+    """
+    # NOTE(jaypipes): The SQL we generate here depends on which resource
+    # classes have providers that share that resource via an aggregate.
+    #
+    # We begin building a "join chain" by starting with a projection from the
+    # resource_providers table:
+    #
+    # SELECT rp.id
+    # FROM resource_providers AS rp
+    #
+    # in addition to a copy of resource_provider_aggregates for each resource
+    # class that has a shared provider:
+    #
+    #  resource_provider_aggregates AS sharing_{RC_NAME},
+    #
+    # We then join to a copy of the inventories table for each resource we are
+    # requesting:
+    #
+    # {JOIN TYPE} JOIN inventories AS inv_{RC_NAME}
+    #  ON {JOINING TABLE}.id = inv_{RC_NAME}.resource_provider_id
+    #  AND inv_{RC_NAME}.resource_class_id = $RC_ID
+    # LEFT JOIN (
+    #  SELECT resource_provider_id, SUM(used) AS used
+    #  FROM allocations
+    #  WHERE resource_class_id = $VCPU_ID
+    #  GROUP BY resource_provider_id
+    # ) AS usage_{RC_NAME}
+    #  ON inv_{RC_NAME}.resource_provider_id = \
+    #      usage_{RC_NAME}.resource_provider_id
+    #
+    # For resource classes that DO NOT have any shared resource providers, the
+    # {JOIN TYPE} will be an INNER join, because we are filtering out any
+    # resource providers that do not have local inventory of that resource
+    # class.
+    #
+    # For resource classes that DO have shared resource providers, the {JOIN
+    # TYPE} will be a LEFT (OUTER) join.
+    #
+    # For the first join, {JOINING TABLE} will be resource_providers. For each
+    # subsequent resource class that is added to the SQL expression, {JOINING
+    # TABLE} will be the alias of the inventories table that refers to the
+    # previously-processed resource class.
+    #
+    # For resource classes that DO have shared providers, we also perform a
+    # "butterfly join" against two copies of the resource_provider_aggregates
+    # table:
+    #
+    # +-----------+  +------------+  +-------------+  +------------+
+    # | last_inv  |  | rpa_shared |  | rpa_sharing |  | rp_sharing |
+    # +-----------|  +------------+  +-------------+  +------------+
+    # | rp_id     |=>| rp_id      |  | rp_id       |<=| id         |
+    # |           |  | agg_id     |<=| agg_id      |  |            |
+    # +-----------+  +------------+  +-------------+  +------------+
+    #
+    # Note in the diagram above, we call the _get_providers_sharing_capacity()
+    # for a resource class to construct the "rp_sharing" set/table.
+    #
+    # The first part of the butterfly join is an outer join against a copy of
+    # the resource_provider_aggregates table in order to winnow results to
+    # providers that are associated with any aggregate that the sharing
+    # provider is associated with:
+    #
+    # LEFT JOIN resource_provider_aggregates AS shared_{RC_NAME}
+    #  ON {JOINING_TABLE}.id = shared_{RC_NAME}.resource_provider_id
+    #
+    # The above is then joined to the set of aggregates associated with the set
+    # of sharing providers for that resource:
+    #
+    # LEFT JOIN resource_provider_aggregates AS sharing_{RC_NAME}
+    #  ON shared_{RC_NAME}.aggregate_id = sharing_{RC_NAME}.aggregate_id
+    #
+    # We calculate the WHERE conditions based on whether the resource class has
+    # any shared providers.
+    #
+    # For resource classes that DO NOT have any shared resource providers, the
+    # WHERE clause constructed finds resource providers that have inventory for
+    # "local" resource providers:
+    #
+    # WHERE (COALESCE(usage_vcpu.used, 0) + $AMOUNT <=
+    #   (inv_{RC_NAME}.total + inv_{RC_NAME}.reserved)
+    #   * inv_{RC_NAME}.allocation_ratio
+    # AND
+    # inv_{RC_NAME}.min_unit <= $AMOUNT AND
+    # inv_{RC_NAME}.max_unit >= $AMOUNT AND
+    # $AMOUNT_VCPU % inv_{RC_NAME}.step_size == 0)
+    #
+    # For resource classes that DO have shared resource providers, the WHERE
+    # clause is slightly more complicated:
+    #
+    # WHERE (
+    #   inv_{RC_NAME}.resource_provider_id IS NOT NULL AND
+    #   (
+    #     (
+    #     COALESCE(usage_{RC_NAME}.used, 0) + $AMOUNT_VCPU <=
+    #       (inv_{RC_NAME}.total + inv_{RC_NAME}.reserved)
+    #       * inv_{RC_NAME}.allocation_ratio
+    #     ) AND
+    #     inv_{RC_NAME}.min_unit <= $AMOUNT_VCPU AND
+    #     inv_{RC_NAME}.max_unit >= $AMOUNT_VCPU AND
+    #     $AMOUNT_VCPU % inv_{RC_NAME}.step_size == 0
+    #   ) OR
+    #   sharing_{RC_NAME}.resource_provider_id IS NOT NULL
+    # )
+    #
+    # Finally, we GROUP BY the resource provider ID:
+    #
+    # GROUP BY rp.id
+    #
+    # To show an example, here is the exact SQL that will be generated in an
+    # environment that has a shared storage pool and compute nodes that have
+    # vCPU and RAM associated with the same aggregate as the provider
+    # representing the shared storage pool:
+    #
+    # SELECT rp.*
+    # FROM resource_providers AS rp
+    # INNER JOIN inventories AS inv_vcpu
+    #  ON rp.id = inv_vcpu.resource_provider_id
+    #  AND inv_vcpu.resource_class_id = $VCPU_ID
+    # LEFT JOIN (
+    #  SELECT resource_provider_id, SUM(used) AS used
+    #  FROM allocations
+    #  WHERE resource_class_id = $VCPU_ID
+    #  GROUP BY resource_provider_id
+    # ) AS usage_vcpu
+    #  ON inv_vcpu.resource_provider_id = \
+    #       usage_vcpu.resource_provider_id
+    # INNER JOIN inventories AS inv_memory_mb
+    # ON inv_vcpu.resource_provider_id = inv_memory_mb.resource_provider_id
+    # AND inv_memory_mb.resource_class_id = $MEMORY_MB_ID
+    # LEFT JOIN (
+    #  SELECT resource_provider_id, SUM(used) AS used
+    #  FROM allocations
+    #  WHERE resource_class_id = $MEMORY_MB_ID
+    #  GROUP BY resource_provider_id
+    # ) AS usage_memory_mb
+    #  ON inv_memory_mb.resource_provider_id = \
+    #       usage_memory_mb.resource_provider_id
+    # LEFT JOIN inventories AS inv_disk_gb
+    #  ON inv_memory_mb.resource_provider_id = \
+    #       inv_disk_gb.resource_provider_id
+    #  AND inv_disk_gb.resource_class_id = $DISK_GB_ID
+    # LEFT JOIN (
+    #  SELECT resource_provider_id, SUM(used) AS used
+    #  FROM allocations
+    #  WHERE resource_class_id = $DISK_GB_ID
+    #  GROUP BY resource_provider_id
+    # ) AS usage_disk_gb
+    #  ON inv_disk_gb.resource_provider_id = \
+    #       usage_disk_gb.resource_provider_id
+    # LEFT JOIN resource_provider_aggregates AS shared_disk_gb
+    #  ON inv_memory_mb.resource_provider_id = \
+    #       shared_disk.resource_provider_id
+    # LEFT JOIN resource_provider_aggregates AS sharing_disk_gb
+    #  ON shared_disk_gb.aggregate_id = sharing_disk_gb.aggregate_id
+    # AND sharing_disk_gb.resource_provider_id IN ($RPS_SHARING_DISK)
+    # WHERE (
+    #   (
+    #     COALESCE(usage_vcpu.used, 0) + $AMOUNT_VCPU <=
+    #     (inv_vcpu.total + inv_vcpu.reserved)
+    #     * inv_vcpu.allocation_ratio
+    #   ) AND
+    #   inv_vcpu.min_unit <= $AMOUNT_VCPU AND
+    #   inv_vcpu.max_unit >= $AMOUNT_VCPU AND
+    #   $AMOUNT_VCPU % inv_vcpu.step_size == 0
+    # ) AND (
+    #   (
+    #     COALESCE(usage_memory_mb.used, 0) + $AMOUNT_VCPU <=
+    #     (inv_memory_mb.total + inv_memory_mb.reserved)
+    #     * inv_memory_mb.allocation_ratio
+    #   ) AND
+    #   inv_memory_mb.min_unit <= $AMOUNT_MEMORY_MB AND
+    #   inv_memory_mb.max_unit >= $AMOUNT_MEMORY_MB AND
+    #   $AMOUNT_MEMORY_MB % inv_memory_mb.step_size == 0
+    # ) AND (
+    #   inv_disk.resource_provider_id IS NOT NULL AND
+    #   (
+    #     (
+    #       COALESCE(usage_disk_gb.used, 0) + $AMOUNT_DISK_GB <=
+    #         (inv_disk_gb.total + inv_disk_gb.reserved)
+    #         * inv_disk_gb.allocation_ratio
+    #     ) AND
+    #     inv_disk_gb.min_unit <= $AMOUNT_DISK_GB AND
+    #     inv_disk_gb.max_unit >= $AMOUNT_DISK_GB AND
+    #     $AMOUNT_DISK_GB % inv_disk_gb.step_size == 0
+    #   ) OR
+    #     sharing_disk_gb.resource_provider_id IS NOT NULL
+    # )
+    # GROUP BY rp.id
+
+    rpt = sa.alias(_RP_TBL, name="rp")
+
+    # Contains a set of resource provider IDs for each resource class requested
+    sharing_providers = {
+        rc_id: _get_providers_with_shared_capacity(ctx, rc_id, amount)
+        for rc_id, amount in resources.items()
+    }
+
+    name_map = {
+        rc_id: _RC_CACHE.string_from_id(rc_id).lower()
+        for rc_id in resources.keys()
+    }
+
+    # Dict, keyed by resource class ID, of an aliased table object for the
+    # inventories table winnowed to only that resource class.
+    inv_tables = {
+        rc_id: sa.alias(_INV_TBL, name='inv_%s' % name_map[rc_id])
+        for rc_id in resources.keys()
+    }
+
+    # Dict, keyed by resource class ID, of a derived table (subquery in the
+    # FROM clause or JOIN) against the allocations table  winnowed to only that
+    # resource class, grouped by resource provider.
+    usage_tables = {
+        rc_id: sa.alias(
+            sa.select([
+                _ALLOC_TBL.c.resource_provider_id,
+                sql.func.sum(_ALLOC_TBL.c.used).label('used'),
+            ]).where(
+                _ALLOC_TBL.c.resource_class_id == rc_id
+            ).group_by(
+                _ALLOC_TBL.c.resource_provider_id
+            ),
+            name='usage_%s' % name_map[rc_id],
+        )
+        for rc_id in resources.keys()
+    }
+
+    # Dict, keyed by resource class ID, of an aliased table of
+    # resource_provider_aggregates representing the aggregates associated with
+    # a provider sharing the resource class
+    sharing_tables = {
+        rc_id: sa.alias(_RP_AGG_TBL, name='sharing_%s' % name_map[rc_id])
+        for rc_id in resources.keys()
+        if len(sharing_providers[rc_id]) > 0
+    }
+
+    # Dict, keyed by resource class ID, of an aliased table of
+    # resource_provider_aggregates representing the resource providers
+    # associated by aggregate to the providers sharing a particular resource
+    # class.
+    shared_tables = {
+        rc_id: sa.alias(_RP_AGG_TBL, name='shared_%s' % name_map[rc_id])
+        for rc_id in resources.keys()
+        if len(sharing_providers[rc_id]) > 0
+    }
+
+    # List of the WHERE conditions we build up by looking at the contents
+    # of the sharing providers
+    where_conds = []
+
+    # Primary selection is on the resource_providers table and all of the
+    # aliased table copies of resource_provider_aggregates for each resource
+    # being shared
+    sel = sa.select([rpt.c.id])
+
+    # The chain of joins that we eventually pass to select_from()
+    join_chain = None
+    # The last inventory join
+    lastij = None
+
+    for rc_id, sps in sharing_providers.items():
+        it = inv_tables[rc_id]
+        ut = usage_tables[rc_id]
+        amount = resources[rc_id]
+
+        if join_chain is None:
+            rp_link = rpt
+            jc = rpt.c.id == it.c.resource_provider_id
+        else:
+            rp_link = join_chain
+            jc = lastij.c.resource_provider_id == it.c.resource_provider_id
+
+        # We can do a more efficient INNER JOIN when we don't have shared
+        # resource providers for this resource class
+        joiner = sa.join
+        if sps:
+            joiner = sa.outerjoin
+        inv_join = joiner(
+            rp_link, it,
+            sa.and_(
+                jc,
+                # Add a join condition winnowing this copy of inventories table
+                # to only the resource class being analyzed in this loop...
+                it.c.resource_class_id == rc_id,
+            ),
+        )
+        lastij = it
+        usage_join = sa.outerjoin(
+            inv_join, ut,
+            it.c.resource_provider_id == ut.c.resource_provider_id,
+        )
+        join_chain = usage_join
+
+        usage_cond = sa.and_(
+            (
+            (sql.func.coalesce(ut.c.used, 0) + amount) <=
+            (it.c.total - it.c.reserved) * it.c.allocation_ratio
+            ),
+            it.c.min_unit <= amount,
+            it.c.max_unit >= amount,
+            amount % it.c.step_size == 0,
+        )
+        if not sps:
+            where_conds.append(usage_cond)
+        else:
+            sharing = sharing_tables[rc_id]
+            shared = shared_tables[rc_id]
+            cond = sa.or_(
+                sa.and_(
+                    it.c.resource_provider_id != sa.null(),
+                    usage_cond,
+                ),
+                sharing.c.resource_provider_id != sa.null(),
+            )
+            where_conds.append(cond)
+
+            # We need to add the "butterfly" join now that produces the set of
+            # resource providers associated with a provider that is sharing the
+            # resource via an aggregate
+            shared_join = sa.outerjoin(
+                join_chain, shared,
+                rpt.c.id == shared.c.resource_provider_id,
+            )
+            sharing_join = sa.outerjoin(
+                shared_join, sharing,
+                sa.and_(
+                    shared.c.aggregate_id == sharing.c.aggregate_id,
+                    sharing.c.resource_provider_id.in_(sps),
+                ),
+            )
+            join_chain = sharing_join
+
+    sel = sel.select_from(join_chain)
+    sel = sel.where(sa.and_(*where_conds))
+    sel = sel.group_by(rpt.c.id)
+
+    return [r for r in ctx.session.execute(sel)]
+
+
 @base.NovaObjectRegistry.register
 class ResourceProviderList(base.ObjectListBase, base.NovaObject):
     # Version 1.0: Initial Version
@@ -615,7 +1151,6 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
             filters = copy.deepcopy(filters)
         name = filters.pop('name', None)
         uuid = filters.pop('uuid', None)
-        can_host = filters.pop('can_host', 0)
         member_of = filters.pop('member_of', [])
 
         resources = filters.pop('resources', {})
@@ -628,7 +1163,6 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
             query = query.filter(models.ResourceProvider.name == name)
         if uuid:
             query = query.filter(models.ResourceProvider.uuid == uuid)
-        query = query.filter(models.ResourceProvider.can_host == can_host)
 
         # If 'member_of' has values join with the PlacementAggregates to
         # get those resource providers that are associated with any of the
@@ -1554,8 +2088,9 @@ class Trait(base.NovaObject):
         self._from_db_object(self._context, self, db_trait)
 
     @staticmethod
-    @db_api.api_context_manager.reader
+    @db_api.api_context_manager.writer  # trait sync can cause a write
     def _get_by_name_from_db(context, name):
+        _ensure_trait_sync(context)
         result = context.session.query(models.Trait).filter_by(
             name=name).first()
         if not result:
@@ -1564,7 +2099,7 @@ class Trait(base.NovaObject):
 
     @classmethod
     def get_by_name(cls, context, name):
-        db_trait = cls._get_by_name_from_db(context, name)
+        db_trait = cls._get_by_name_from_db(context, six.text_type(name))
         return cls._from_db_object(context, cls(), db_trait)
 
     @staticmethod
@@ -1605,17 +2140,20 @@ class TraitList(base.ObjectListBase, base.NovaObject):
     }
 
     @staticmethod
-    @db_api.api_context_manager.reader
+    @db_api.api_context_manager.writer  # trait sync can cause a write
     def _get_all_from_db(context, filters):
+        _ensure_trait_sync(context)
         if not filters:
             filters = {}
 
         query = context.session.query(models.Trait)
         if 'name_in' in filters:
-            query = query.filter(models.Trait.name.in_(filters['name_in']))
+            query = query.filter(models.Trait.name.in_(
+                [six.text_type(n) for n in filters['name_in']]
+            ))
         if 'prefix' in filters:
             query = query.filter(
-                models.Trait.name.like(filters['prefix'] + '%'))
+                models.Trait.name.like(six.text_type(filters['prefix'] + '%')))
         if 'associated' in filters:
             if filters['associated']:
                 query = query.join(models.ResourceProviderTrait,

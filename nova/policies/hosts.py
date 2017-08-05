@@ -13,22 +13,45 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_policy import policy
-
 from nova.policies import base
 
 
 BASE_POLICY_NAME = 'os_compute_api:os-hosts'
-POLICY_ROOT = 'os_compute_api:os-hosts:%s'
 
 
 hosts_policies = [
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'discoverable',
-        check_str=base.RULE_ANY),
-    policy.RuleDefault(
-        name=BASE_POLICY_NAME,
-        check_str=base.RULE_ADMIN_API),
+    base.create_rule_default(
+        BASE_POLICY_NAME,
+        base.RULE_ADMIN_API,
+        """List, Show and Manage physical hosts.
+
+These APIs are all deprecated in favor of os-hypervisors and os-services.""",
+        [
+            {
+                'method': 'GET',
+                'path': '/os-hosts'
+            },
+            {
+                'method': 'GET',
+                'path': '/os-hosts/{host_name}'
+            },
+            {
+                'method': 'PUT',
+                'path': '/os-hosts/{host_name}'
+            },
+            {
+                'method': 'GET',
+                'path': '/os-hosts/{host_name}/reboot'
+            },
+            {
+                'method': 'GET',
+                'path': '/os-hosts/{host_name}/shutdown'
+            },
+            {
+                'method': 'GET',
+                'path': '/os-hosts/{host_name}/startup'
+            }
+        ]),
 ]
 
 

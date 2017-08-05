@@ -36,7 +36,8 @@ Enable neutron as the backend for networking.
 Determine whether to use Neutron or Nova Network as the back end. Set to true
 to use neutron.
 """),
-    # TODO(sfinucan): This option is tied into the XenAPI and VMWare drivers.
+    # TODO(sfinucan): This option is tied into the XenAPI, VMWare and Libvirt
+    # drivers.
     # We should remove this dependency by either adding a new opt for each
     # driver or simply removing the offending code. Until then we cannot
     # deprecate this option.
@@ -44,8 +45,10 @@ to use neutron.
         default=False,
         help="""
 This option determines whether the network setup information is injected into
-the VM before it is booted. While it was originally designed to be used only by
-nova-network, it is also used by the vmware and xenapi virt drivers to control
+the VM before it is booted. While it was originally designed to be used only
+by nova-network, it is also used by the vmware and xenapi virt drivers to
+control whether network information is injected into a VM. The libvirt virt
+driver also uses it when we use config_drive to configure network to control
 whether network information is injected into a VM.
 """),
     cfg.StrOpt("flat_network_bridge",
@@ -195,8 +198,9 @@ Related options:
 nova-network is deprecated, as are any related configuration options.
 """,
         help="""
-This is the public IP address for the cloudpipe VPN servers. It defaults to the
-IP address of the host.
+This option is no longer used since the /os-cloudpipe API was removed in the
+16.0.0 Pike release. This is the public IP address for the cloudpipe VPN
+servers. It defaults to the IP address of the host.
 
 Please note that this option is only used when using nova-network instead of
 Neutron in your deployment. It also will be ignored if the configuration option
@@ -1220,8 +1224,120 @@ Related options:
 """)
 ]
 
+floating_ip_opts = [
+    cfg.StrOpt('default_floating_pool',
+        default='nova',
+        deprecated_for_removal=True,
+        deprecated_since='16.0.0',
+        deprecated_reason="""
+This option was used for two purposes: to set the floating IP pool name for
+nova-network and to do the same for neutron. nova-network is deprecated, as are
+any related configuration options. Users of neutron, meanwhile, should use the
+'default_floating_pool' option in the '[neutron]' group.
+""",
+        help="""
+Default pool for floating IPs.
+
+This option specifies the default floating IP pool for allocating floating IPs.
+
+While allocating a floating ip, users can optionally pass in the name of the
+pool they want to allocate from, otherwise it will be pulled from the
+default pool.
+
+If this option is not set, then 'nova' is used as default floating pool.
+
+Possible values:
+
+* Any string representing a floating IP pool name
+"""),
+    cfg.BoolOpt('auto_assign_floating_ip',
+        default=False,
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+nova-network is deprecated, as are any related configuration options.
+""",
+        help="""
+Autoassigning floating IP to VM
+
+When set to True, floating IP is auto allocated and associated
+to the VM upon creation.
+
+Related options:
+
+* use_neutron: this options only works with nova-network.
+"""),
+   cfg.StrOpt('floating_ip_dns_manager',
+        default='nova.network.noop_dns_driver.NoopDNSDriver',
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+nova-network is deprecated, as are any related configuration options.
+""",
+        help="""
+Full class name for the DNS Manager for floating IPs.
+
+This option specifies the class of the driver that provides functionality
+to manage DNS entries associated with floating IPs.
+
+When a user adds a DNS entry for a specified domain to a floating IP,
+nova will add a DNS entry using the specified floating DNS driver.
+When a floating IP is deallocated, its DNS entry will automatically be deleted.
+
+Possible values:
+
+* Full Python path to the class to be used
+
+Related options:
+
+* use_neutron: this options only works with nova-network.
+"""),
+    cfg.StrOpt('instance_dns_manager',
+        default='nova.network.noop_dns_driver.NoopDNSDriver',
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+nova-network is deprecated, as are any related configuration options.
+""",
+        help="""
+Full class name for the DNS Manager for instance IPs.
+
+This option specifies the class of the driver that provides functionality
+to manage DNS entries for instances.
+
+On instance creation, nova will add DNS entries for the instance name and
+id, using the specified instance DNS driver and domain. On instance deletion,
+nova will remove the DNS entries.
+
+Possible values:
+
+* Full Python path to the class to be used
+
+Related options:
+
+* use_neutron: this options only works with nova-network.
+"""),
+    cfg.StrOpt('instance_dns_domain',
+        default='',
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+nova-network is deprecated, as are any related configuration options.
+""",
+        help="""
+If specified, Nova checks if the availability_zone of every instance matches
+what the database says the availability_zone should be for the specified
+dns_domain.
+
+Related options:
+
+* use_neutron: this options only works with nova-network.
+""")
+]
+
+
 ALL_DEFAULT_OPTS = (linux_net_opts + network_opts + ldap_dns_opts
-                   + rpcapi_opts + driver_opts)
+                   + rpcapi_opts + driver_opts + floating_ip_opts)
 
 
 def register_opts(conf):

@@ -74,6 +74,7 @@ class _IntegratedTestBase(test.TestCase):
 
         # TODO(mriedem): Fix the functional tests to work with Neutron.
         self.flags(use_neutron=self.USE_NEUTRON)
+        self.flags(keep_alive=False, group="wsgi")
 
         nova.tests.unit.image.fake.stub_out_image_service(self)
         self._setup_services()
@@ -233,7 +234,7 @@ class InstanceHelperMixin(object):
         return server
 
     def _build_minimal_create_server_request(self, api, name, image_uuid=None,
-                                             flavor_id=None):
+                                             flavor_id=None, networks=None):
         server = {}
 
         # We now have a valid imageId
@@ -244,4 +245,6 @@ class InstanceHelperMixin(object):
             flavor_id = api.get_flavors()[1]['id']
         server['flavorRef'] = ('http://fake.server/%s' % flavor_id)
         server['name'] = name
+        if networks is not None:
+            server['networks'] = networks
         return server

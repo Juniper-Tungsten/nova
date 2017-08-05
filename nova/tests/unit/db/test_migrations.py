@@ -952,6 +952,14 @@ class NovaMigrationsCheckers(test_migrations.ModelsMigrationsSync,
         self.assertIndexMembers(engine, 'services', 'services_uuid_idx',
                                 ['uuid'])
 
+    def _check_360(self, engine, data):
+        self.assertColumnExists(engine, 'compute_nodes', 'mapped')
+        self.assertColumnExists(engine, 'shadow_compute_nodes', 'mapped')
+
+    def _check_361(self, engine, data):
+        self.assertIndexMembers(engine, 'compute_nodes',
+                                'compute_nodes_uuid_idx', ['uuid'])
+
 
 class TestNovaMigrationsSQLite(NovaMigrationsCheckers,
                                test_base.DbTestCase,

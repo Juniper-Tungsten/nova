@@ -26,8 +26,6 @@ from nova.policies import services as services_policies
 from nova import servicegroup
 from nova import utils
 
-ALIAS = "os-services"
-
 
 class ServiceController(wsgi.Controller):
 
@@ -71,13 +69,15 @@ class ServiceController(wsgi.Controller):
         active = 'enabled'
         if svc['disabled']:
             active = 'disabled'
+        updated_time = self.servicegroup_api.get_updated_time(svc)
+
         service_detail = {'binary': svc['binary'],
                           'host': svc['host'],
                           'id': svc['id'],
                           'zone': svc['availability_zone'],
                           'status': active,
                           'state': state,
-                          'updated_at': svc['updated_at'],
+                          'updated_at': updated_time,
                           'disabled_reason': svc['disabled_reason']}
 
         for field in additional_fields:
@@ -223,19 +223,3 @@ class ServiceController(wsgi.Controller):
             actions = self.actions
 
         return self._perform_action(req, id, body, actions)
-
-
-class Services(extensions.V21APIExtensionBase):
-    """Services support."""
-
-    name = "Services"
-    alias = ALIAS
-    version = 1
-
-    def get_resources(self):
-        resources = [extensions.ResourceExtension(ALIAS,
-                                                  ServiceController())]
-        return resources
-
-    def get_controller_extensions(self):
-        return []

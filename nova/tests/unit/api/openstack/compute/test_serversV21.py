@@ -56,6 +56,7 @@ from nova.image import glance
 from nova.network import manager
 from nova import objects
 from nova.objects import instance as instance_obj
+from nova.policies import servers as server_policies
 from nova import policy
 from nova import test
 from nova.tests import fixtures as nova_fixtures
@@ -289,12 +290,12 @@ class ServersControllerTest(ControllerTest):
         res_dict = self.controller.show(req, FAKE_UUID)
         self.assertEqual(res_dict['server']['id'], FAKE_UUID)
 
-    def test_get_server_joins_pci_devices(self):
+    def test_get_server_joins(self):
 
         def fake_get(_self, *args, **kwargs):
             expected_attrs = kwargs['expected_attrs']
             self.assertEqual(['flavor', 'info_cache', 'metadata',
-                              'numa_topology', 'pci_devices'], expected_attrs)
+                              'numa_topology'], expected_attrs)
             ctxt = context.RequestContext('fake', 'fake')
             return fake_instance.fake_instance_obj(
                 ctxt, expected_attrs=expected_attrs)
@@ -1121,7 +1122,7 @@ class ServersControllerTest(ControllerTest):
             self.assertIsNotNone(search_opts)
             self.assertIn('name', search_opts)
             self.assertEqual(search_opts['name'], 'whee.*')
-            self.assertEqual(['pci_devices'], expected_attrs)
+            self.assertEqual([], expected_attrs)
             return objects.InstanceList(
                 objects=[fakes.stub_instance_obj(100, uuid=server_uuid)])
 
@@ -1416,19 +1417,6 @@ class ServersControllerTest(ControllerTest):
             self.assertEqual(s['hostId'], host_ids[i % 2])
             self.assertEqual(s['name'], 'server%d' % (i + 1))
 
-    def test_get_servers_joins_pci_devices(self):
-
-        def fake_get_all(compute_self, context, search_opts=None,
-                         limit=None, marker=None,
-                         expected_attrs=None, sort_keys=None, sort_dirs=None):
-            self.assertEqual(['pci_devices'], expected_attrs)
-            return []
-
-        self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
-
-        req = self.req('/fake/servers', use_admin_context=True)
-        self.assertIn('servers', self.controller.index(req))
-
     def test_get_servers_joins_services(self):
         def fake_get_all(compute_self, context, search_opts=None,
                          limit=None, marker=None,
@@ -1672,6 +1660,64 @@ class ServerControllerTestV238(ControllerTest):
 
     def test_list_servers_detail_invalid_status_for_non_admin(self):
         self._test_invalid_status(False)
+
+
+class ServerControllerTestV247(ControllerTest):
+    """Server controller test for microversion 2.47
+
+    The intent here is simply to verify that when showing server details
+    after microversion 2.47 that the flavor is shown as a dict of flavor
+    information rather than as dict of id/links.  The existence of the
+    'extra_specs' key is controlled by policy.
+    """
+    wsgi_api_version = '2.47'
+
+    @mock.patch.object(objects.TagList, 'get_by_resource_id')
+    def test_get_all_server_details(self, mock_get_by_resource_id):
+        # Fake out tags on the instances
+        mock_get_by_resource_id.return_value = objects.TagList()
+
+        expected_flavor = {
+            'disk': 20,
+            'ephemeral': 0,
+            'extra_specs': {},
+            'original_name': u'm1.small',
+            'ram': 2048,
+            'swap': 0,
+            'vcpus': 1}
+
+        req = fakes.HTTPRequest.blank('/fake/servers/detail',
+                                      version=self.wsgi_api_version)
+        res_dict = self.controller.detail(req)
+        for i, s in enumerate(res_dict['servers']):
+            self.assertEqual(s['flavor'], expected_flavor)
+
+    @mock.patch.object(objects.TagList, 'get_by_resource_id')
+    def test_get_all_server_details_no_extra_spec(self,
+            mock_get_by_resource_id):
+        # Fake out tags on the instances
+        mock_get_by_resource_id.return_value = objects.TagList()
+        # Set the policy so we don't have permission to index
+        # flavor extra-specs but are able to get server details.
+        servers_rule = 'os_compute_api:servers:detail'
+        extraspec_rule = 'os_compute_api:os-flavor-extra-specs:index'
+        self.policy.set_rules({
+            extraspec_rule: 'rule:admin_api',
+            servers_rule: '@'})
+
+        expected_flavor = {
+            'disk': 20,
+            'ephemeral': 0,
+            'original_name': u'm1.small',
+            'ram': 2048,
+            'swap': 0,
+            'vcpus': 1}
+
+        req = fakes.HTTPRequest.blank('/fake/servers/detail',
+                                      version=self.wsgi_api_version)
+        res_dict = self.controller.detail(req)
+        for i, s in enumerate(res_dict['servers']):
+            self.assertEqual(s['flavor'], expected_flavor)
 
 
 class ServersControllerDeleteTest(ControllerTest):
@@ -3221,7 +3267,7 @@ class ServersControllerCreateTest(test.TestCase):
             self.assertEqual(group.uuid, fake_group.uuid)
             self.assertEqual(user_id,
                              self.req.environ['nova.context'].user_id)
-            return 10
+            return {'user': {'server_group_members': 10}}
 
         def fake_limit_check(context, **kwargs):
             if 'server_group_members' in kwargs:
@@ -3230,7 +3276,7 @@ class ServersControllerCreateTest(test.TestCase):
         def fake_instance_destroy(context, uuid, constraint):
             return fakes.stub_instance(1)
 
-        self.stubs.Set(fakes.QUOTAS, 'count', fake_count)
+        self.stubs.Set(fakes.QUOTAS, 'count_as_dict', fake_count)
         self.stubs.Set(fakes.QUOTAS, 'limit_check', fake_limit_check)
         self.stub_out('nova.db.instance_destroy', fake_instance_destroy)
         self.body['os:scheduler_hints'] = {'group': fake_group.uuid}
@@ -3745,6 +3791,28 @@ class ServersControllerCreateTestV237(test.NoDBTestCase):
         network id is the empty string.
         """
         self.assertRaises(exception.ValidationError, self._create_server, '')
+
+    @mock.patch.object(context.RequestContext, 'can')
+    def test_create_server_networks_none_skip_policy(self, context_can):
+        """Test to ensure skip checking policy rule create:attach_network,
+        when networks is 'none' which means no network will be allocated.
+        """
+        with test.nested(
+            mock.patch.object(objects.Service, 'get_minimum_version',
+                              return_value=14),
+            mock.patch.object(nova.compute.flavors, 'get_flavor_by_flavor_id',
+                              return_value=objects.Flavor()),
+            mock.patch.object(
+                compute_api.API, 'create',
+                return_value=(
+                    [{'uuid': 'f9bccadf-5ab1-4a56-9156-c00c178fe5f5'}],
+                    1)),
+        ):
+            network_policy = server_policies.SERVERS % 'create:attach_network'
+            self._create_server('none')
+            call_list = [c for c in context_can.call_args_list
+                         if c[0][0] == network_policy]
+            self.assertTrue(len(call_list) == 0)
 
     @mock.patch.object(objects.Flavor, 'get_by_flavor_id',
                        side_effect=exception.FlavorNotFound(flavor_id='2'))

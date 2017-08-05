@@ -81,6 +81,10 @@ class OpenStackApiException(Exception):
                         '_body': _body})
 
         super(OpenStackApiException, self).__init__(message)
+        # py35 does not give special meaning to the first arg and store it
+        # as the message variable.
+        if not hasattr(self, 'message'):
+            self.message = message
 
 
 class OpenStackApiAuthenticationException(OpenStackApiException):
@@ -394,5 +398,28 @@ class TestOpenStackClient(object):
     def delete_aggregate(self, aggregate_id):
         self.api_delete('/os-aggregates/%s' % aggregate_id)
 
+    def add_host_to_aggregate(self, aggregate_id, host):
+        return self.api_post('/os-aggregates/%s/action' % aggregate_id,
+                             {'add_host': {'host': host}})
+
     def get_limits(self):
         return self.api_get('/limits').body['limits']
+
+    def put_server_tags(self, server_id, tags):
+        """Put (or replace) a list of tags on the given server.
+
+        Returns the list of tags from the response.
+        """
+        return self.api_put('/servers/%s/tags' % server_id,
+                            {'tags': tags}).body['tags']
+
+    def get_port_interfaces(self, server_id):
+        return self.api_get('/servers/%s/os-interface' %
+                            (server_id)).body['interfaceAttachments']
+
+    def detach_interface(self, server_id, port_id):
+        return self.api_delete('/servers/%s/os-interface/%s' %
+                               (server_id, port_id))
+
+    def get_services(self):
+        return self.api_get('/os-services').body['services']

@@ -12,7 +12,9 @@
 
 
 import mock
+import os_traits
 from oslo_db import exception as db_exc
+import sqlalchemy as sa
 
 import nova
 from nova import context
@@ -586,9 +588,6 @@ class ResourceProviderListTestCase(ResourceProviderBaseCase):
         resource_providers = objects.ResourceProviderList.get_all_by_filters(
             self.context, filters={'name': u'rp_name_1'})
         self.assertEqual(1, len(resource_providers))
-        resource_providers = objects.ResourceProviderList.get_all_by_filters(
-            self.context, filters={'can_host': 1})
-        self.assertEqual(0, len(resource_providers))
         resource_providers = objects.ResourceProviderList.get_all_by_filters(
             self.context, filters={'uuid': getattr(uuidsentinel, 'rp_uuid_2')})
         self.assertEqual(1, len(resource_providers))
@@ -1537,6 +1536,19 @@ class ResourceClassTestCase(ResourceProviderBaseCase):
 
 class ResourceProviderTraitTestCase(ResourceProviderBaseCase):
 
+    def setUp(self):
+        super(ResourceProviderTraitTestCase, self).setUp()
+        # Reset the _TRAITS_SYNCED global before we start and after
+        # we are done since other tests (notably the gabbi tests)
+        # may have caused it to change.
+        self._reset_traits_synced()
+        self.addCleanup(self._reset_traits_synced)
+
+    @staticmethod
+    def _reset_traits_synced():
+        """Reset the _TRAITS_SYNCED boolean to base state."""
+        rp_obj._TRAITS_SYNCED = False
+
     def _assert_traits(self, expected_traits, traits_objs):
         expected_traits.sort()
         traits = []
@@ -1544,6 +1556,11 @@ class ResourceProviderTraitTestCase(ResourceProviderBaseCase):
             traits.append(obj.name)
         traits.sort()
         self.assertEqual(expected_traits, traits)
+
+    def _assert_traits_in(self, expected_traits, traits_objs):
+        traits = [trait.name for trait in traits_objs]
+        for expected in expected_traits:
+            self.assertIn(expected, traits)
 
     def test_trait_create(self):
         t = objects.Trait(self.context)
@@ -1606,8 +1623,8 @@ class ResourceProviderTraitTestCase(ResourceProviderBaseCase):
             t.name = name
             t.create()
 
-        self._assert_traits(trait_names,
-                            objects.TraitList.get_all(self.context))
+        self._assert_traits_in(trait_names,
+                               objects.TraitList.get_all(self.context))
 
     def test_traits_get_all_with_name_in_filter(self):
         trait_names = ['CUSTOM_TRAIT_A', 'CUSTOM_TRAIT_B', 'CUSTOM_TRAIT_C']
@@ -1737,6 +1754,456 @@ class ResourceProviderTraitTestCase(ResourceProviderBaseCase):
             filters={'name_in': ['CUSTOM_TRAIT_A', 'CUSTOM_TRAIT_B']})
         rp1.set_traits(associated_traits)
         rp2.set_traits(associated_traits)
-        self._assert_traits(['CUSTOM_TRAIT_C'],
+        self._assert_traits_in(['CUSTOM_TRAIT_C'],
             objects.TraitList.get_all(self.context,
                 filters={'associated': False}))
+
+    def test_sync_standard_traits(self):
+        """Tests that on a clean DB, we have zero traits in the DB but after
+        list all traits, os_traits have been synchronized.
+        """
+        std_traits = os_traits.get_traits()
+        conn = self.api_db.get_engine().connect()
+
+        def _db_traits(conn):
+            sel = sa.select([rp_obj._TRAIT_TBL.c.name])
+            return [r[0] for r in conn.execute(sel).fetchall()]
+
+        self.assertEqual([], _db_traits(conn))
+
+        all_traits = [trait.name for trait in
+                      objects.TraitList.get_all(self.context)]
+        self.assertEqual(set(std_traits), set(all_traits))
+        # confirm with a raw request
+        self.assertEqual(set(std_traits), set(_db_traits(conn)))
+
+
+class SharedProviderTestCase(ResourceProviderBaseCase):
+    """Tests that the queries used to determine placement in deployments with
+    shared resource providers such as a shared disk pool result in accurate
+    reporting of inventory and usage.
+    """
+
+    def _requested_resources(self):
+        STANDARDS = fields.ResourceClass.STANDARD
+        VCPU_ID = STANDARDS.index(fields.ResourceClass.VCPU)
+        MEMORY_MB_ID = STANDARDS.index(fields.ResourceClass.MEMORY_MB)
+        DISK_GB_ID = STANDARDS.index(fields.ResourceClass.DISK_GB)
+        # The resources we will request
+        resources = {
+            VCPU_ID: 1,
+            MEMORY_MB_ID: 64,
+            DISK_GB_ID: 100,
+        }
+        return resources
+
+    def test_shared_provider_capacity(self):
+        """Sets up a resource provider that shares DISK_GB inventory via an
+        aggregate, a couple resource providers representing "local disk"
+        compute nodes and ensures the _get_providers_sharing_capacity()
+        function finds that provider and not providers of "local disk".
+        """
+        # Create the two "local disk" compute node providers
+        cn1_uuid = uuidsentinel.cn1
+        cn1 = objects.ResourceProvider(
+            self.context,
+            name='cn1',
+            uuid=cn1_uuid,
+        )
+        cn1.create()
+
+        cn2_uuid = uuidsentinel.cn2
+        cn2 = objects.ResourceProvider(
+            self.context,
+            name='cn2',
+            uuid=cn2_uuid,
+        )
+        cn2.create()
+
+        # Populate the two compute node providers with inventory, sans DISK_GB
+        for cn in (cn1, cn2):
+            vcpu = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.VCPU,
+                total=24,
+                reserved=0,
+                min_unit=1,
+                max_unit=24,
+                step_size=1,
+                allocation_ratio=16.0,
+            )
+            memory_mb = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.MEMORY_MB,
+                total=32768,
+                reserved=0,
+                min_unit=64,
+                max_unit=32768,
+                step_size=64,
+                allocation_ratio=1.5,
+            )
+            inv_list = objects.InventoryList(objects=[vcpu, memory_mb])
+            cn.set_inventory(inv_list)
+
+        # Create the shared storage pool
+        ss_uuid = uuidsentinel.ss
+        ss = objects.ResourceProvider(
+            self.context,
+            name='shared storage',
+            uuid=ss_uuid,
+        )
+        ss.create()
+
+        # Give the shared storage pool some inventory of DISK_GB
+        disk_gb = objects.Inventory(
+            resource_provider=ss,
+            resource_class=fields.ResourceClass.DISK_GB,
+            total=2000,
+            reserved=0,
+            min_unit=10,
+            max_unit=100,
+            step_size=10,
+            allocation_ratio=1.0,
+        )
+        disk_gb.obj_set_defaults()
+        inv_list = objects.InventoryList(objects=[disk_gb])
+        ss.set_inventory(inv_list)
+
+        # Mark the shared storage pool as having inventory shared among any
+        # provider associated via aggregate
+        t = objects.Trait(
+            self.context,
+            name="MISC_SHARES_VIA_AGGREGATE",
+        )
+        # TODO(jaypipes): Once MISC_SHARES_VIA_AGGREGATE is a standard
+        # os-traits trait, we won't need to create() here. Instead, we will
+        # just do:
+        # t = objects.Trait.get_by_name(
+        #    self.context,
+        #    "MISC_SHARES_VIA_AGGREGATE",
+        # )
+        t.create()
+        ss.set_traits(objects.TraitList(objects=[t]))
+
+        # OK, now that has all been set up, let's verify that we get the ID of
+        # the shared storage pool when we ask for DISK_GB
+        got_ids = rp_obj._get_providers_with_shared_capacity(
+            self.context,
+            fields.ResourceClass.STANDARD.index(fields.ResourceClass.DISK_GB),
+            100,
+        )
+        self.assertEqual([ss.id], got_ids)
+
+    def test_get_all_with_shared(self):
+        """We set up two compute nodes with VCPU and MEMORY_MB only, a shared
+        resource provider having DISK_GB inventory, and associate all of them
+        with an aggregate. We then call the _get_all_with_shared() function to
+        ensure that we get back the two compute node resource provider records.
+        """
+        # The aggregate that will be associated to everything...
+        agg_uuid = uuidsentinel.agg
+
+        # Create the two compute node providers
+        cn1_uuid = uuidsentinel.cn1
+        cn1 = objects.ResourceProvider(
+            self.context,
+            name='cn1',
+            uuid=cn1_uuid,
+        )
+        cn1.create()
+
+        cn2_uuid = uuidsentinel.cn2
+        cn2 = objects.ResourceProvider(
+            self.context,
+            name='cn2',
+            uuid=cn2_uuid,
+        )
+        cn2.create()
+
+        # Populate the two compute node providers with inventory, sans DISK_GB
+        for cn in (cn1, cn2):
+            vcpu = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.VCPU,
+                total=24,
+                reserved=0,
+                min_unit=1,
+                max_unit=24,
+                step_size=1,
+                allocation_ratio=16.0,
+            )
+            memory_mb = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.MEMORY_MB,
+                total=1024,
+                reserved=0,
+                min_unit=64,
+                max_unit=1024,
+                step_size=1,
+                allocation_ratio=1.5,
+            )
+            inv_list = objects.InventoryList(objects=[vcpu, memory_mb])
+            cn.set_inventory(inv_list)
+
+        # Create the shared storage pool
+        ss_uuid = uuidsentinel.ss
+        ss = objects.ResourceProvider(
+            self.context,
+            name='shared storage',
+            uuid=ss_uuid,
+        )
+        ss.create()
+
+        # Give the shared storage pool some inventory of DISK_GB
+        disk_gb = objects.Inventory(
+            resource_provider=ss,
+            resource_class=fields.ResourceClass.DISK_GB,
+            total=2000,
+            reserved=0,
+            min_unit=10,
+            max_unit=100,
+            step_size=1,
+            allocation_ratio=1.0,
+        )
+        inv_list = objects.InventoryList(objects=[disk_gb])
+        ss.set_inventory(inv_list)
+
+        # Mark the shared storage pool as having inventory shared among any
+        # provider associated via aggregate
+        t = objects.Trait(
+            self.context,
+            name="MISC_SHARES_VIA_AGGREGATE",
+        )
+        # TODO(jaypipes): Once MISC_SHARES_VIA_AGGREGATE is a standard
+        # os-traits trait, we won't need to create() here. Instead, we will
+        # just do:
+        # t = objects.Trait.get_by_name(
+        #    self.context,
+        #    "MISC_SHARES_VIA_AGGREGATE",
+        # )
+        t.create()
+        ss.set_traits(objects.TraitList(objects=[t]))
+
+        resources = self._requested_resources()
+
+        # Before we associate the compute nodes and shared storage provider
+        # with the same aggregate, verify that no resource providers are found
+        # that meet the requested set of resource amounts
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([], got_ids)
+
+        # Now associate the shared storage pool and both compute nodes with the
+        # same aggregate
+        cn1.set_aggregates([agg_uuid])
+        cn2.set_aggregates([agg_uuid])
+        ss.set_aggregates([agg_uuid])
+
+        # OK, now that has all been set up, let's verify that we get the ID of
+        # the shared storage pool when we ask for some DISK_GB
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([cn1.id, cn2.id], got_ids)
+
+        # Now we add another compute node that has vCPU and RAM along with
+        # local disk and is *not* associated with the agg1. We want to verify
+        # that this compute node, because it has all three resources "locally"
+        # is also returned by _get_all_with_shared() along with the other
+        # compute nodes that are associated with the shared storage pool.
+        cn3_uuid = uuidsentinel.cn3
+        cn3 = objects.ResourceProvider(
+            self.context,
+            name='cn3',
+            uuid=cn3_uuid,
+        )
+        cn3.create()
+        vcpu = objects.Inventory(
+            resource_provider=cn3,
+            resource_class=fields.ResourceClass.VCPU,
+            total=24,
+            reserved=0,
+            min_unit=1,
+            max_unit=24,
+            step_size=1,
+            allocation_ratio=1.0,
+        )
+        memory_mb = objects.Inventory(
+            resource_provider=cn3,
+            resource_class=fields.ResourceClass.MEMORY_MB,
+            total=1024,
+            reserved=0,
+            min_unit=64,
+            max_unit=1024,
+            step_size=1,
+            allocation_ratio=1.0,
+        )
+        disk_gb = objects.Inventory(
+            resource_provider=cn3,
+            resource_class=fields.ResourceClass.DISK_GB,
+            total=500,
+            reserved=0,
+            min_unit=10,
+            max_unit=500,
+            step_size=10,
+            allocation_ratio=1.0,
+        )
+        inv_list = objects.InventoryList(objects=[vcpu, memory_mb, disk_gb])
+        cn3.set_inventory(inv_list)
+
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([cn1.id, cn2.id, cn3.id], got_ids)
+
+        # Consume all vCPU and RAM inventory on the "local disk" compute node
+        # and verify it no longer is returned from _get_all_with_shared()
+
+        vcpu_alloc = objects.Allocation(
+            resource_provider=cn3,
+            resource_class=fields.ResourceClass.VCPU,
+            consumer_id=uuidsentinel.consumer,
+            used=24,
+        )
+        memory_mb_alloc = objects.Allocation(
+            resource_provider=cn3,
+            resource_class=fields.ResourceClass.MEMORY_MB,
+            consumer_id=uuidsentinel.consumer,
+            used=1024,
+        )
+
+        alloc_list = objects.AllocationList(
+            self.context,
+            objects=[vcpu_alloc, memory_mb_alloc]
+        )
+        alloc_list.create_all()
+
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([cn1.id, cn2.id], got_ids)
+
+        # Now we consume all the memory in the second compute node and verify
+        # that it does not get returned from _get_all_with_shared()
+
+        for x in range(3):
+            # allocation_ratio for MEMORY_MB is 1.5, so we need to make 3
+            # 512-MB allocations to fully consume the memory on the node
+            memory_mb_alloc = objects.Allocation(
+                resource_provider=cn2,
+                resource_class=fields.ResourceClass.MEMORY_MB,
+                consumer_id=getattr(uuidsentinel, 'consumer%d' % x),
+                used=512,
+            )
+            alloc_list = objects.AllocationList(
+                self.context,
+                objects=[memory_mb_alloc]
+            )
+            alloc_list.create_all()
+
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([cn1.id], got_ids)
+
+        # Create another two compute node providers having no local disk
+        # inventory and associated with a different aggregate. Then create a
+        # storage provider but do NOT decorate that provider with the
+        # MISC_SHARES_VIA_AGGREGATE trait and verify that neither of the new
+        # compute node providers are returned by _get_all_with_shared()
+
+        cn4_uuid = uuidsentinel.cn4
+        cn4 = objects.ResourceProvider(
+            self.context,
+            name='cn4',
+            uuid=cn4_uuid,
+        )
+        cn4.create()
+
+        cn5_uuid = uuidsentinel.cn5
+        cn5 = objects.ResourceProvider(
+            self.context,
+            name='cn5',
+            uuid=cn5_uuid,
+        )
+        cn5.create()
+
+        # Populate the two compute node providers with inventory, sans DISK_GB
+        for cn in (cn4, cn5):
+            vcpu = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.VCPU,
+                total=24,
+                reserved=0,
+                min_unit=1,
+                max_unit=24,
+                step_size=1,
+                allocation_ratio=16.0,
+            )
+            memory_mb = objects.Inventory(
+                resource_provider=cn,
+                resource_class=fields.ResourceClass.MEMORY_MB,
+                total=1024,
+                reserved=0,
+                min_unit=64,
+                max_unit=1024,
+                step_size=1,
+                allocation_ratio=1.5,
+            )
+            inv_list = objects.InventoryList(objects=[vcpu, memory_mb])
+            cn.set_inventory(inv_list)
+
+        # Create the storage provider but do NOT mark it sharing its inventory
+        # with other providers
+        ns_uuid = uuidsentinel.ns
+        ns = objects.ResourceProvider(
+            self.context,
+            name='non_shared storage',
+            uuid=ns_uuid,
+        )
+        ns.create()
+
+        # Give the shared storage pool some inventory of DISK_GB
+        disk_gb = objects.Inventory(
+            resource_provider=ns,
+            resource_class=fields.ResourceClass.DISK_GB,
+            total=2000,
+            reserved=0,
+            min_unit=10,
+            max_unit=100,
+            step_size=1,
+            allocation_ratio=1.0,
+        )
+        inv_list = objects.InventoryList(objects=[disk_gb])
+        ns.set_inventory(inv_list)
+
+        # Associate the new no-local-disk compute nodes and the non-shared
+        # storage provider with an aggregate that is different from the
+        # aggregate associating the shared storage provider with compute nodes
+        agg2_uuid = uuidsentinel.agg2
+        cn4.set_aggregates([agg2_uuid])
+        cn5.set_aggregates([agg2_uuid])
+        ns.set_aggregates([agg2_uuid])
+
+        # Ensure neither cn4 nor cn5 are in the returned providers list,
+        # because neither has DISK_GB inventory and although they are
+        # associated with an aggregate that has a storage provider with DISK_GB
+        # inventory, that storage provider is not marked as sharing that
+        # DISK_GB inventory with anybody.
+        got_rps = rp_obj._get_all_with_shared(
+            self.context,
+            resources,
+        )
+        got_ids = [rp.id for rp in got_rps]
+        self.assertEqual([cn1.id], got_ids)

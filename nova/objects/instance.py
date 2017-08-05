@@ -31,7 +31,7 @@ from nova import db
 from nova.db.sqlalchemy import api as db_api
 from nova.db.sqlalchemy import models
 from nova import exception
-from nova.i18n import _LE, _LW
+from nova.i18n import _, _LE, _LW
 from nova import notifications
 from nova import objects
 from nova.objects import base
@@ -616,6 +616,10 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         # be dropped.
         pass
 
+    def _save_tags(self, context):
+        # NOTE(gibi): tags are not saved through the instance
+        pass
+
     def _save_flavor(self, context):
         if not any([x in self.obj_what_changed() for x in
                     ('flavor', 'old_flavor', 'new_flavor')]):
@@ -834,7 +838,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         else:
             raise exception.ObjectActionError(
                 action='obj_load_attr',
-                reason='loading %s requires recursion' % attrname)
+                reason=_('loading %s requires recursion') % attrname)
 
     def _load_fault(self):
         self.fault = objects.InstanceFault.get_latest_for_instance(
@@ -1022,7 +1026,7 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         if attrname not in INSTANCE_OPTIONAL_ATTRS:
             raise exception.ObjectActionError(
                 action='obj_load_attr',
-                reason='attribute %s not lazy-loadable' % attrname)
+                reason=_('attribute %s not lazy-loadable') % attrname)
 
         if not self._context:
             raise exception.OrphanedObjectError(method='obj_load_attr',
@@ -1384,6 +1388,12 @@ def _migrate_instance_keypairs(ctxt, count):
     count_all = len(db_extras)
     count_hit = 0
     for db_extra in db_extras:
+        if db_extra.instance is None:
+            LOG.error(
+                ('Instance %(uuid)s has been purged, but an instance_extra '
+                 'record remains for it. Unable to migrate.'),
+                {'uuid': db_extra.instance_uuid})
+            continue
         key_name = db_extra.instance.key_name
         keypairs = objects.KeyPairList(objects=[])
         if key_name:

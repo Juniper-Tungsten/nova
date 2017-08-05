@@ -90,7 +90,8 @@ class NovaAPIModelsSync(test_migrations.ModelsMigrationsSync):
                     'display_name', 'access_ip_v6', 'access_ip_v4', 'key_name',
                     'locked_by', 'image_ref', 'progress', 'request_spec_id',
                     'info_cache', 'user_id', 'task_state', 'security_groups',
-                    'config_drive']
+                    'config_drive'],
+                'resource_providers': ['can_host'],
         }
 
         for element in diff:
@@ -604,6 +605,41 @@ class NovaAPIMigrationsWalk(test_migrations.WalkVersionsMixin):
                 self.assertEqual(['id'], fk['referred_columns'])
                 self.assertEqual(['resource_provider_id'],
                                  fk['constrained_columns'])
+
+    def _check_042(self, engine, data):
+        self.assertColumnExists(engine, 'build_requests', 'tags')
+
+    def _check_043(self, engine, data):
+        for column in ['created_at', 'updated_at', 'id', 'uuid', 'project_id',
+                       'user_id']:
+            self.assertColumnExists(engine, 'consumers', column)
+
+        self.assertIndexExists(engine, 'consumers',
+                               'consumers_project_id_uuid_idx')
+        self.assertIndexExists(engine, 'consumers',
+                               'consumers_project_id_user_id_uuid_idx')
+        self.assertUniqueConstraintExists(engine, 'consumers', ['uuid'])
+
+    def _check_044(self, engine, data):
+        for column in ['created_at', 'updated_at', 'id', 'external_id']:
+            self.assertColumnExists(engine, 'projects', column)
+            self.assertColumnExists(engine, 'users', column)
+
+        self.assertUniqueConstraintExists(engine, 'projects', ['external_id'])
+        self.assertUniqueConstraintExists(engine, 'users', ['external_id'])
+
+        # We needed to drop and recreate columns and indexes on consumers, so
+        # check that worked out properly
+        self.assertColumnExists(engine, 'consumers', 'project_id')
+        self.assertColumnExists(engine, 'consumers', 'user_id')
+        self.assertIndexExists(
+            engine, 'consumers',
+            'consumers_project_id_uuid_idx',
+        )
+        self.assertIndexExists(
+            engine, 'consumers',
+            'consumers_project_id_user_id_uuid_idx',
+        )
 
 
 class TestNovaAPIMigrationsWalkSQLite(NovaAPIMigrationsWalk,

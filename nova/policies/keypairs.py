@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_policy import policy
-
 from nova.policies import base
 
 
@@ -23,9 +21,6 @@ POLICY_ROOT = 'os_compute_api:os-keypairs:%s'
 
 
 keypairs_policies = [
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'discoverable',
-        check_str=base.RULE_ANY),
     base.create_rule_default(
         POLICY_ROOT % 'index',
         'rule:admin_api or user_id:%(user_id)s',
@@ -66,9 +61,20 @@ keypairs_policies = [
                 'method': 'GET'
             }
         ]),
-    policy.RuleDefault(
-        name=BASE_POLICY_NAME,
-        check_str=base.RULE_ADMIN_OR_OWNER),
+    base.create_rule_default(
+        BASE_POLICY_NAME,
+        base.RULE_ADMIN_OR_OWNER,
+        "Return 'key_name' in the response of server.",
+        [
+            {
+                'path': '/servers/{id}',
+                'method': 'GET',
+            },
+            {
+                'path': '/servers/detail',
+                'method': 'GET'
+            }
+        ]),
 ]
 
 

@@ -333,6 +333,18 @@ class DiskBus(BaseNovaEnum):
     ALL = (FDC, IDE, SATA, SCSI, USB, VIRTIO, XEN, LXC, UML)
 
 
+class DiskConfig(BaseNovaEnum):
+
+    MANUAL = "MANUAL"
+    AUTO = "AUTO"
+
+    ALL = (MANUAL, AUTO)
+
+    def coerce(self, obj, attr, value):
+        enum_value = DiskConfig.AUTO if value else DiskConfig.MANUAL
+        return super(DiskConfig, self).coerce(obj, attr, enum_value)
+
+
 class FirmwareType(BaseNovaEnum):
 
     UEFI = "uefi"
@@ -730,6 +742,16 @@ class DiskFormat(BaseNovaEnum):
     ALL = (RBD, LVM, QCOW2, RAW, PLOOP, VHD, VMDK, VDI, ISO)
 
 
+class HypervisorDriver(BaseNovaEnum):
+    LIBVIRT = "libvirt"
+    XENAPI = "xenapi"
+    VMWAREAPI = "vmwareapi"
+    IRONIC = "ironic"
+    HYPERV = "hyperv"
+
+    ALL = (LIBVIRT, XENAPI, VMWAREAPI, IRONIC, HYPERV)
+
+
 class PointerModelType(BaseNovaEnum):
 
     USBTABLET = "usbtablet"
@@ -1074,6 +1096,10 @@ class DiskBusField(BaseEnumField):
     AUTO_TYPE = DiskBus()
 
 
+class DiskConfigField(BaseEnumField):
+    AUTO_TYPE = DiskConfig()
+
+
 class FirmwareTypeField(BaseEnumField):
     AUTO_TYPE = FirmwareType()
 
@@ -1140,6 +1166,10 @@ class PciDeviceTypeField(BaseEnumField):
 
 class DiskFormatField(BaseEnumField):
     AUTO_TYPE = DiskFormat()
+
+
+class HypervisorDriverField(BaseEnumField):
+    AUTO_TYPE = HypervisorDriver()
 
 
 class PointerModelField(BaseEnumField):

@@ -423,9 +423,9 @@ class HostManager(object):
             if not computes_by_cell:
                 computes_by_cell = {}
                 for cell in self.cells:
-                    with context_module.target_cell(context, cell):
+                    with context_module.target_cell(context, cell) as cctxt:
                         cell_cns = objects.ComputeNodeList.get_all(
-                            context).objects
+                            cctxt).objects
                         computes_by_cell[cell] = cell_cns
                         count += len(cell_cns)
 
@@ -444,9 +444,9 @@ class HostManager(object):
                     filters = {"host": [curr_node.host
                                         for curr_node in curr_nodes],
                                "deleted": False}
-                    with context_module.target_cell(context, cell):
+                    with context_module.target_cell(context, cell) as cctxt:
                         result = objects.InstanceList.get_by_filters(
-                            context.elevated(), filters)
+                            cctxt.elevated(), filters)
                     instances = result.objects
                     LOG.debug("Adding %s instances for hosts %s-%s",
                               len(instances), start_node, end_node)
@@ -603,19 +603,18 @@ class HostManager(object):
         for cell in cells:
             LOG.debug('Getting compute nodes and services for cell %(cell)s',
                       {'cell': cell.identity})
-            with context_module.target_cell(context, cell):
+            with context_module.target_cell(context, cell) as cctxt:
                 if compute_uuids is None:
                     compute_nodes[cell.uuid].extend(
-                        objects.ComputeNodeList.get_all(
-                            context))
+                        objects.ComputeNodeList.get_all(cctxt))
                 else:
                     compute_nodes[cell.uuid].extend(
                         objects.ComputeNodeList.get_all_by_uuids(
-                            context, compute_uuids))
+                            cctxt, compute_uuids))
                 services.update(
                     {service.host: service
                      for service in objects.ServiceList.get_by_binary(
-                             context, 'nova-compute',
+                             cctxt, 'nova-compute',
                              include_disabled=True)})
         return compute_nodes, services
 
@@ -707,9 +706,17 @@ class HostManager(object):
                 self.host_aggregates_map[host]]
 
     def _get_instances_by_host(self, context, host_name):
-        hm = objects.HostMapping.get_by_host(context, host_name)
-        with context_module.target_cell(context, hm.cell_mapping):
-            inst_list = objects.InstanceList.get_by_host(context, host_name)
+        try:
+            hm = objects.HostMapping.get_by_host(context, host_name)
+        except exception.HostMappingNotFound:
+            # It's possible to hit this when the compute service first starts
+            # up and casts to update_instance_info with an empty list but
+            # before the host is mapped in the API database.
+            LOG.info('Host mapping not found for host %s. Not tracking '
+                     'instance info for this host.', host_name)
+            return {}
+        with context_module.target_cell(context, hm.cell_mapping) as cctxt:
+            inst_list = objects.InstanceList.get_by_host(cctxt, host_name)
             return {inst.uuid: inst for inst in inst_list}
 
     def _get_instance_info(self, context, compute):

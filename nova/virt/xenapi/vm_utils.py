@@ -20,6 +20,7 @@ their attributes like VDIs, VIFs, as well as their lookup functions.
 """
 
 import contextlib
+import math
 import os
 import time
 import urllib
@@ -27,6 +28,9 @@ from xml.dom import minidom
 from xml.parsers import expat
 
 from eventlet import greenthread
+from os_xenapi.client import disk_management
+from os_xenapi.client import host_network
+from os_xenapi.client import vm_management
 from oslo_concurrency import processutils
 from oslo_log import log as logging
 from oslo_utils import excutils
@@ -47,10 +51,10 @@ import nova.conf
 from nova import exception
 from nova.i18n import _, _LE, _LI, _LW
 from nova.network import model as network_model
+from nova.objects import diagnostics
 from nova.objects import fields as obj_fields
 from nova import utils
 from nova.virt import configdrive
-from nova.virt import diagnostics
 from nova.virt.disk import api as disk
 from nova.virt.disk.vfs import localfs as vfsimpl
 from nova.virt import hardware
@@ -489,11 +493,10 @@ def _safe_copy_vdi(session, sr_ref, instance, vdi_to_copy_ref):
         label = "snapshot"
         with snapshot_attached_here(
                 session, instance, vm_ref, label) as vdi_uuids:
-            imported_vhds = session.call_plugin_serialized(
-                'workarounds.py', 'safe_copy_vdis',
-                sr_path=get_sr_path(session, sr_ref=sr_ref),
-                vdi_uuids=vdi_uuids, uuid_stack=_make_uuid_stack())
-
+            sr_path = get_sr_path(session, sr_ref=sr_ref)
+            uuid_stack = _make_uuid_stack()
+            imported_vhds = disk_management.safe_copy_vdis(
+                session, sr_path, vdi_uuids, uuid_stack)
     root_uuid = imported_vhds['root']['uuid']
 
     # rescan to discover new VHDs
@@ -1002,13 +1005,11 @@ def _generate_disk(session, instance, vm_ref, userdevice, name_label,
             partition_start = "2048"
             partition_end = "-"
 
-            session.call_plugin_serialized('partition_utils.py',
-                                           'make_partition', dev,
-                                           partition_start, partition_end)
+            disk_management.make_partition(session, dev, partition_start,
+                                           partition_end)
 
             if mkfs_in_dom0:
-                session.call_plugin_serialized('partition_utils.py', 'mkfs',
-                                               dev, '1', fs_type, fs_label)
+                disk_management.mkfs(session, dev, '1', fs_type, fs_label)
 
         # 3.a. dom0 does not support nfs/ext4, so may have to mkfs in domU
         if fs_type is not None and not mkfs_in_dom0:
@@ -1155,11 +1156,9 @@ def _create_kernel_image(context, session, instance, name_label, image_id,
 
     filename = ""
     if CONF.xenserver.cache_images != 'none':
-        args = {}
-        args['cached-image'] = image_id
-        args['new-image-uuid'] = uuidutils.generate_uuid()
-        filename = session.call_plugin('kernel.py', 'create_kernel_ramdisk',
-                                       args)
+        new_image_uuid = uuidutils.generate_uuid()
+        filename = disk_management.create_kernel_ramdisk(
+            session, image_id, new_image_uuid)
 
     if filename == "":
         return _fetch_disk_image(context, session, instance, name_label,
@@ -1188,15 +1187,11 @@ def create_kernel_and_ramdisk(context, session, instance, name_label):
 
 
 def destroy_kernel_ramdisk(session, instance, kernel, ramdisk):
-    args = {}
-    if kernel:
-        args['kernel-file'] = kernel
-    if ramdisk:
-        args['ramdisk-file'] = ramdisk
-    if args:
+    if kernel or ramdisk:
         LOG.debug("Removing kernel/ramdisk files from dom0",
                     instance=instance)
-        session.call_plugin('kernel.py', 'remove_kernel_ramdisk', args)
+        disk_management.remove_kernel_ramdisk(
+            session, kernel_file=kernel, ramdisk_file=ramdisk)
 
 
 def _get_image_vdi_label(image_id):
@@ -1544,14 +1539,11 @@ def _fetch_disk_image(context, session, instance, name_label, image_id,
             LOG.debug("Copying VDI %s to /boot/guest on dom0",
                       vdi_ref, instance=instance)
 
-            args = {}
-            args['vdi-ref'] = vdi_ref
-
-            # Let the plugin copy the correct number of bytes.
-            args['image-size'] = str(vdi_size)
+            cache_image = None
             if CONF.xenserver.cache_images != 'none':
-                args['cached-image'] = image_id
-            filename = session.call_plugin('kernel.py', 'copy_vdi', args)
+                cache_image = image_id
+            filename = disk_management.copy_vdi(session, vdi_ref, vdi_size,
+                                                image_id=cache_image)
 
             # Remove the VDI as it is not needed anymore.
             destroy_vdi(session, vdi_ref)
@@ -1722,6 +1714,23 @@ def get_power_state(session, vm_ref):
     return XENAPI_POWER_STATE[xapi_state]
 
 
+def _vm_query_data_source(session, *args):
+    """We're getting diagnostics stats from the RRDs which are updated every
+    5 seconds. It means that diagnostics information may be incomplete during
+    first 5 seconds of VM life. In such cases method ``query_data_source()``
+    may raise a ``XenAPI.Failure`` exception or may return a `NaN` value.
+    """
+
+    try:
+        value = session.VM.query_data_source(*args)
+    except session.XenAPI.Failure:
+        return None
+
+    if math.isnan(value):
+        return None
+    return value
+
+
 def compile_info(session, vm_ref):
     """Fill record with VM status information."""
     power_state = get_power_state(session, vm_ref)
@@ -1735,28 +1744,69 @@ def compile_info(session, vm_ref):
                                  num_cpu=num_cpu)
 
 
-def compile_instance_diagnostics(instance, vm_rec):
-    vm_power_state_int = XENAPI_POWER_STATE[vm_rec['power_state']]
-    vm_power_state = power_state.STATE_MAP[vm_power_state_int]
+def compile_instance_diagnostics(session, instance, vm_ref):
+    xen_power_state = session.VM.get_power_state(vm_ref)
+    vm_power_state = power_state.STATE_MAP[XENAPI_POWER_STATE[xen_power_state]]
     config_drive = configdrive.required_by(instance)
 
     diags = diagnostics.Diagnostics(state=vm_power_state,
                                     driver='xenapi',
                                     config_drive=config_drive)
-
-    for cpu_num in range(0, int(vm_rec['VCPUs_max'])):
-        diags.add_cpu()
-
-    for vif in vm_rec['VIFs']:
-        diags.add_nic()
-
-    for vbd in vm_rec['VBDs']:
-        diags.add_disk()
-
-    max_mem_bytes = int(vm_rec['memory_dynamic_max'])
-    diags.memory_details.maximum = max_mem_bytes / units.Mi
+    _add_cpu_usage(session, vm_ref, diags)
+    _add_nic_usage(session, vm_ref, diags)
+    _add_disk_usage(session, vm_ref, diags)
+    _add_memory_usage(session, vm_ref, diags)
 
     return diags
+
+
+def _add_cpu_usage(session, vm_ref, diag_obj):
+    cpu_num = int(session.VM.get_VCPUs_max(vm_ref))
+    for cpu_num in range(0, cpu_num):
+        utilisation = _vm_query_data_source(session, vm_ref, "cpu%d" % cpu_num)
+        if utilisation is not None:
+            utilisation *= 100
+        diag_obj.add_cpu(id=cpu_num, utilisation=utilisation)
+
+
+def _add_nic_usage(session, vm_ref, diag_obj):
+    vif_refs = session.VM.get_VIFs(vm_ref)
+    for vif_ref in vif_refs:
+        vif_rec = session.VIF.get_record(vif_ref)
+        rx_rate = _vm_query_data_source(session, vm_ref,
+                                        "vif_%s_rx" % vif_rec['device'])
+        tx_rate = _vm_query_data_source(session, vm_ref,
+                                        "vif_%s_tx" % vif_rec['device'])
+        diag_obj.add_nic(mac_address=vif_rec['MAC'],
+                         rx_rate=rx_rate,
+                         tx_rate=tx_rate)
+
+
+def _add_disk_usage(session, vm_ref, diag_obj):
+    vbd_refs = session.VM.get_VBDs(vm_ref)
+    for vbd_ref in vbd_refs:
+        vbd_rec = session.VBD.get_record(vbd_ref)
+        read_bytes = _vm_query_data_source(session, vm_ref,
+                                           "vbd_%s_read" % vbd_rec['device'])
+        write_bytes = _vm_query_data_source(session, vm_ref,
+                                            "vbd_%s_write" % vbd_rec['device'])
+        diag_obj.add_disk(read_bytes=read_bytes, write_bytes=write_bytes)
+
+
+def _add_memory_usage(session, vm_ref, diag_obj):
+    total_mem = _vm_query_data_source(session, vm_ref, "memory")
+    free_mem = _vm_query_data_source(session, vm_ref, "memory_internal_free")
+    used_mem = None
+    if total_mem is not None:
+        # total_mem provided from XenServer is in Bytes. Converting it to MB.
+        total_mem /= units.Mi
+
+        if free_mem is not None:
+            # free_mem provided from XenServer is in KB. Converting it to MB.
+            used_mem = total_mem - free_mem / units.Ki
+
+    diag_obj.memory_details = diagnostics.MemoryDiagnostics(
+        maximum=total_mem, used=used_mem)
 
 
 def compile_diagnostics(vm_rec):
@@ -1795,7 +1845,7 @@ def compile_diagnostics(vm_rec):
 
 
 def fetch_bandwidth(session):
-    bw = session.call_plugin_serialized('bandwidth.py', 'fetch_all_bandwidth')
+    bw = host_network.fetch_all_bandwidth(session)
     return bw
 
 
@@ -2124,9 +2174,8 @@ def _wait_for_device(session, dev, dom0, max_seconds):
     dev_path = utils.make_dev_path(dev)
     found_path = None
     if dom0:
-        found_path = session.call_plugin_serialized('partition_utils.py',
-                                                    'wait_for_dev',
-                                                    dev_path, max_seconds)
+        found_path = disk_management.wait_for_dev(session, dev_path,
+                                                  max_seconds)
     else:
         for i in range(0, max_seconds):
             if os.path.exists(dev_path):
@@ -2547,10 +2596,9 @@ def _import_migrate_ephemeral_disks(session, instance):
 def _import_migrated_vhds(session, instance, chain_label, disk_type,
                           vdi_label):
     """Move and possibly link VHDs via the XAPI plugin."""
-    # TODO(johngarbutt) tidy up plugin params
-    imported_vhds = session.call_plugin_serialized(
-            'migration.py', 'move_vhds_into_sr', instance_uuid=chain_label,
-            sr_path=get_sr_path(session), uuid_stack=_make_uuid_stack())
+    imported_vhds = vm_management.receive_vhd(session, chain_label,
+                                              get_sr_path(session),
+                                              _make_uuid_stack())
 
     # Now we rescan the SR so we find the VHDs
     scan_default_sr(session)
@@ -2574,10 +2622,8 @@ def migrate_vhd(session, instance, vdi_uuid, dest, sr_path, seq_num,
     if ephemeral_number:
         chain_label = instance['uuid'] + "_ephemeral_%d" % ephemeral_number
     try:
-        # TODO(johngarbutt) tidy up plugin params
-        session.call_plugin_serialized('migration.py', 'transfer_vhd',
-                instance_uuid=chain_label, host=dest, vdi_uuid=vdi_uuid,
-                sr_path=sr_path, seq_num=seq_num)
+        vm_management.transfer_vhd(session, chain_label, dest, vdi_uuid,
+                                   sr_path, seq_num)
     except session.XenAPI.Failure:
         msg = "Failed to transfer vhd to new host"
         LOG.debug(msg, instance=instance, exc_info=True)
@@ -2640,9 +2686,10 @@ def handle_ipxe_iso(session, instance, cd_vdi, network_info):
     dns = subnet['dns'][0]['address']
 
     try:
-        session.call_plugin_serialized('ipxe.py', 'inject', sr_path,
-                cd_vdi['uuid'], boot_menu_url, ip_address, netmask,
-                gateway, dns, CONF.xenserver.ipxe_mkisofs_cmd)
+        disk_management.inject_ipxe_config(session, sr_path, cd_vdi['uuid'],
+                                           boot_menu_url, ip_address, netmask,
+                                           gateway, dns,
+                                           CONF.xenserver.ipxe_mkisofs_cmd)
     except session.XenAPI.Failure as exc:
         _type, _method, error = exc.details[:3]
         if error == 'CommandNotFound':

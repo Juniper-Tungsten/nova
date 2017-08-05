@@ -49,10 +49,12 @@ class InstancePayload(base.NotificationPayloadBase):
 
         'metadata': ('instance', 'metadata'),
         'locked': ('instance', 'locked'),
+        'auto_disk_config': ('instance', 'auto_disk_config')
     }
     # Version 1.0: Initial version
     # Version 1.1: add locked and display_description field
-    VERSION = '1.1'
+    # Version 1.2: Add auto_disk_config field
+    VERSION = '1.2'
     fields = {
         'uuid': fields.UUIDField(),
         'user_id': fields.StringField(nullable=True),
@@ -87,23 +89,17 @@ class InstancePayload(base.NotificationPayloadBase):
 
         'metadata': fields.DictOfStringsField(),
         'locked': fields.BooleanField(),
+        'auto_disk_config': fields.DiskConfigField()
     }
 
-    def __init__(self, instance, **kwargs):
-        super(InstancePayload, self).__init__(**kwargs)
-
+    def __init__(self, instance):
+        super(InstancePayload, self).__init__()
         # Note(gibi): ugly but needed to avoid cyclic import
         from nova.compute import utils
 
-        network_info = utils.get_nw_info_for_instance(instance)
-        ips = IpPayload.from_network_info(network_info)
-
-        flavor = flavor_payload.FlavorPayload(flavor=instance.flavor)
-
-        super(InstancePayload, self).__init__(
-            ip_addresses=ips,
-            flavor=flavor,
-            **kwargs)
+        self.ip_addresses = IpPayload.from_network_info(
+                utils.get_nw_info_for_instance(instance))
+        self.flavor = flavor_payload.FlavorPayload(flavor=instance.flavor)
 
         self.populate_schema(instance=instance)
 
@@ -113,16 +109,31 @@ class InstanceActionPayload(InstancePayload):
     # No SCHEMA as all the additional fields are calculated
 
     # Version 1.1: locked and display_description added to InstancePayload
-    VERSION = '1.1'
+    # Version 1.2: Added auto_disk_config field to InstancePayload
+    VERSION = '1.2'
     fields = {
         'fault': fields.ObjectField('ExceptionPayload', nullable=True),
     }
 
-    def __init__(self, instance, fault, **kwargs):
-        super(InstanceActionPayload, self).__init__(
+    def __init__(self, instance, fault):
+        super(InstanceActionPayload, self).__init__(instance=instance)
+        self.fault = fault
+
+
+@nova_base.NovaObjectRegistry.register_notification
+class InstanceActionVolumePayload(InstanceActionPayload):
+    # Version 1.0: Initial version
+
+    VERSION = '1.0'
+    fields = {
+        'volume_id': fields.UUIDField()
+    }
+
+    def __init__(self, instance, fault, volume_id):
+        super(InstanceActionVolumePayload, self).__init__(
                 instance=instance,
-                fault=fault,
-                **kwargs)
+                fault=fault)
+        self.volume_id = volume_id
 
 
 @nova_base.NovaObjectRegistry.register_notification
@@ -130,7 +141,8 @@ class InstanceActionVolumeSwapPayload(InstanceActionPayload):
     # No SCHEMA as all the additional fields are calculated
 
     # Version 1.1: locked and display_description added to InstancePayload
-    VERSION = '1.1'
+    # Version 1.2: Added auto_disk_config field to InstancePayload
+    VERSION = '1.2'
     fields = {
         'old_volume_id': fields.UUIDField(),
         'new_volume_id': fields.UUIDField(),
@@ -139,31 +151,35 @@ class InstanceActionVolumeSwapPayload(InstanceActionPayload):
     def __init__(self, instance, fault, old_volume_id, new_volume_id):
         super(InstanceActionVolumeSwapPayload, self).__init__(
                 instance=instance,
-                fault=fault,
-                old_volume_id=old_volume_id,
-                new_volume_id=new_volume_id)
+                fault=fault)
+        self.old_volume_id = old_volume_id
+        self.new_volume_id = new_volume_id
 
 
 @nova_base.NovaObjectRegistry.register_notification
 class InstanceUpdatePayload(InstancePayload):
     # Version 1.0: Initial version
     # Version 1.1: locked and display_description added to InstancePayload
-    VERSION = '1.1'
+    # Version 1.2: Added tags field
+    # Version 1.3: Added auto_disk_config field to InstancePayload
+    VERSION = '1.3'
     fields = {
         'state_update': fields.ObjectField('InstanceStateUpdatePayload'),
         'audit_period': fields.ObjectField('AuditPeriodPayload'),
         'bandwidth': fields.ListOfObjectsField('BandwidthPayload'),
-        'old_display_name': fields.StringField(nullable=True)
+        'old_display_name': fields.StringField(nullable=True),
+        'tags': fields.ListOfStringsField(),
     }
 
     def __init__(self, instance, state_update, audit_period, bandwidth,
                  old_display_name):
-        super(InstanceUpdatePayload, self).__init__(
-                instance=instance,
-                state_update=state_update,
-                audit_period=audit_period,
-                bandwidth=bandwidth,
-                old_display_name=old_display_name)
+        super(InstanceUpdatePayload, self).__init__(instance=instance)
+        self.state_update = state_update
+        self.audit_period = audit_period
+        self.bandwidth = bandwidth
+        self.old_display_name = old_display_name
+        self.tags = [instance_tag.tag
+                     for instance_tag in instance.tags.objects]
 
 
 @nova_base.NovaObjectRegistry.register_notification
@@ -179,6 +195,17 @@ class IpPayload(base.NotificationPayloadBase):
         'address': fields.IPV4AndV6AddressField(),
         'device_name': fields.StringField(nullable=True)
     }
+
+    def __init__(self, label, mac, meta, port_uuid, version, address,
+                 device_name):
+        super(IpPayload, self).__init__()
+        self.label = label
+        self.mac = mac
+        self.meta = meta
+        self.port_uuid = port_uuid
+        self.version = version
+        self.address = address
+        self.device_name = device_name
 
     @classmethod
     def from_network_info(cls, network_info):
@@ -210,6 +237,12 @@ class BandwidthPayload(base.NotificationPayloadBase):
         'out_bytes': fields.IntegerField(),
     }
 
+    def __init__(self, network_name, in_bytes, out_bytes):
+        super(BandwidthPayload, self).__init__()
+        self.network_name = network_name
+        self.in_bytes = in_bytes
+        self.out_bytes = out_bytes
+
 
 @nova_base.NovaObjectRegistry.register_notification
 class AuditPeriodPayload(base.NotificationPayloadBase):
@@ -219,6 +252,11 @@ class AuditPeriodPayload(base.NotificationPayloadBase):
         'audit_period_beginning': fields.DateTimeField(),
         'audit_period_ending': fields.DateTimeField(),
     }
+
+    def __init__(self, audit_period_beginning, audit_period_ending):
+        super(AuditPeriodPayload, self).__init__()
+        self.audit_period_beginning = audit_period_beginning
+        self.audit_period_ending = audit_period_ending
 
 
 @nova_base.NovaObjectRegistry.register_notification
@@ -231,6 +269,13 @@ class InstanceStateUpdatePayload(base.NotificationPayloadBase):
         'old_task_state': fields.StringField(nullable=True),
         'new_task_state': fields.StringField(nullable=True),
     }
+
+    def __init__(self, old_state, state, old_task_state, new_task_state):
+        super(InstanceStateUpdatePayload, self).__init__()
+        self.old_state = old_state
+        self.state = state
+        self.old_task_state = old_task_state
+        self.new_task_state = new_task_state
 
 
 @base.notification_sample('instance-delete-start.json')
@@ -331,4 +376,19 @@ class InstanceActionVolumeSwapNotification(base.NotificationBase):
 
     fields = {
         'payload': fields.ObjectField('InstanceActionVolumeSwapPayload')
+    }
+
+
+@base.notification_sample('instance-volume_attach-start.json')
+@base.notification_sample('instance-volume_attach-end.json')
+@base.notification_sample('instance-volume_attach-error.json')
+@base.notification_sample('instance-volume_detach-start.json')
+@base.notification_sample('instance-volume_detach-end.json')
+@nova_base.NovaObjectRegistry.register_notification
+class InstanceActionVolumeNotification(base.NotificationBase):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    fields = {
+        'payload': fields.ObjectField('InstanceActionVolumePayload')
     }

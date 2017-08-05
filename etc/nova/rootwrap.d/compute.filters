@@ -14,7 +14,6 @@ tune2fs: CommandFilter, tune2fs, root
 # nova/virt/disk/api.py: 'mount', '-o', 'bind', src, target
 # nova/virt/xenapi/vm_utils.py: 'mount', '-t', 'ext2,ext3,ext4,reiserfs'..
 # nova/virt/configdrive.py: 'mount', device, mountdir
-# nova/virt/libvirt/volume.py: 'mount', '-t', 'sofs' ...
 mount: CommandFilter, mount, root
 
 # nova/virt/disk/mount/api.py: 'umount', mapped_device
@@ -225,12 +224,7 @@ privsep-rootwrap: RegExpFilter, privsep-helper, root, privsep-helper, --config-f
 # nova/storage/linuxscsi.py: sg_scan device
 sg_scan: CommandFilter, sg_scan, root
 
-# nova/volume/encryptors/cryptsetup.py:
-# nova/volume/encryptors/luks.py:
-ln: RegExpFilter, ln, root, ln, --symbolic, --force, /dev/mapper/crypt-.+, .+
-
-# nova/volume/encryptors.py:
-# nova/virt/libvirt/dmcrypt.py:
+# nova/virt/libvirt/storage/dmcrypt.py:
 cryptsetup: CommandFilter, cryptsetup, root
 
 # nova/virt/xenapi/vm_utils.py:

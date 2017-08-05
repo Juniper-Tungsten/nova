@@ -28,7 +28,6 @@ import six
 
 import nova.conf
 from nova.i18n import _, _LE, _LI
-from nova import utils
 from nova.virt import event as virtevent
 
 CONF = nova.conf.CONF
@@ -128,6 +127,8 @@ class ComputeDriver(object):
         "supports_migrate_to_same_host": False,
         "supports_attach_interface": False,
         "supports_device_tagging": False,
+        "supports_tagged_attach_interface": False,
+        "supports_tagged_attach_volume": False,
     }
 
     def __init__(self, virtapi):
@@ -148,11 +149,10 @@ class ComputeDriver(object):
         pass
 
     def get_info(self, instance):
-        """Get the current status of an instance, by name (not ID!)
+        """Get the current status of an instance.
 
         :param instance: nova.objects.instance.Instance object
-
-        Returns a InstanceInfo object
+        :returns: An InstanceInfo object
         """
         # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
@@ -286,7 +286,7 @@ class ComputeDriver(object):
         raise NotImplementedError()
 
     def destroy(self, context, instance, network_info, block_device_info=None,
-                destroy_disks=True, migrate_data=None):
+                destroy_disks=True):
         """Destroy the specified instance from the Hypervisor.
 
         If the instance is not found (for example if networking failed), this
@@ -299,7 +299,6 @@ class ComputeDriver(object):
         :param block_device_info: Information about block devices that should
                                   be detached from the instance.
         :param destroy_disks: Indicates if disks should be destroyed
-        :param migrate_data: implementation specific params
         """
         raise NotImplementedError()
 
@@ -1622,9 +1621,15 @@ def load_compute_driver(virtapi, compute_driver=None):
         driver = importutils.import_object(
             'nova.virt.%s' % compute_driver,
             virtapi)
-        return utils.check_isinstance(driver, ComputeDriver)
+        if isinstance(driver, ComputeDriver):
+            return driver
+        raise ValueError()
     except ImportError:
         LOG.exception(_LE("Unable to load the virtualization driver"))
+        sys.exit(1)
+    except ValueError:
+        LOG.exception("Compute driver '%s' from 'nova.virt' is not of type"
+                      "'%s'", compute_driver, str(ComputeDriver))
         sys.exit(1)
 
 

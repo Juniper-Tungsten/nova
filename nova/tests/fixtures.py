@@ -37,6 +37,7 @@ from nova import context
 from nova.db import migration
 from nova.db.sqlalchemy import api as session
 from nova import exception
+from nova.network import model as network_model
 from nova import objects
 from nova.objects import base as obj_base
 from nova.objects import service as service_obj
@@ -621,6 +622,11 @@ class DefaultFlavorsFixture(fixtures.Fixture):
         ctxt = context.get_admin_context()
         defaults = {'rxtx_factor': 1.0, 'disabled': False, 'is_public': True,
                     'ephemeral_gb': 0, 'swap': 0}
+        extra_specs = {
+            "hw:cpu_model": "SandyBridge",
+            "hw:mem_page_size": "2048",
+            "hw:cpu_policy": "dedicated"
+        }
         default_flavors = [
             objects.Flavor(context=ctxt, memory_mb=512, vcpus=1,
                            root_gb=1, flavorid='1', name='m1.tiny',
@@ -637,6 +643,9 @@ class DefaultFlavorsFixture(fixtures.Fixture):
             objects.Flavor(context=ctxt, memory_mb=16384, vcpus=8,
                            root_gb=160, flavorid='5', name='m1.xlarge',
                            **defaults),
+            objects.Flavor(context=ctxt, memory_mb=512, vcpus=1,
+                           root_gb=1, flavorid='6', name='m1.tiny.specs',
+                           extra_specs=extra_specs, **defaults),
             ]
         for flavor in default_flavors:
             flavor.create()
@@ -662,7 +671,7 @@ class RPCFixture(fixtures.Fixture):
         # one of the many transports we're multplexing here.
         if url not in self._buses:
             exmods = rpc.get_allowed_exmods()
-            self._buses[url] = messaging.get_transport(
+            self._buses[url] = messaging.get_rpc_transport(
                 CONF,
                 url=url,
                 allowed_remote_exmods=exmods)
@@ -735,7 +744,7 @@ class OSAPIFixture(fixtures.Fixture):
     """Create an OS API server as a fixture.
 
     This spawns an OS API server as a fixture in a new greenthread in
-    the current test. The fixture has a .api paramenter with is a
+    the current test. The fixture has a .api parameter with is a
     simple rest client that can communicate with it.
 
     This fixture is extremely useful for testing REST responses
@@ -1046,6 +1055,55 @@ class NeutronFixture(fixtures.Fixture):
         'tenant_id': tenant_id
     }
 
+    nw_info = [{
+        "profile": {},
+        "ovs_interfaceid": "b71f1699-42be-4515-930a-f3ef01f94aa7",
+        "preserve_on_delete": False,
+        "network": {
+            "bridge": "br-int",
+            "subnets": [{
+                "ips": [{
+                    "meta": {},
+                    "version": 4,
+                    "type": "fixed",
+                    "floating_ips": [],
+                    "address": "10.0.0.4"
+                }],
+                "version": 4,
+                "meta": {},
+                "dns": [],
+                "routes": [],
+                "cidr": "10.0.0.0/26",
+                "gateway": {
+                    "meta": {},
+                    "version": 4,
+                    "type": "gateway",
+                    "address": "10.0.0.1"
+                }
+            }],
+            "meta": {
+                "injected": False,
+                "tenant_id": tenant_id,
+                "mtu": 1500
+            },
+            "id": "e1882e38-38c2-4239-ade7-35d644cb963a",
+            "label": "public"
+        },
+        "devname": "tapb71f1699-42",
+        "vnic_type": "normal",
+        "qbh_params": None,
+        "meta": {},
+        "details": {
+            "port_filter": True,
+            "ovs_hybrid_plug": True
+        },
+        "address": "fa:16:3e:47:94:4a",
+        "active": True,
+        "type": "ovs",
+        "id": "b71f1699-42be-4515-930a-f3ef01f94aa7",
+        "qbg_params": None
+    }]
+
     def __init__(self, test, multiple_ports=False):
         super(NeutronFixture, self).__init__()
         self.test = test
@@ -1068,6 +1126,14 @@ class NeutronFixture(fixtures.Fixture):
         self.test.stub_out(
             'nova.network.neutronv2.api.API.migrate_instance_start',
             lambda *args, **kwargs: None)
+        self.test.stub_out(
+            'nova.network.neutronv2.api.API.add_fixed_ip_to_instance',
+            lambda *args, **kwargs: network_model.NetworkInfo.hydrate(
+                NeutronFixture.nw_info))
+        self.test.stub_out(
+            'nova.network.neutronv2.api.API.remove_fixed_ip_from_instance',
+            lambda *args, **kwargs: network_model.NetworkInfo.hydrate(
+                NeutronFixture.nw_info))
         self.test.stub_out(
             'nova.network.neutronv2.api.API.migrate_instance_finish',
             lambda *args, **kwargs: None)

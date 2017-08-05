@@ -150,7 +150,8 @@ def get_client(context, admin=False):
         clientv20.Client(session=_SESSION,
                          auth=auth_plugin,
                          endpoint_override=CONF.neutron.url,
-                         region_name=CONF.neutron.region_name),
+                         region_name=CONF.neutron.region_name,
+                         global_request_id=context.global_id),
         admin=admin or context.is_admin)
 
 
@@ -523,7 +524,6 @@ class API(base_api.NetworkAPI):
         :type neutron: neutronclient.v2_0.client.Client
         :returns: tuple of:
             - ports: dict mapping of port id to port dict
-            - net_ids: list of requested network ids
             - ordered_networks: list of nova.objects.NetworkRequest objects
                 for requested networks (either via explicit network request
                 or the network for an explicit port request)
@@ -1020,6 +1020,10 @@ class API(base_api.NetworkAPI):
             self._refresh_neutron_extensions_cache(context, neutron=neutron)
         return constants.AUTO_ALLOCATE_TOPO_EXT in self.extensions
 
+    def _has_multi_provider_extension(self, context, neutron=None):
+        self._refresh_neutron_extensions_cache(context, neutron=neutron)
+        return constants.MULTI_NET_EXT in self.extensions
+
     def _get_pci_device_profile(self, pci_dev):
         dev_spec = self.pci_whitelist.get_devspec(pci_dev)
         if dev_spec:
@@ -1403,6 +1407,37 @@ class API(base_api.NetworkAPI):
         raise exception.FixedIpNotFoundForSpecificInstance(
                 instance_uuid=instance.uuid, ip=address)
 
+    def _get_phynet_info(self, context, neutron, net_id):
+        phynet_name = None
+        if self._has_multi_provider_extension(context, neutron=neutron):
+            network = neutron.show_network(net_id,
+                                           fields='segments').get('network')
+            segments = network.get('segments', {})
+            for net in segments:
+                # NOTE(vladikr): In general, "multi-segments" network is a
+                # combination of L2 segments. The current implementation
+                # contains a vxlan and vlan(s) segments, where only a vlan
+                # network will have a physical_network specified, but may
+                # change in the future. The purpose of this method
+                # is to find a first segment that provides a physical network.
+                # TODO(vladikr): Additional work will be required to handle the
+                # case of multiple vlan segments associated with different
+                # physical networks.
+                phynet_name = net.get('provider:physical_network')
+                if phynet_name:
+                    return phynet_name
+            # Raising here as at least one segment should
+            # have a physical network provided.
+            if segments:
+                msg = (_("None of the segments of network %s provides a "
+                         "physical_network") % net_id)
+                raise exception.NovaException(message=msg)
+
+        net = neutron.show_network(net_id,
+                        fields='provider:physical_network').get('network')
+        phynet_name = net.get('provider:physical_network')
+        return phynet_name
+
     def _get_port_vnic_info(self, context, neutron, port_id):
         """Retrieve port vnic info
 
@@ -1416,9 +1451,7 @@ class API(base_api.NetworkAPI):
                              network_model.VNIC_TYPE_NORMAL)
         if vnic_type in network_model.VNIC_TYPES_SRIOV:
             net_id = port['network_id']
-            net = neutron.show_network(net_id,
-                fields='provider:physical_network').get('network')
-            phynet_name = net.get('provider:physical_network')
+            phynet_name = self._get_phynet_info(context, neutron, net_id)
         return vnic_type, phynet_name
 
     def create_pci_requests_for_sriov_ports(self, context, pci_requests,
@@ -1698,7 +1731,10 @@ class API(base_api.NetworkAPI):
         fip = self._get_floating_ip_by_address(client, floating_address)
         param = {'port_id': port_id,
                  'fixed_ip_address': fixed_address}
-        client.update_floatingip(fip['id'], {'floatingip': param})
+        try:
+            client.update_floatingip(fip['id'], {'floatingip': param})
+        except neutron_client_exc.Conflict as e:
+            raise exception.FloatingIpAssociateFailed(six.text_type(e))
 
         if fip['port_id']:
             port = self._show_port(context, fip['port_id'],
@@ -1915,10 +1951,27 @@ class API(base_api.NetworkAPI):
                    % name_or_id)
             raise exception.NovaException(message=msg)
 
+    def _get_default_floating_ip_pool_name(self):
+        """Get default pool name from config.
+
+        TODO(stephenfin): Remove this helper function in Queens, opting to
+        use the [neutron] option only.
+        """
+        if CONF.default_floating_pool != 'nova':
+            LOG.warning(_LW("Config option 'default_floating_pool' is set to "
+                            "a non-default value. Falling back to this value "
+                            "for now but this behavior will change in a "
+                            "future release. You should unset this value "
+                            "and set the '[neutron] default_floating_pool' "
+                            "option instead."))
+            return CONF.default_floating_pool
+
+        return CONF.neutron.default_floating_pool
+
     def allocate_floating_ip(self, context, pool=None):
         """Add a floating IP to a project from a pool."""
         client = get_client(context)
-        pool = pool or CONF.default_floating_pool
+        pool = pool or self._get_default_floating_ip_pool_name()
         pool_id = self._get_floating_ip_pool_id_by_name_or_id(client, pool)
 
         param = {'floatingip': {'floating_network_id': pool_id}}
@@ -2010,7 +2063,12 @@ class API(base_api.NetworkAPI):
 
         if raise_if_associated and fip['port_id']:
             raise exception.FloatingIpAssociated(address=address)
-        client.delete_floatingip(fip['id'])
+        try:
+            client.delete_floatingip(fip['id'])
+        except neutron_client_exc.NotFound:
+            raise exception.FloatingIpNotFoundForAddress(
+                address=address
+            )
 
     @base_api.refresh_cache
     def disassociate_floating_ip(self, context, instance, address,
@@ -2259,6 +2317,8 @@ class API(base_api.NetworkAPI):
                                 address=subnet['gateway_ip'],
                                 type='gateway'),
             }
+            if subnet.get('ipv6_address_mode'):
+                subnet_dict['ipv6_address_mode'] = subnet['ipv6_address_mode']
 
             # attempt to populate DHCP server field
             search_opts = {'network_id': subnet['network_id'],
@@ -2400,9 +2460,13 @@ class API(base_api.NetworkAPI):
 
             # Update port with newly allocated PCI devices.  Even if the
             # resize is happening on the same host, a new PCI device can be
-            # allocated.
+            # allocated. Note that this only needs to happen if a migration
+            # is in progress such as in a resize / migrate.  It is possible
+            # that this function is called without a migration object, such
+            # as in an unshelve operation.
             vnic_type = p.get('binding:vnic_type')
-            if vnic_type in network_model.VNIC_TYPES_SRIOV:
+            if (vnic_type in network_model.VNIC_TYPES_SRIOV
+                    and migration is not None):
                 if not pci_mapping:
                     pci_mapping = self._get_pci_mapping_for_migration(context,
                         instance, migration)
@@ -2426,7 +2490,7 @@ class API(base_api.NetworkAPI):
             if updates:
                 LOG.info(_LI("Updating port %(port)s with "
                              "attributes %(attributes)s"),
-                         {"port": p['id'], "attributes": updates},
+                         {"port": port_id, "attributes": updates},
                          instance=instance)
                 try:
                     neutron.update_port(port_id, {'port': updates})

@@ -453,7 +453,8 @@ class BaseTestCase(test.NoDBTestCase):
         self.rt = None
         self.flags(my_ip='1.1.1.1',
                    reserved_host_disk_mb=0,
-                   reserved_host_memory_mb=0)
+                   reserved_host_memory_mb=0,
+                   reserved_host_cpus=0)
 
     def _setup_rt(self, virt_resources=_VIRT_DRIVER_AVAIL_RESOURCES,
                   estimate_overhead=overhead_zero):
@@ -564,11 +565,12 @@ class TestUpdateAvailableResources(BaseTestCase):
     @mock.patch('nova.objects.ComputeNode.get_by_host_and_nodename')
     @mock.patch('nova.objects.MigrationList.get_in_progress_by_host_and_node')
     @mock.patch('nova.objects.InstanceList.get_by_host_and_node')
-    def test_no_instances_no_migrations_reserved_disk_and_ram(
+    def test_no_instances_no_migrations_reserved_disk_ram_and_cpu(
             self, get_mock, migr_mock, get_cn_mock, pci_mock,
             instance_pci_mock):
         self.flags(reserved_host_disk_mb=1024,
-                   reserved_host_memory_mb=512)
+                   reserved_host_memory_mb=512,
+                   reserved_host_cpus=1)
         self._setup_rt()
 
         get_mock.return_value = []
@@ -585,7 +587,7 @@ class TestUpdateAvailableResources(BaseTestCase):
             'local_gb': 6,
             'free_ram_mb': 0,  # 512MB avail - 512MB reserved
             'memory_mb_used': 512,  # 0MB used + 512MB reserved
-            'vcpus_used': 0,
+            'vcpus_used': 1,
             'local_gb_used': 1,  # 0GB used + 1 GB reserved
             'memory_mb': 512,
             'current_workload': 0,
@@ -1155,8 +1157,11 @@ class TestUpdateComputeNode(BaseTestCase):
         save_mock.assert_called_once_with()
         ucn_mock.assert_called_once_with(new_compute)
 
+    @mock.patch('nova.compute.resource_tracker.'
+                '_normalize_inventory_from_cn_obj')
     @mock.patch('nova.objects.ComputeNode.save')
-    def test_existing_node_get_inventory_implemented(self, save_mock):
+    def test_existing_node_get_inventory_implemented(self, save_mock,
+            norm_mock):
         """The get_inventory() virt driver method is only implemented for some
         virt drivers. This method returns inventory information for a
         node/provider in a way that the placement API better understands, and
@@ -1188,6 +1193,129 @@ class TestUpdateComputeNode(BaseTestCase):
             mock.sentinel.inv_data,
         )
         self.assertFalse(ucn_mock.called)
+
+
+class TestNormalizatInventoryFromComputeNode(test.NoDBTestCase):
+    def test_normalize_libvirt(self):
+        self.flags(reserved_host_disk_mb=100,
+                   reserved_host_memory_mb=10,
+                   reserved_host_cpus=1)
+        vcpus = 24
+        memory_mb = 1024
+        disk_gb = 200
+        cn = objects.ComputeNode(
+            mock.sentinel.ctx,
+            ram_allocation_ratio=1.5,
+            cpu_allocation_ratio=16.0,
+            disk_allocation_ratio=1.0,
+        )
+        # What we get back from libvirt driver, for instance, doesn't contain
+        # allocation_ratio or reserved amounts for some resources. Verify that
+        # the information on the compute node fills in this information...
+        inv = {
+            obj_fields.ResourceClass.VCPU: {
+                'total': vcpus,
+                'min_unit': 1,
+                'max_unit': vcpus,
+                'step_size': 1,
+            },
+            obj_fields.ResourceClass.MEMORY_MB: {
+                'total': memory_mb,
+                'min_unit': 1,
+                'max_unit': memory_mb,
+                'step_size': 1,
+            },
+            obj_fields.ResourceClass.DISK_GB: {
+                'total': disk_gb,
+                'min_unit': 1,
+                'max_unit': disk_gb,
+                'step_size': 1,
+            },
+        }
+        expected = {
+            obj_fields.ResourceClass.VCPU: {
+                'total': vcpus,
+                'reserved': 1,
+                'min_unit': 1,
+                'max_unit': vcpus,
+                'step_size': 1,
+                'allocation_ratio': 16.0,
+            },
+            obj_fields.ResourceClass.MEMORY_MB: {
+                'total': memory_mb,
+                'reserved': 10,
+                'min_unit': 1,
+                'max_unit': memory_mb,
+                'step_size': 1,
+                'allocation_ratio': 1.5,
+            },
+            obj_fields.ResourceClass.DISK_GB: {
+                'total': disk_gb,
+                'reserved': 1,  # Rounded up from CONF.reserved_host_disk_mb
+                'min_unit': 1,
+                'max_unit': disk_gb,
+                'step_size': 1,
+                'allocation_ratio': 1.0,
+            },
+        }
+        self.assertNotEqual(expected, inv)
+        resource_tracker._normalize_inventory_from_cn_obj(inv, cn)
+        self.assertEqual(expected, inv)
+
+    def test_normalize_ironic(self):
+        """Test that when normalizing the return from Ironic virt driver's
+        get_inventory() method, we don't overwrite the information that the
+        virt driver gave us.
+        """
+        self.flags(reserved_host_disk_mb=100,
+                   reserved_host_memory_mb=10,
+                   reserved_host_cpus=1)
+        vcpus = 24
+        memory_mb = 1024
+        disk_gb = 200
+        # We will make sure that these field values do NOT override what the
+        # Ironic virt driver sets (which is, for example, that allocation
+        # ratios are all 1.0 for Ironic baremetal nodes)
+        cn = objects.ComputeNode(
+            mock.sentinel.ctx,
+            ram_allocation_ratio=1.5,
+            cpu_allocation_ratio=16.0,
+            disk_allocation_ratio=1.0,
+        )
+        # What we get back from Ironic driver contains fully-filled-out info
+        # blocks for VCPU, MEMORY_MB, DISK_GB and the custom resource class
+        # inventory items
+        inv = {
+            obj_fields.ResourceClass.VCPU: {
+                'total': vcpus,
+                'reserved': 0,
+                'min_unit': 1,
+                'max_unit': vcpus,
+                'step_size': 1,
+                'allocation_ratio': 1.0,
+            },
+            obj_fields.ResourceClass.MEMORY_MB: {
+                'total': memory_mb,
+                'reserved': 0,
+                'min_unit': 1,
+                'max_unit': memory_mb,
+                'step_size': 1,
+                'allocation_ratio': 1.0,
+            },
+            obj_fields.ResourceClass.DISK_GB: {
+                'total': disk_gb,
+                'reserved': 0,
+                'min_unit': 1,
+                'max_unit': disk_gb,
+                'step_size': 1,
+                'allocation_ratio': 1.0,
+            },
+        }
+        # We are expecting that NOTHING changes after calling the normalization
+        # function
+        expected = copy.deepcopy(inv)
+        resource_tracker._normalize_inventory_from_cn_obj(inv, cn)
+        self.assertEqual(expected, inv)
 
 
 class TestInstanceClaim(BaseTestCase):
@@ -2264,6 +2392,86 @@ class TestUpdateUsageFromInstance(BaseTestCase):
         mock_update_usage.assert_called_once_with(
             self.rt._get_usage_dict(self.instance), _NODENAME, sign=-1)
 
+    @mock.patch('nova.compute.resource_tracker.LOG')
+    @mock.patch('nova.objects.Instance.get_by_uuid')
+    def test_remove_deleted_instances_allocations(self, mock_inst_get,
+                                                  mock_log):
+        rc = self.rt.reportclient
+        self.rt.tracked_instances = {}
+        # Create 3 instances
+        instance_uuids = (uuids.inst0, uuids.inst1, uuids.inst2)
+        for i in range(3):
+            instance = _INSTANCE_FIXTURES[0].obj_clone()
+            instance.uuid = instance_uuids[i]
+            if i > 0:
+                # Only add the last two to tracked_instances, to simulate one
+                # deleted instance
+                inst_dict = obj_base.obj_to_primitive(instance)
+                self.rt.tracked_instances[instance.uuid] = inst_dict
+        # Mock out the allocation call
+        allocs = {uuids.scheduled: "fake_scheduled_instance"}
+        for i in range(3):
+            allocs[instance_uuids[i]] = "fake_instance_%s" % i
+        rc.get_allocations_for_resource_provider = mock.MagicMock(
+            return_value=allocs)
+        rc.delete_allocation_for_instance = mock.MagicMock()
+
+        def get_by_uuid(ctx, inst_uuid, expected_attrs=None):
+            ret = _INSTANCE_FIXTURES[0].obj_clone()
+            ret.uuid = inst_uuid
+            if inst_uuid == uuids.scheduled:
+                ret.host = None
+            return ret
+
+        mock_inst_get.side_effect = get_by_uuid
+        cn = self.rt.compute_nodes[_NODENAME]
+        ctx = mock.sentinel.ctx
+        # Call the method.
+        self.rt._remove_deleted_instances_allocations(ctx, cn)
+        # Only one call should be made to delete allocations, and that should
+        # be for the first instance created above
+        rc.delete_allocation_for_instance.assert_called_once_with(uuids.inst0)
+        mock_log.debug.assert_called_once_with(
+            'Deleting stale allocation for instance %s', uuids.inst0)
+
+    @mock.patch('nova.objects.Instance.get_by_uuid')
+    def test_remove_deleted_instances_allocations_no_instance(self,
+                                                              mock_inst_get):
+        # If for some reason an instance is no longer available, but
+        # there are allocations for it, we want to be sure those
+        # allocations are removed, not that an InstanceNotFound
+        # exception is not caught.  Here we set up some allocations,
+        # one of which is for an instance that can no longer be
+        # found.
+        rc = self.rt.reportclient
+        self.rt.tracked_instances = {}
+        # Create 1 instance
+        instance = _INSTANCE_FIXTURES[0].obj_clone()
+        instance.uuid = uuids.inst0
+        # Mock out the allocation call
+        allocs = {uuids.scheduled: "fake_scheduled_instance",
+                  uuids.inst0: "fake_instance_gone"}
+        rc.get_allocations_for_resource_provider = mock.MagicMock(
+            return_value=allocs)
+        rc.delete_allocation_for_instance = mock.MagicMock()
+
+        def get_by_uuid(ctx, inst_uuid, expected_attrs=None):
+            ret = _INSTANCE_FIXTURES[0].obj_clone()
+            ret.uuid = inst_uuid
+            if inst_uuid == uuids.scheduled:
+                ret.host = None
+                return ret
+            raise exc.InstanceNotFound(instance_id=inst_uuid)
+
+        mock_inst_get.side_effect = get_by_uuid
+        cn = self.rt.compute_nodes[_NODENAME]
+        ctx = mock.sentinel.ctx
+        # Call the method.
+        self.rt._remove_deleted_instances_allocations(ctx, cn)
+        # One call should be made to delete allocations, for our
+        # instance that no longer exists.
+        rc.delete_allocation_for_instance.assert_called_once_with(uuids.inst0)
+
 
 class TestInstanceInResizeState(test.NoDBTestCase):
     def test_active_suspending(self):
@@ -2408,15 +2616,12 @@ class TestIsTrackableMigration(test.NoDBTestCase):
 class OverCommitTestCase(BaseTestCase):
     def test_cpu_allocation_ratio_none_negative(self):
         self.assertRaises(ValueError,
-                          CONF.set_default, 'cpu_allocation_ratio', -1.0,
-                          enforce_type=True)
+                          CONF.set_default, 'cpu_allocation_ratio', -1.0)
 
     def test_ram_allocation_ratio_none_negative(self):
         self.assertRaises(ValueError,
-                          CONF.set_default, 'ram_allocation_ratio', -1.0,
-                          enforce_type=True)
+                          CONF.set_default, 'ram_allocation_ratio', -1.0)
 
     def test_disk_allocation_ratio_none_negative(self):
         self.assertRaises(ValueError,
-                          CONF.set_default, 'disk_allocation_ratio', -1.0,
-                          enforce_type=True)
+                          CONF.set_default, 'disk_allocation_ratio', -1.0)

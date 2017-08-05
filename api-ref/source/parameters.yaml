@@ -3,6 +3,18 @@ image_location:
   description: |
     The image location URL of the image or backup created, HTTP header
     "Location: <image location URL>" will be returned.
+
+    .. note:: The URL returned may not be accessible to users and should not
+      be relied upon. Use microversion 2.45 or simply parse the image ID out
+      of the URL in the Location response header.
+  in: header
+  required: true
+  type: string
+  max_version: 2.44
+server_location:
+  description: |
+    The location URL of the server, HTTP header
+    "Location: <server location URL>" will be returned.
   in: header
   required: true
   type: string
@@ -497,7 +509,7 @@ hypervisor_marker:
     parameter value in a subsequent limited request.
   in: query
   required: false
-  type: string
+  type: integer
   min_version: 2.33
 hypervisor_query:
   description: |
@@ -769,7 +781,7 @@ server_name_query:
     .. note::
 
        'display_name' can also be requested which is alias of 'name'
-       but that is not reccomended to use as that will be removed in future.
+       but that is not recommended to use as that will be removed in future.
   format: regexp
   in: query
   required: false
@@ -1040,10 +1052,10 @@ address:
 addresses:
   description: |
     The addresses for the server.  Addresses information is hidden for any server
-    in a state set in the ``osapi_hide_server_address_states`` configuration option.
+    in a state set in the ``hide_server_address_states`` configuration option.
     By default, servers in ``building`` state hide their addresses information.
     See ``nova.conf`` `configuration options
-    <http://docs.openstack.org/liberty/config-reference/content/list-of-compute-config-options.html>`_
+    <https://docs.openstack.org/ocata/config-reference/compute/config-options.html>`_
     for more information.
   in: body
   required: true
@@ -1056,13 +1068,19 @@ addresses_obj:
   type: object
 addSecurityGroup:
   description: |
+    The action to add a security group to a server.
+  in: body
+  required: true
+  type: object
+addTenantAccess:
+  description: |
     The action.
   in: body
   required: true
   type: string
-addTenantAccess:
+adminPass_change_password:
   description: |
-    The action.
+    The administrative password for the server.
   in: body
   required: true
   type: string
@@ -1077,12 +1095,13 @@ adminPass_evacuate:
   max_version: 2.13
 adminPass_evacuate_request:
   description: |
-    An administrative password to access the evacuated instance. If you omit this parameter, the operation
-    generates a new password.
+    An administrative password to access the evacuated server.
+    If you omit this parameter, the operation generates a new password.
+    Up to API version 2.13, if ``onSharedStorage`` is set to ``True`` and
+    this parameter is specified, an error is raised.
   in: body
   required: false
   type: string
-  max_version: 2.13
 adminPass_request:
   description: |
     The administrative password of the server. If you omit this parameter, the operation
@@ -1453,10 +1472,10 @@ certificate:
   type: object
 changePassword:
   description: |
-    The action.
+    The action to change an administrative password of the server.
   in: body
   required: true
-  type: string
+  type: object
 cidr:
   description: |
     The CIDR for address range.
@@ -1497,6 +1516,13 @@ config_drive:
   in: body
   required: false
   type: boolean
+config_drive_diagnostics:
+  description: |
+    Indicates whether or not a config drive was used for this server.
+  in: body
+  required: true
+  type: boolean
+  min_version: 2.48
 config_drive_resp:
   description: |
     Indicates whether or not a config drive was used for this server.
@@ -1511,7 +1537,7 @@ configure_project_cloudpipe:
   type: object
 confirmResize:
   description: |
-    The action.
+    The action to confirm a resize operation.
   in: body
   required: true
   type: none
@@ -1583,14 +1609,30 @@ cores_quota_optional:
   in: body
   required: false
   type: integer
+cpu_details_diagnostics:
+  description: |
+    The list of dictionaries with detailed information about VM CPUs.
+    Following fields are presented in each dictionary:
+
+    - ``id`` - the ID of CPU (Integer)
+
+    - ``time`` - CPU Time in nano seconds (Integer)
+
+    - ``utilisation`` - CPU utilisation in percents (Integer)
+  in: body
+  required: true
+  type: array
+  min_version: 2.48
 cpu_info:
   description: |
     A dictionary that contains cpu information like ``arch``, ``model``,
     ``vendor``, ``features`` and ``topology``. The content of this field is
     hypervisor specific.
 
-    NOTE: Since version 2.28 ``cpu_info`` field is returned as a dictionary
-    instead of string.
+    .. note::
+
+      Since version 2.28 ``cpu_info`` field is returned as a dictionary
+      instead of string.
   in: body
   required: true
   type: object
@@ -1609,9 +1651,12 @@ create_info_id:
 create_info_id_resp:
   description: |
     Its the same arbitrary string which was sent in request body.
-    NOTE: This string is passed back to user as it is and not being
-    used in Nova internally. So use snapshot_id instead for further
-    operation on this snapshot.
+
+    .. note::
+
+      This string is passed back to user as it is and not being
+      used in Nova internally. So use ``snapshot_id`` instead for further
+      operation on this snapshot.
   in: body
   required: true
   type: string
@@ -1638,10 +1683,11 @@ created:
   type: string
 createImage:
   description: |
-    The action.
+    The action to create a snapshot of the image or
+    the volume(s) of the server.
   in: body
   required: true
-  type: string
+  type: object
 current_workload:
   description: |
     The current_workload is the number of tasks the hypervisor is responsible for. This will be
@@ -1775,6 +1821,24 @@ disk_config:
   in: body
   required: true
   type: string
+disk_details_diagnostics:
+  description: |
+    The list of dictionaries with detailed information about VM disks.
+    Following fields are presented in each dictionary:
+
+    - ``read_bytes`` - Disk reads in bytes (Integer)
+
+    - ``read_requests`` - Read requests (Integer)
+
+    - ``write_bytes`` - Disk writes in bytes (Integer)
+
+    - ``write_requests`` - Write requests (Integer)
+
+    - ``errors_count`` - Disk errors (Integer)
+  in: body
+  required: true
+  type: array
+  min_version: 2.48
 disk_over_commit:
   description: |
     Set to ``True`` to enable over commit when the destination host is checked for
@@ -1808,6 +1872,19 @@ display_name_optional:
   in: body
   required: false
   type: string
+driver_diagnostics:
+  description: |
+    The driver on which the VM is running. Possible values are:
+
+    - ``libvirt``
+    - ``xenapi``
+    - ``hyperv``
+    - ``vmwareapi``
+    - ``ironic``
+  in: body
+  required: true
+  type: string
+  min_version: 2.48
 ended_at:
   description: |
     The date and time when the server was deleted.
@@ -1846,10 +1923,10 @@ errors:
   type: integer
 evacuate:
   description: |
-    Specify the ``evacuate`` action in the request body.
+    The action to evacuate a server to another host.
   in: body
   required: true
-  type: string
+  type: object
 event:
   description: |
     The name of the event.
@@ -1963,6 +2040,15 @@ extra_specs:
   in: body
   required: true
   type: object
+extra_specs_2_47:
+  min_version: 2.47
+  description: |
+    A dictionary of the flavor's extra-specs key-and-value pairs.  This will
+    only be included if the user is allowed by policy to index flavor
+    extra_specs.
+  in: body
+  required: false
+  type: object
 fault:
   description: |
     A fault object. Only displayed in the failed response.
@@ -2067,6 +2153,13 @@ flavor_cpus:
   type: integer
   description: |
     The number of virtual CPUs that will be allocated to the server.
+flavor_cpus_2_47:
+  min_version: 2.47
+  in: body
+  required: true
+  type: integer
+  description: |
+    The number of virtual CPUs that were allocated to the server.
 flavor_disabled:
   in: body
   required: false
@@ -2085,6 +2178,13 @@ flavor_disk:
     select the compute host based on the virtual image size. Therefore,
     0 should only be used for volume booted instances or for testing
     purposes.
+flavor_disk_2_47:
+  min_version: 2.47
+  in: body
+  required: true
+  type: integer
+  description: |
+    The size of the root disk that was created in GiB.
 flavor_ephem_disk:
   in: body
   required: true
@@ -2094,6 +2194,13 @@ flavor_ephem_disk:
     GiB. Ephemeral disks may be written over on server state
     changes. So should only be used as a scratch space for
     applications that are aware of its limitations. Defaults to 0.
+flavor_ephem_disk_2_47:
+  min_version: 2.47
+  in: body
+  required: true
+  type: integer
+  description: |
+    The size of the ephemeral disk that was created, in GiB.
 flavor_ephem_disk_in:
   in: body
   required: false
@@ -2111,6 +2218,13 @@ flavor_extra_spec_key2:
   in: body
   required: true
   type: string
+flavor_extra_spec_key_2_47:
+  description: |
+    The extra spec key of a flavor.
+  in: body
+  required: true
+  type: string
+  min_version: 2.47
 flavor_extra_spec_value:
   description: |
     The extra spec value of a flavor. It appears in the os-extra-specs'
@@ -2119,6 +2233,13 @@ flavor_extra_spec_value:
   in: body
   required: true
   type: string
+flavor_extra_spec_value_2_47:
+  description: |
+    The extra spec value of a flavor.
+  in: body
+  required: true
+  type: string
+  min_version: 2.47
 flavor_id_body:
   description: |
     The ID of the flavor. While people often make this look like
@@ -2126,6 +2247,14 @@ flavor_id_body:
   in: body
   required: true
   type: string
+flavor_id_body_2_46:
+  description: |
+    The ID of the flavor. While people often make this look like
+    an int, this is really a string.
+  in: body
+  required: true
+  type: string
+  max_version: 2.46
 flavor_id_body_create:
   description: |
     The ID of the flavor. While people often make this look like an int, this
@@ -2147,6 +2276,16 @@ flavor_is_public_in:
   in: body
   required: false
   type: boolean
+flavor_links_2_46:
+  description: |
+    Links to the flavor resource. See `API Guide / Links and
+    References
+    <http://developer.openstack.org/api-guide/compute/links_and_references.html>`_
+    for more info.
+  in: body
+  required: true
+  type: array
+  max_version: 2.46
 flavor_name:
   description: |
     The display name of a flavor.
@@ -2159,12 +2298,26 @@ flavor_name_optional:
   in: body
   required: false
   type: string
+flavor_original_name:
+  description: |
+    The display name of a flavor.
+  in: body
+  required: true
+  type: string
+  min_version: 2.47
 flavor_ram:
   description: |
     The amount of RAM a flavor has, in MiB.
   in: body
   required: true
   type: integer
+flavor_ram_2_47:
+  description: |
+    The amount of RAM a flavor has, in MiB.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.47
 flavor_rxtx_factor:
   description: |
     The receive / transmit factor (as a float) that will be set on
@@ -2183,29 +2336,49 @@ flavor_rxtx_factor_in:
   type: float
 flavor_server:
   description: |
-    The ID and links for the flavor for your server instance. A flavor is a combination
-    of memory, disk size, and CPUs. This can be empty object in case flavor information
-    is not present in the system.
+    Before microversion 2.47 this contains the ID and links for the flavor
+    used to boot the server instance. This can be an empty object in case
+    flavor information is no longer present in the system.
+
+    As of microversion 2.47 this contains a subset of the actual flavor
+    information used to create the server instance, represented as a nested
+    dictionary.
   in: body
   required: true
   type: object
 flavor_swap:
   description: |
     The size of a dedicated swap disk that will be allocated, in
-    GiB. If 0 (the default), no dedicated swap disk will be created.
+    MiB. If 0 (the default), no dedicated swap disk will be created.
   in: body
   required: true
   type: integer
+flavor_swap_2_47:
+  description: |
+    The size of a dedicated swap disk that was allocated, in MiB.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.47
 flavor_swap_in:
   description: |
     The size of a dedicated swap disk that will be allocated, in
-    GiB. If 0 (the default), no dedicated swap disk will be created.
+    MiB. If 0 (the default), no dedicated swap disk will be created.
   in: body
   required: false
   type: integer
 flavorRef:
   description: |
-    The flavor reference, as a UUID or full URL, for the flavor for your server instance.
+    The flavor reference, as an ID (including a UUID) or full URL,
+    for the flavor for your server instance.
+  in: body
+  required: true
+  type: string
+flavorRef_resize:
+  description: |
+    The flavor ID for resizing the server.
+    If a specified flavor ID is the same as the current one of the server,
+    the request returns a ``Bad Request (400)`` response code.
   in: body
   required: true
   type: string
@@ -2376,6 +2549,7 @@ guest_format:
 host:
   description: |
     The name or ID of the host to which the server is evacuated.
+    If you omit this parameter, the scheduler chooses a host.
   in: body
   required: false
   type: string
@@ -2579,6 +2753,14 @@ hypervisor_count:
   in: body
   required: true
   type: integer
+hypervisor_diagnostics:
+  description: |
+    The hypervisor on which the VM is running. Examples for libvirt driver
+    may be: ``qemu``, ``kvm`` or ``xen``.
+  in: body
+  required: true
+  type: string
+  min_version: 2.48
 hypervisor_free_disk_gb:
   description: |
     The free disk remaining on this hypervisor(in GB).
@@ -2608,6 +2790,13 @@ hypervisor_links:
   type: array
   min_version: 2.33
   required: false
+hypervisor_os_diagnostics:
+  description: |
+    The hypervisor OS.
+  in: body
+  type: string
+  required: true
+  min_version: 2.48
 hypervisor_service:
   description: |
     The hypervisor service object.
@@ -2687,6 +2876,13 @@ image_id_body:
   in: body
   required: true
   type: string
+image_metadata:
+  description: |
+    Metadata key and value pairs for the image.
+    The maximum size for each metadata key and value pair is 255 bytes.
+  in: body
+  required: false
+  type: object
 image_metadata_items:
   description: |
     The number of allowed metadata items for each image. Starting from
@@ -2741,6 +2937,13 @@ imageRef:
     This is not required in case of boot from volume.
     In all other cases it is required and must be a valid UUID
     otherwise API will return 400.
+  in: body
+  required: true
+  type: string
+imageRef_rebuild:
+  description: |
+    The UUID of the image to rebuild for your server instance.
+    It must be a valid UUID otherwise API will return 400.
   in: body
   required: true
   type: string
@@ -3101,9 +3304,14 @@ length:
   description: |
     The number of lines to fetch from the end of console log. All
     lines will be returned if this is not specified.
+
+    .. note::
+
+      This parameter can be specified as not only 'integer' but also 'string'.
+
   in: body
   required: false
-  type: string
+  type: integer
 limits:
   description: |
     Data structure that contains both absolute limits within a deployment.
@@ -3165,7 +3373,7 @@ local_gb_used:
   type: integer
 lock:
   description: |
-    The action.
+    The action to lock a server.
   in: body
   required: true
   type: none
@@ -3200,6 +3408,19 @@ members:
   in: body
   required: true
   type: array
+memory_details_diagnostics:
+  description: |
+    The dictionary with information about VM memory usage.
+    Following fields are presented in the dictionary:
+
+    - ``maximum`` - Amount of memory provisioned for the VM in MB (Integer)
+
+    - ``used`` - Amount of memory that is currently used by the guest operating
+      system and its applications in MB (Integer)
+  in: body
+  required: true
+  type: array
+  min_version: 2.48
 memory_mb:
   description: |
     The memory of this hypervisor(in MB).
@@ -3471,8 +3692,9 @@ networks:
     automatically allocate a network for the project (if possible). *none*
     tells the Compute service to not allocate a network for the instance. The
     *auto* and *none* values cannot be used with any other network values,
-    including other network uuids, ports or fixed IPs. These are requested as
-    strings for the networks value, not in a list. See the associated example.
+    including other network uuids, ports, fixed IPs or device tags. These are
+    requested as strings for the networks value, not in a list. See the
+    associated example.
   in: body
   required: true
   type: object
@@ -3483,13 +3705,70 @@ new_file:
   in: body
   required: true
   type: string
+nic_details_diagnostics:
+  description: |
+    The list of dictionaries with detailed information about VM NICs.
+    Following fields are presented in each dictionary:
+
+    - ``mac_address`` - Mac address of the interface (String)
+
+    - ``rx_octets`` - Received octets (Integer)
+
+    - ``rx_errors`` - Received errors (Integer)
+
+    - ``rx_drop`` - Received packets dropped (Integer)
+
+    - ``rx_packets`` - Received packets (Integer)
+
+    - ``rx_rate`` - Receive rate in bytes (Integer)
+
+    - ``tx_octets`` - Transmitted Octets (Integer)
+
+    - ``tx_errors`` - Transmit errors (Integer)
+
+    - ``tx_drop`` - Transmit dropped packets (Integer)
+
+    - ``tx_packets`` - Transmit packets (Integer)
+
+    - ``tx_rate`` - Transmit rate in bytes (Integer)
+  in: body
+  required: true
+  type: array
+  min_version: 2.48
+num_cpus_diagnostics:
+  description: |
+    The number of vCPUs.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.48
+num_disks_diagnostics:
+  description: |
+    The number of disks.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.48
+num_nics_diagnostics:
+  description: |
+    The number of vNICs.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.48
 on_shared_storage:
   description: |
     Server on shared storage.
+
+    .. note::
+
+      Starting since version 2.14, Nova automatically detects
+      whether the server is on shared storage or not.
+      Therefore this parameter was removed.
   in: body
   required: true
   type: boolean
-  max_version: 2.14
+  max_version: 2.13
 os:
   description: |
     The name of the operating system.
@@ -3614,10 +3893,10 @@ os-extended-volumes:volumes_attached.id:
   type: string
 os-getConsoleOutput:
   description: |
-    The action.
+    The action to get console output of the server.
   in: body
   required: true
-  type: string
+  type: object
 os-getRDPConsole:
   description: |
     The action.
@@ -3743,13 +4022,13 @@ OS-SRV-USG:terminated_at:
   type: string
 os-start:
   description: |
-    The action.
+    The action to start a stopped server.
   in: body
   required: true
   type: none
 os-stop:
   description: |
-    The action.
+    The action to stop a running server.
   in: body
   required: true
   type: none
@@ -3803,11 +4082,11 @@ path:
   description: |
     The path field in the personality object.
   in: body
-  required: false
+  required: true
   type: string
 pause:
   description: |
-    The action.
+    The action to pause a server.
   in: body
   required: true
   type: none
@@ -3832,7 +4111,7 @@ personality:
     of allowed bytes in the decoded, rather than encoded, data.
   in: body
   required: false
-  type: string
+  type: array
 policies:
   description: |
     A list of exactly one policy name to associate with the server group. The
@@ -3941,7 +4220,7 @@ project_id_instance_action:
   description: |
     The UUID of the project that this server belongs to.
   in: body
-  required: ture
+  required: true
   type: string
 project_id_query_server:
   description: |
@@ -4000,16 +4279,25 @@ ram_quota_optional:
   type: integer
 reboot:
   description: |
-    The action.
+    The action to reboot a server.
+  in: body
+  required: true
+  type: object
+reboot_type:
+  description: |
+    The type of the reboot action. The valid values are ``HARD`` and ``SOFT``.
+    A ``SOFT`` reboot attempts a graceful shutdown and restart of the server.
+    A ``HARD`` reboot attempts a forced shutdown and restart of the server.
+    The ``HARD`` reboot corresponds to the power cycles of the server.
   in: body
   required: true
   type: string
 rebuild:
   description: |
-    The action.
+    The action to rebuild a server.
   in: body
   required: true
-  type: string
+  type: object
 remote_console:
   description: |
     The remote console object.
@@ -4046,16 +4334,17 @@ removeFixedIp:
   type: object
 removeFloatingIp:
   description: |
-    The action.
+    The action to remove or disassociate a floating IP address
+    from the server.
   in: body
   required: true
-  type: string
+  type: object
 removeSecurityGroup:
   description: |
-    The action.
+    The action to remove a security group from the server.
   in: body
   required: true
-  type: string
+  type: object
 removeTenantAccess:
   description: |
     The action.
@@ -4070,10 +4359,10 @@ request_id_body:
   type: string
 rescue:
   description: |
-    The action.
+    The action to rescue a server.
   in: body
   required: true
-  type: string
+  type: object
 rescue_image_ref:
   description: |
     The image reference to use to rescue your server instance. Specify the image reference
@@ -4111,10 +4400,10 @@ resetNetwork:
   type: none
 resize:
   description: |
-    The action.
+    The action to resize a server.
   in: body
   required: true
-  type: string
+  type: object
 restore:
   description: |
     The action.
@@ -4123,7 +4412,7 @@ restore:
   type: none
 resume:
   description: |
-    The action.
+    The action to resume a suspended server.
   in: body
   required: true
   type: none
@@ -4136,7 +4425,7 @@ return_reservation_id:
   type: boolean
 revertResize:
   description: |
-    The action.
+    The action to revert a resize operation.
   in: body
   required: true
   type: none
@@ -4285,6 +4574,14 @@ server_description:
     A free form description of the server. Limited to 255 characters
     in length. Before microversion 2.19 this was set to the server
     name.
+server_description_resp:
+  description: |
+    The description of the server.
+    Before microversion 2.19 this was set to the server name.
+  in: body
+  required: true
+  type: string
+  min_version: 2.19
 server_group:
   description: |
     The server group obejct.
@@ -4375,6 +4672,15 @@ server_launch_index:
     When servers are launched via multiple create, this is the
     sequence in which the servers were launched.
   min_version: 2.3
+server_links:
+  description: |
+    Links pertaining to the server. See `API Guide / Links and
+    References
+    <http://developer.openstack.org/api-guide/compute/links_and_references.html>`_
+    for more info.
+  in: body
+  type: array
+  required: true
 server_name:
   description: |
     The server name.
@@ -4560,6 +4866,13 @@ snapshot_id_optional:
   in: body
   required: false
   type: string
+snapshot_id_resp_2_45:
+  description: |
+    The UUID for the resulting image snapshot.
+  in: body
+  required: true
+  type: string
+  min_version: 2.45
 snapshot_name:
   description: |
     The snapshot name.
@@ -4674,7 +4987,7 @@ subnet_id:
   type: string
 suspend:
   description: |
-    The action.
+    The action to suspend a server.
   in: body
   required: true
   type: none
@@ -4768,19 +5081,19 @@ type-os-assisted-volume-snapshot:
   type: string
 unlock:
   description: |
-    The action.
+    The action to unlock a locked server.
   in: body
   required: true
   type: none
 unpause:
   description: |
-    The action.
+    The action to unpause a paused server.
   in: body
   required: true
   type: none
 unrescue:
   description: |
-    The action.
+    The action to unrescue a server in rescue mode.
   in: body
   required: true
   type: none
@@ -4828,6 +5141,13 @@ uptime:
   in: body
   required: true
   type: string
+uptime_diagnostics:
+  description: |
+    The amount of time in seconds that the VM has been running.
+  in: body
+  required: true
+  type: integer
+  min_version: 2.48
 uptime_simple_tenant_usage:
   description: |
     The uptime of the server.
@@ -4860,8 +5180,10 @@ user_data:
   description: |
     Configuration information or scripts to use upon launch. Must be Base64 encoded.
 
-    NOTE: The 'null' value allowed in Nova legacy v2 API, but due to the strict
-    input validation, it isn't allowed in Nova v2.1 API.
+    .. note::
+
+      The ``null`` value allowed in Nova legacy v2 API, but due to the strict
+      input validation, it isn't allowed in Nova v2.1 API.
   in: body
   required: false
   type: string
@@ -4965,6 +5287,20 @@ virtual_interfaces:
   in: body
   required: true
   type: array
+vm_state_diagnostics:
+  description: |
+    A string enum denoting the current state of the VM. Possible values are:
+
+    - ``pending``
+    - ``running``
+    - ``paused``
+    - ``shutdown``
+    - ``crashed``
+    - ``suspended``
+  in: body
+  required: true
+  type: string
+  min_version: 2.48
 vm_state_optional:
   description: |
     The VM state.

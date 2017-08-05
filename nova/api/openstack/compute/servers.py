@@ -54,7 +54,6 @@ from nova import objects
 from nova.policies import servers as server_policies
 from nova import utils
 
-ALIAS = 'servers'
 TAG_SEARCH_FILTERS = ('tags', 'tags-any', 'not-tags', 'not-tags-any')
 DEVICE_TAGGING_MIN_COMPUTE_VERSION = 14
 
@@ -71,7 +70,6 @@ class ServersController(wsgi.Controller):
     schema_server_create = schema_servers.base_create
     schema_server_update = schema_servers.base_update
     schema_server_rebuild = schema_servers.base_rebuild
-    schema_server_resize = schema_servers.base_resize
 
     schema_server_create_v20 = schema_servers.base_create_v20
     schema_server_update_v20 = schema_servers.base_update_v20
@@ -292,7 +290,7 @@ class ServersController(wsgi.Controller):
             context, sort_keys, sort_dirs,
             schema_servers.SERVER_LIST_IGNORE_SORT_KEY, ('host', 'node'))
 
-        expected_attrs = ['pci_devices']
+        expected_attrs = []
         if is_detail:
             expected_attrs.append('services')
             if api_version_request.is_supported(req, '2.26'):
@@ -334,7 +332,7 @@ class ServersController(wsgi.Controller):
         :param is_detail: True if you plan on showing the details of the
             instance in the response, False otherwise.
         """
-        expected_attrs = ['flavor', 'pci_devices', 'numa_topology']
+        expected_attrs = ['flavor', 'numa_topology']
         if is_detail:
             if api_version_request.is_supported(req, '2.26'):
                 expected_attrs.append("tags")
@@ -450,7 +448,6 @@ class ServersController(wsgi.Controller):
     @validation.schema(schema_server_create_v242, '2.42')
     def create(self, req, body):
         """Creates a new server for a given user."""
-
         context = req.environ['nova.context']
         server_dict = body['server']
         password = self._get_server_admin_password(server_dict)
@@ -514,7 +511,7 @@ class ServersController(wsgi.Controller):
 
         image_uuid = self._image_from_req_data(server_dict, create_kwargs)
 
-        # NOTE(cyeoh): Although an extension can set
+        # NOTE(cyeoh): Although upper layer can set the value of
         # return_reservation_id in order to request that a reservation
         # id be returned to the client instead of the newly created
         # instance information we do not want to pass this parameter
@@ -530,7 +527,10 @@ class ServersController(wsgi.Controller):
             requested_networks = self._get_requested_networks(
                 requested_networks, supports_device_tagging)
 
-        if requested_networks and len(requested_networks):
+        # Skip policy check for 'create:attach_network' if there is no
+        # network allocation request.
+        if requested_networks and len(requested_networks) and \
+                not requested_networks.no_allocate:
             context.can(server_policies.SERVERS % 'create:attach_network',
                         target)
 
@@ -652,12 +652,6 @@ class ServersController(wsgi.Controller):
         for func in self.server_create_func_list:
             func(server_dict, create_kwargs, req_body)
 
-    def _rebuild_extension_point(self, ext, rebuild_dict, rebuild_kwargs):
-        handler = ext.obj
-        LOG.debug("Running _rebuild_extension_point for %s", ext.obj)
-
-        handler.server_rebuild(rebuild_dict, rebuild_kwargs)
-
     def _create_schema(self, create_schema, version):
         for schema_func in self.schema_func_list:
             self._create_schema_by_func(create_schema, version, schema_func)
@@ -673,13 +667,6 @@ class ServersController(wsgi.Controller):
             create_schema['properties'].update(schema)
         else:
             create_schema['properties']['server']['properties'].update(schema)
-
-    def _rebuild_extension_schema(self, ext, rebuild_schema, version):
-        handler = ext.obj
-        LOG.debug("Running _rebuild_extension_schema for %s", ext.obj)
-
-        schema = handler.get_server_rebuild_schema(version)
-        rebuild_schema['properties']['rebuild']['properties'].update(schema)
 
     def _delete(self, context, req, instance_uuid):
         instance = self._get_server(context, req, instance_uuid)
@@ -877,7 +864,7 @@ class ServersController(wsgi.Controller):
     @wsgi.response(202)
     @extensions.expected_errors((400, 401, 403, 404, 409))
     @wsgi.action('resize')
-    @validation.schema(schema_server_resize)
+    @validation.schema(schema_servers.resize)
     def _action_resize(self, req, id, body):
         """Resizes a given instance to the flavor size requested."""
         resize_dict = body['resize']
@@ -1017,6 +1004,13 @@ class ServersController(wsgi.Controller):
                         'createImage', id)
         except exception.Invalid as err:
             raise exc.HTTPBadRequest(explanation=err.format_message())
+        except exception.OverQuota as e:
+            raise exc.HTTPForbidden(explanation=e.format_message())
+
+        # Starting with microversion 2.45 we return a response body containing
+        # the snapshot image id without the Location header.
+        if api_version_request.is_supported(req, '2.45'):
+            return {'image_id': image['id']}
 
         # build location of newly-created image entity
         image_id = str(image['id'])
@@ -1158,26 +1152,3 @@ def remove_invalid_sort_keys(context, sort_keys, sort_dirs,
             raise exc.HTTPForbidden(explanation=msg)
 
     return sort_keys, sort_dirs
-
-
-class Servers(extensions.V21APIExtensionBase):
-    """Servers."""
-
-    name = "Servers"
-    alias = ALIAS
-    version = 1
-
-    def get_resources(self):
-        member_actions = {'action': 'POST'}
-        collection_actions = {'detail': 'GET'}
-        resources = [
-            extensions.ResourceExtension(
-                ALIAS,
-                ServersController(extension_info=self.extension_info),
-                member_name='server', collection_actions=collection_actions,
-                member_actions=member_actions)]
-
-        return resources
-
-    def get_controller_extensions(self):
-        return []

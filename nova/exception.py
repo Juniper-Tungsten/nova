@@ -86,16 +86,20 @@ class NovaException(Exception):
                 message = self.msg_fmt % kwargs
 
             except Exception:
-                # kwargs doesn't match a variable in the message
-                # log the issue and the kwargs
-                LOG.exception(_LE('Exception in string format operation'))
-                for name, value in kwargs.items():
-                    LOG.error("%s: %s" % (name, value))  # noqa
-
+                # NOTE(melwitt): This is done in a separate method so it can be
+                # monkey-patched during testing to make it a hard failure.
+                self._log_exception()
                 message = self.msg_fmt
 
         self.message = message
         super(NovaException, self).__init__(message)
+
+    def _log_exception(self):
+        # kwargs doesn't match a variable in the message
+        # log the issue and the kwargs
+        LOG.exception(_LE('Exception in string format operation'))
+        for name, value in self.kwargs.items():
+            LOG.error("%s: %s" % (name, value))  # noqa
 
     def format_message(self):
         # NOTE(mrodden): use the first argument to the python Exception object
@@ -145,6 +149,13 @@ class UnsupportedCinderAPIVersion(NovaException):
     msg_fmt = _('Nova does not support Cinder API version %(version)s')
 
 
+class CinderAPIVersionNotAvailable(NovaException):
+    """Used to indicate that a requested Cinder API version, generally a
+    microversion, is not available.
+    """
+    msg_fmt = _('Cinder API version %(version)s is not available.')
+
+
 class Forbidden(NovaException):
     msg_fmt = _("Forbidden")
     code = 403
@@ -156,10 +167,6 @@ class AdminRequired(Forbidden):
 
 class PolicyNotAuthorized(Forbidden):
     msg_fmt = _("Policy doesn't allow %(action)s to be performed.")
-
-
-class VolumeLimitExceeded(Forbidden):
-    msg_fmt = _("Volume resource quota exceeded")
 
 
 class ImageNotActive(NovaException):
@@ -490,10 +497,6 @@ class DevicePathInUse(Invalid):
     code = 409
 
 
-class DeviceIsBusy(Invalid):
-    msg_fmt = _("The supplied device (%(device)s) is busy.")
-
-
 class InvalidCPUInfo(Invalid):
     msg_fmt = _("Unacceptable CPU info: %(reason)s")
 
@@ -569,6 +572,10 @@ class AgentBuildNotFound(NotFound):
 class AgentBuildExists(NovaException):
     msg_fmt = _("Agent-build with hypervisor %(hypervisor)s os %(os)s "
                 "architecture %(architecture)s exists.")
+
+
+class VolumeAttachmentNotFound(NotFound):
+    msg_fmt = _("Volume attachment %(attachment_id)s could not be found.")
 
 
 class VolumeNotFound(NotFound):
@@ -1620,24 +1627,6 @@ class InstanceGroupSaveException(NovaException):
     msg_fmt = _("%(field)s should not be part of the updates.")
 
 
-class ImageDownloadModuleError(NovaException):
-    msg_fmt = _("There was an error with the download module %(module)s. "
-                "%(reason)s")
-
-
-class ImageDownloadModuleMetaDataError(ImageDownloadModuleError):
-    msg_fmt = _("The metadata for this location will not work with this "
-                "module %(module)s.  %(reason)s.")
-
-
-class ImageDownloadModuleNotImplementedError(ImageDownloadModuleError):
-    msg_fmt = _("The method %(method_name)s is not implemented.")
-
-
-class ImageDownloadModuleConfigurationError(ImageDownloadModuleError):
-    msg_fmt = _("The module %(module)s is misconfigured: %(reason)s.")
-
-
 class ResourceMonitorError(NovaException):
     msg_fmt = _("Error when creating resource monitor: %(monitor)s")
 
@@ -1736,6 +1725,10 @@ class KeyManagerError(NovaException):
 
 class VolumesNotRemoved(Invalid):
     msg_fmt = _("Failed to remove volume(s): (%(reason)s)")
+
+
+class VolumeRebaseFailed(NovaException):
+    msg_fmt = _("Volume rebase failed: %(reason)s")
 
 
 class InvalidVideoMode(Invalid):
@@ -2027,7 +2020,11 @@ class BuildRequestNotFound(NotFound):
 
 class AttachInterfaceNotSupported(Invalid):
     msg_fmt = _("Attaching interfaces is not supported for "
-                "instance %(instance)s.")
+                "instance %(instance_uuid)s.")
+
+
+class InstanceDiagnosticsNotSupported(Invalid):
+    msg_fmt = _("Instance diagnostics are not supported by compute node.")
 
 
 class InvalidReservedMemoryPagesOption(Invalid):
@@ -2136,6 +2133,11 @@ class InvalidEmulatorThreadsPolicy(Invalid):
 class BadRequirementEmulatorThreadsPolicy(Invalid):
     msg_fmt = _("An isolated CPU emulator threads option requires a dedicated "
                 "CPU policy option.")
+
+
+class PowerVMAPIFailed(NovaException):
+    msg_fmt = _("PowerVM API failed to complete for instance=%(inst_name)s.  "
+                "%(reason)s")
 
 
 class TraitNotFound(NotFound):

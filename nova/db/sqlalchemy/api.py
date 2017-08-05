@@ -475,6 +475,17 @@ def service_get(context, service_id):
     return result
 
 
+@pick_context_manager_reader
+def service_get_by_uuid(context, service_uuid):
+    query = model_query(context, models.Service).filter_by(uuid=service_uuid)
+
+    result = query.first()
+    if not result:
+        raise exception.ServiceNotFound(service_id=service_uuid)
+
+    return result
+
+
 @pick_context_manager_reader_allow_async
 def service_get_minimum_version(context, binaries):
     min_versions = context.session.query(
@@ -625,6 +636,8 @@ def _compute_node_select(context, filters=None, limit=None, marker=None):
     if "hypervisor_hostname" in filters:
         hyp_hostname = filters["hypervisor_hostname"]
         select = select.where(cn_tbl.c.hypervisor_hostname == hyp_hostname)
+    if "mapped" in filters:
+        select = select.where(cn_tbl.c.mapped < filters['mapped'])
     if marker is not None:
         try:
             compute_node_get(context, marker)
@@ -703,6 +716,12 @@ def compute_node_get_all(context):
 
 
 @pick_context_manager_reader
+def compute_node_get_all_mapped_less_than(context, mapped_less_than):
+    return _compute_node_fetchall(context,
+                                  {'mapped': mapped_less_than})
+
+
+@pick_context_manager_reader
 def compute_node_get_all_by_pagination(context, limit=None, marker=None):
     return _compute_node_fetchall(context, limit=limit, marker=marker)
 
@@ -774,7 +793,8 @@ def compute_node_statistics(context):
                 inner_sel.c.service_id == services_tbl.c.id
             ),
             services_tbl.c.disabled == false(),
-            services_tbl.c.binary == 'nova-compute'
+            services_tbl.c.binary == 'nova-compute',
+            services_tbl.c.deleted == 0
         )
     )
 
@@ -2147,7 +2167,7 @@ def instance_get_all_by_filters_sort(context, filters, limit=None, marker=None,
 
     # Make a copy of the filters dictionary to use going forward, as we'll
     # be modifying it and we shouldn't affect the caller's use of it.
-    filters = filters.copy()
+    filters = copy.deepcopy(filters)
 
     if 'changes-since' in filters:
         changes_since = timeutils.normalize_time(filters['changes-since'])
@@ -6517,20 +6537,19 @@ def archive_deleted_rows(max_rows=None):
 
 
 @pick_context_manager_writer
-def aggregate_uuids_online_data_migration(context, max_count):
-    from nova.objects import aggregate
+def service_uuids_online_data_migration(context, max_count):
+    from nova.objects import service
 
     count_all = 0
     count_hit = 0
 
-    results = model_query(context, models.Aggregate).filter_by(
+    db_services = model_query(context, models.Service).filter_by(
         uuid=None).limit(max_count)
-    for db_agg in results:
+    for db_service in db_services:
         count_all += 1
-        agg = aggregate.Aggregate._from_db_object(context,
-                                                  aggregate.Aggregate(),
-                                                  db_agg)
-        if 'uuid' in agg:
+        service_obj = service.Service._from_db_object(
+            context, service.Service(), db_service)
+        if 'uuid' in service_obj:
             count_hit += 1
     return count_all, count_hit
 

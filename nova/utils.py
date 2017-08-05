@@ -35,7 +35,6 @@ import sys
 import tempfile
 import textwrap
 import time
-from xml.sax import saxutils
 
 import eventlet
 import netaddr
@@ -161,13 +160,6 @@ def get_root_helper():
     else:
         cmd = 'sudo nova-rootwrap %s' % CONF.rootwrap_config
     return cmd
-
-
-def _get_rootwrap_helper():
-    if CONF.use_rootwrap_daemon:
-        return RootwrapDaemonHelper(CONF.rootwrap_config)
-    else:
-        return RootwrapProcessHelper()
 
 
 class RootwrapProcessHelper(object):
@@ -330,11 +322,6 @@ DEFAULT_PASSWORD_SYMBOLS = ('23456789',  # Removed: 0,1
                             'abcdefghijkmnopqrstuvwxyz')  # Removed: l
 
 
-# ~5 bits per symbol
-EASIER_PASSWORD_SYMBOLS = ('23456789',  # Removed: 0, 1
-                           'ABCDEFGHJKLMNPQRSTUVWXYZ')  # Removed: I, O
-
-
 def last_completed_audit_period(unit=None, before=None):
     """This method gives you the most recently *completed* audit period.
 
@@ -480,13 +467,7 @@ def get_my_linklocal(interface):
         raise exception.NovaException(msg)
 
 
-def xhtml_escape(value):
-    """Escapes a string so it is valid within XML or XHTML.
-
-    """
-    return saxutils.escape(value, {'"': '&quot;', "'": '&apos;'})
-
-
+# TODO(sfinucan): Replace this with the equivalent from oslo.utils
 def utf8(value):
     """Try to turn a string into utf-8 if possible.
 
@@ -501,13 +482,6 @@ def utf8(value):
         value = six.text_type(value)
 
     return value.encode('utf-8')
-
-
-def check_isinstance(obj, cls):
-    """Checks that obj is of type cls, and lets PyLint infer types."""
-    if isinstance(obj, cls):
-        return obj
-    raise Exception(_('Expected object of type: %s') % (str(cls)))
 
 
 def parse_server_string(server_str):
@@ -539,14 +513,6 @@ def parse_server_string(server_str):
         return ('', '')
 
 
-def is_valid_ipv6_cidr(address):
-    try:
-        netaddr.IPNetwork(address, version=6).cidr
-        return True
-    except (TypeError, netaddr.AddrFormatError):
-        return False
-
-
 def get_shortened_ipv6(address):
     addr = netaddr.IPAddress(address, version=6)
     return str(addr.ipv6())
@@ -555,29 +521,6 @@ def get_shortened_ipv6(address):
 def get_shortened_ipv6_cidr(address):
     net = netaddr.IPNetwork(address, version=6)
     return str(net.cidr)
-
-
-def is_valid_cidr(address):
-    """Check if address is valid
-
-    The provided address can be a IPv6 or a IPv4
-    CIDR address.
-    """
-    try:
-        # Validate the correct CIDR Address
-        netaddr.IPNetwork(address)
-    except netaddr.AddrFormatError:
-        return False
-
-    # Prior validation partially verify /xx part
-    # Verify it here
-    ip_segment = address.split('/')
-
-    if (len(ip_segment) <= 1 or
-            ip_segment[1] == ''):
-        return False
-
-    return True
 
 
 def get_ip_version(network):
@@ -1256,6 +1199,18 @@ def get_sha256_str(base_str):
     if isinstance(base_str, six.text_type):
         base_str = base_str.encode('utf-8')
     return hashlib.sha256(base_str).hexdigest()
+
+
+def get_obj_repr_unicode(obj):
+    """Returns a string representation of an object converted to unicode.
+
+    In the case of python 3, this just returns the repr() of the object,
+    else it converts the repr() to unicode.
+    """
+    obj_repr = repr(obj)
+    if not six.PY3:
+        obj_repr = six.text_type(obj_repr, 'utf-8')
+    return obj_repr
 
 
 def filter_and_format_resource_metadata(resource_type, resource_list,

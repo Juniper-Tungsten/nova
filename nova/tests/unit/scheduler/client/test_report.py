@@ -178,6 +178,35 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
             self.client = report.SchedulerReportClient()
 
 
+class TestPutAllocations(SchedulerReportClientTestCase):
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.put')
+    def test_put_allocations(self, mock_put):
+        mock_put.return_value.status_code = 204
+        mock_put.return_value.text = "cool"
+        rp_uuid = mock.sentinel.rp
+        consumer_uuid = mock.sentinel.consumer
+        data = {"MEMORY_MB": 1024}
+        expected_url = "/allocations/%s" % consumer_uuid
+        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data)
+        self.assertTrue(resp)
+        mock_put.assert_called_once_with(expected_url, mock.ANY)
+
+    @mock.patch.object(report.LOG, 'warning')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.put')
+    def test_put_allocations_fail(self, mock_put, mock_warn):
+        mock_put.return_value.status_code = 400
+        mock_put.return_value.text = "not cool"
+        rp_uuid = mock.sentinel.rp
+        consumer_uuid = mock.sentinel.consumer
+        data = {"MEMORY_MB": 1024}
+        expected_url = "/allocations/%s" % consumer_uuid
+        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data)
+        self.assertFalse(resp)
+        mock_put.assert_called_once_with(expected_url, mock.ANY)
+        log_msg = mock_warn.call_args[0][0]
+        self.assertIn("Unable to submit allocation for instance", log_msg)
+
+
 class TestProviderOperations(SchedulerReportClientTestCase):
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_create_resource_provider')
@@ -592,13 +621,14 @@ class TestComputeNodeToInventoryDict(test.NoDBTestCase):
 
         self.flags(reserved_host_memory_mb=1000)
         self.flags(reserved_host_disk_mb=200)
+        self.flags(reserved_host_cpus=1)
 
         result = report._compute_node_to_inventory_dict(compute_node)
 
         expected = {
             'VCPU': {
                 'total': compute_node.vcpus,
-                'reserved': 0,
+                'reserved': CONF.reserved_host_cpus,
                 'min_unit': 1,
                 'max_unit': compute_node.vcpus,
                 'step_size': 1,
@@ -652,7 +682,7 @@ class TestInventory(SchedulerReportClientTestCase):
         expected_inv_data = {
             'VCPU': {
                 'total': 8,
-                'reserved': 0,
+                'reserved': CONF.reserved_host_cpus,
                 'min_unit': 1,
                 'max_unit': 8,
                 'step_size': 1,
@@ -897,7 +927,7 @@ There was a conflict when trying to complete your request.
             'inventories': {
                 'VCPU': {
                     'total': 8,
-                    'reserved': 0,
+                    'reserved': CONF.reserved_host_cpus,
                     'min_unit': 1,
                     'max_unit': compute_node.vcpus,
                     'step_size': 1,
@@ -937,7 +967,7 @@ There was a conflict when trying to complete your request.
             'inventories': {
                 'VCPU': {
                     'total': 8,
-                    'reserved': 0,
+                    'reserved': CONF.reserved_host_cpus,
                     'min_unit': 1,
                     'max_unit': compute_node.vcpus,
                     'step_size': 1,
@@ -1170,11 +1200,13 @@ There was a conflict when trying to complete your request.
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_delete_inventory')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_ensure_resource_class')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_or_create_resource_class')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_ensure_resource_provider')
     def test_set_inventory_for_provider_no_custom(self, mock_erp, mock_gocr,
-            mock_del, mock_upd):
+            mock_erc, mock_del, mock_upd):
         """Tests that inventory records of all standard resource classes are
         passed to the report client's _update_inventory() method.
         """
@@ -1214,6 +1246,7 @@ There was a conflict when trying to complete your request.
             mock.sentinel.rp_name,
         )
         # No custom resource classes to ensure...
+        self.assertFalse(mock_erc.called)
         self.assertFalse(mock_gocr.called)
         mock_upd.assert_called_once_with(
             mock.sentinel.rp_uuid,
@@ -1226,11 +1259,13 @@ There was a conflict when trying to complete your request.
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_delete_inventory')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_ensure_resource_class')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_or_create_resource_class')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_ensure_resource_provider')
     def test_set_inventory_for_provider_no_inv(self, mock_erp, mock_gocr,
-            mock_del, mock_upd):
+            mock_erc, mock_del, mock_upd):
         """Tests that passing empty set of inventory records triggers a delete
         of inventory for the provider.
         """
@@ -1245,6 +1280,7 @@ There was a conflict when trying to complete your request.
             mock.sentinel.rp_name,
         )
         self.assertFalse(mock_gocr.called)
+        self.assertFalse(mock_erc.called)
         self.assertFalse(mock_upd.called)
         mock_del.assert_called_once_with(mock.sentinel.rp_uuid)
 
@@ -1253,11 +1289,13 @@ There was a conflict when trying to complete your request.
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_delete_inventory')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_ensure_resource_class')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_or_create_resource_class')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_ensure_resource_provider')
     def test_set_inventory_for_provider_with_custom(self, mock_erp,
-            mock_gocr, mock_del, mock_upd):
+            mock_gocr, mock_erc, mock_del, mock_upd):
         """Tests that inventory records that include a custom resource class
         are passed to the report client's _update_inventory() method and that
         the custom resource class is auto-created.
@@ -1306,12 +1344,23 @@ There was a conflict when trying to complete your request.
             mock.sentinel.rp_uuid,
             mock.sentinel.rp_name,
         )
-        mock_gocr.assert_called_once_with('CUSTOM_IRON_SILVER')
+        mock_erc.assert_called_once_with('CUSTOM_IRON_SILVER')
         mock_upd.assert_called_once_with(
             mock.sentinel.rp_uuid,
             inv_data,
         )
+        self.assertFalse(mock_gocr.called)
         self.assertFalse(mock_del.called)
+
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_or_create_resource_class')
+    def test_ensure_resource_class_microversion_failover(self, mock_gocr,
+                                                         mock_put):
+        mock_put.return_value.status_code = 406
+        self.client._ensure_resource_class('CUSTOM_IRON_SILVER')
+        mock_gocr.assert_called_once_with('CUSTOM_IRON_SILVER')
 
 
 class TestAllocations(SchedulerReportClientTestCase):
@@ -1464,41 +1513,6 @@ class TestAllocations(SchedulerReportClientTestCase):
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'delete')
-    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
-                'get')
-    @mock.patch('nova.scheduler.client.report.'
-                '_instance_to_allocations_dict')
-    def test_remove_deleted_instances(self, mock_a, mock_get,
-                                      mock_delete):
-        cn = objects.ComputeNode(uuid=uuids.cn)
-        inst1 = objects.Instance(uuid=uuids.inst1)
-        inst2 = objects.Instance(uuid=uuids.inst2)
-        fake_allocations = {
-            'MEMORY_MB': 1024,
-            'VCPU': 2,
-            'DISK_GB': 101,
-        }
-        mock_get.return_value.json.return_value = {'allocations': {
-                inst1.uuid: fake_allocations,
-                inst2.uuid: fake_allocations,
-            }
-        }
-
-        # One instance still on the node, dict form as the
-        # RT tracks it
-        inst3 = {'uuid': 'foo'}
-
-        mock_delete.return_value = True
-        self.client.remove_deleted_instances(cn, [inst3])
-        mock_get.assert_called_once_with(
-            '/resource_providers/%s/allocations' % cn.uuid)
-        expected_calls = [
-            mock.call('/allocations/%s' % inst1.uuid),
-            mock.call('/allocations/%s' % inst2.uuid)]
-        mock_delete.assert_has_calls(expected_calls, any_order=True)
-
-    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
-                'delete')
     @mock.patch('nova.scheduler.client.report.LOG')
     def test_delete_allocation_for_instance_ignore_404(self, mock_log,
                                                        mock_delete):
@@ -1512,7 +1526,7 @@ class TestAllocations(SchedulerReportClientTestCase):
             # py3 uses __bool__
             mock_response.__bool__.return_value = False
         mock_delete.return_value = mock_response
-        self.client._delete_allocation_for_instance(uuids.rp_uuid)
+        self.client.delete_allocation_for_instance(uuids.rp_uuid)
         # make sure we didn't screw up the logic or the mock
         mock_log.info.assert_not_called()
         # make sure warning wasn't called for the 404
@@ -1521,7 +1535,7 @@ class TestAllocations(SchedulerReportClientTestCase):
     @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
                 "delete")
     @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
-                "_delete_allocation_for_instance")
+                "delete_allocation_for_instance")
     @mock.patch("nova.objects.InstanceList.get_by_host_and_node")
     def test_delete_resource_provider_cascade(self, mock_by_host,
             mock_del_alloc, mock_delete):
@@ -1543,7 +1557,7 @@ class TestAllocations(SchedulerReportClientTestCase):
     @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
                 "delete")
     @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
-                "_delete_allocation_for_instance")
+                "delete_allocation_for_instance")
     @mock.patch("nova.objects.InstanceList.get_by_host_and_node")
     def test_delete_resource_provider_no_cascade(self, mock_by_host,
             mock_del_alloc, mock_delete):

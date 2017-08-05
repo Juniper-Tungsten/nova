@@ -112,6 +112,13 @@ def service_get(context, service_id):
     return IMPL.service_get(context, service_id)
 
 
+def service_get_by_uuid(context, service_uuid):
+    """Get a service by it's uuid or raise ServiceNotFound if it does not
+    exist.
+    """
+    return IMPL.service_get_by_uuid(context, service_uuid)
+
+
 def service_get_minimum_version(context, binary):
     """Get the minimum service version in the database."""
     return IMPL.service_get_minimum_version(context, binary)
@@ -252,6 +259,19 @@ def compute_node_get_all(context):
     :returns: List of dictionaries each containing compute node properties
     """
     return IMPL.compute_node_get_all(context)
+
+
+def compute_node_get_all_mapped_less_than(context, mapped_less_than):
+    """Get all ComputeNode objects with specific mapped values.
+
+    :param context: The security context
+    :param mapped_less_than: Get compute nodes with mapped less than this
+                             value
+
+    :returns: List of dictionaries each containing compute node properties
+    """
+    return IMPL.compute_node_get_all_mapped_less_than(context,
+                                                      mapped_less_than)
 
 
 def compute_node_get_all_by_pagination(context, limit=None, marker=None):
@@ -2044,8 +2064,8 @@ def pcidevice_online_data_migration(context, max_count):
     return IMPL.pcidevice_online_data_migration(context, max_count)
 
 
-def aggregate_uuids_online_data_migration(context, max_count):
-    return IMPL.aggregate_uuids_online_data_migration(context, max_count)
+def service_uuids_online_data_migration(context, max_count):
+    return IMPL.service_uuids_online_data_migration(context, max_count)
 
 
 ####################

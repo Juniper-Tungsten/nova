@@ -15,7 +15,6 @@
 import datetime
 
 import mock
-from mox3 import mox
 import netaddr
 from oslo_db import exception as db_exc
 from oslo_serialization import jsonutils
@@ -234,6 +233,25 @@ class _TestInstanceObject(object):
         self.assertEqual(1, len(instance.tags))
         self.assertEqual('foo', instance.tags[0].tag)
 
+    @mock.patch('nova.objects.instance.LOG.exception')
+    def test_save_does_not_log_exception_after_tags_loaded(self, mock_log):
+        instance = objects.Instance(self.context, uuid=uuids.instance,
+                                    user_id=self.context.user_id,
+                                    project_id=self.context.project_id)
+        instance.create()
+        tag = objects.Tag(self.context, resource_id=instance.uuid, tag='foo')
+        tag.create()
+
+        # this will lazy load tags so instance.tags will be set
+        self.assertEqual(1, len(instance.tags))
+
+        # instance.save will try to find a way to save tags but is should not
+        # spam the log with errors
+        instance.display_name = 'foobar'
+        instance.save()
+
+        self.assertFalse(mock_log.called)
+
     @mock.patch.object(db, 'instance_get')
     def test_get_by_id(self, mock_get):
         mock_get.return_value = self.fake_instance
@@ -371,7 +389,17 @@ class _TestInstanceObject(object):
         mock_get.assert_called_once_with(self.context, uuid=inst.uuid,
             expected_attrs=['metadata'], use_slave=False)
 
-    def _save_test_helper(self, cell_type, save_kwargs):
+    @mock.patch.object(notifications, 'send_update')
+    @mock.patch.object(cells_rpcapi, 'CellsAPI')
+    @mock.patch.object(db, 'instance_info_cache_update')
+    @mock.patch.object(db, 'instance_update_and_get_original')
+    @mock.patch.object(db, 'instance_get_by_uuid')
+    def _save_test_helper(self, cell_type, save_kwargs,
+                          mock_db_instance_get_by_uuid,
+                          mock_db_instance_update_and_get_original,
+                          mock_db_instance_info_cache_update,
+                          mock_cells_rpcapi_CellsAPI,
+                          mock_notifications_send_update):
         """Common code for testing save() for cells/non-cells."""
         if cell_type:
             self.flags(enable=True, cell_type=cell_type, group='cells')
@@ -399,39 +427,9 @@ class _TestInstanceObject(object):
                     'image_snapshot', 'image_snapshot_pending']
             else:
                 expected_updates['expected_task_state'] = exp_task_state
-        self.mox.StubOutWithMock(db, 'instance_get_by_uuid')
-        self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
-        self.mox.StubOutWithMock(db, 'instance_info_cache_update')
-        cells_api_mock = self.mox.CreateMock(cells_rpcapi.CellsAPI)
-        self.mox.StubOutWithMock(cells_api_mock,
-                                 'instance_update_at_top')
-        self.mox.StubOutWithMock(cells_api_mock,
-                                 'instance_update_from_api')
-        self.mox.StubOutWithMock(cells_rpcapi, 'CellsAPI',
-                                 use_mock_anything=True)
-        self.mox.StubOutWithMock(notifications, 'send_update')
-        db.instance_get_by_uuid(self.context, fake_uuid,
-                                columns_to_join=['info_cache',
-                                                 'security_groups']
-                                ).AndReturn(old_ref)
-        db.instance_update_and_get_original(
-                self.context, fake_uuid, expected_updates,
-                columns_to_join=['info_cache', 'security_groups',
-                                 'system_metadata', 'extra', 'extra.flavor']
-                ).AndReturn((old_ref, new_ref))
-        if cell_type == 'api':
-            cells_rpcapi.CellsAPI().AndReturn(cells_api_mock)
-            cells_api_mock.instance_update_from_api(
-                    self.context, mox.IsA(objects.Instance),
-                    exp_vm_state, exp_task_state, admin_reset)
-        elif cell_type == 'compute':
-            cells_rpcapi.CellsAPI().AndReturn(cells_api_mock)
-            cells_api_mock.instance_update_at_top(self.context,
-                                                  mox.IsA(objects.Instance))
-        notifications.send_update(self.context, mox.IgnoreArg(),
-                                  mox.IgnoreArg())
-
-        self.mox.ReplayAll()
+        mock_db_instance_get_by_uuid.return_value = old_ref
+        mock_db_instance_update_and_get_original\
+            .return_value = (old_ref, new_ref)
 
         inst = objects.Instance.get_by_uuid(self.context, old_ref['uuid'])
         if 'instance_version' in save_kwargs:
@@ -450,6 +448,28 @@ class _TestInstanceObject(object):
         self.assertEqual('new', inst.user_data)
         # NOTE(danms): Ignore flavor migrations for the moment
         self.assertEqual(set([]), inst.obj_what_changed() - set(['flavor']))
+        mock_db_instance_get_by_uuid.assert_called_once_with(
+            self.context, fake_uuid, columns_to_join=['info_cache',
+                                                      'security_groups'])
+        mock_db_instance_update_and_get_original.assert_called_once_with(
+            self.context, fake_uuid, expected_updates,
+            columns_to_join=['info_cache', 'security_groups',
+                             'system_metadata', 'extra', 'extra.flavor']
+        )
+        if cell_type == 'api':
+            mock_cells_rpcapi_CellsAPI.return_value.instance_update_from_api \
+                .assert_called_once_with(
+                self.context, test.MatchType(objects.Instance),
+                exp_vm_state, exp_task_state, admin_reset
+            )
+        elif cell_type == 'compute':
+            mock_cells_rpcapi_CellsAPI.return_value.instance_update_at_top \
+                .assert_called_once_with(
+                self.context, mock.ANY
+            )
+        mock_notifications_send_update.assert_called_with(self.context,
+                                                          mock.ANY,
+                                                          mock.ANY)
 
     def test_save(self):
         self._save_test_helper(None, {})
@@ -1973,8 +1993,20 @@ class TestInstanceObjectMisc(test.TestCase):
                                  key_name='missingkey')
         inst3.create()
 
+        inst4 = objects.Instance(context=ctxt,
+                                 user_id=ctxt.user_id,
+                                 project_id=ctxt.project_id,
+                                 key_name='missingkey')
+        inst4.create()
+        inst4.destroy()
+
+        # NOTE(danms): Add an orphaned instance_extra record for
+        # a totally invalid instance to make sure we don't explode.
+        # See bug 1684861 for more information.
+        db.instance_extra_update_by_uuid(ctxt, 'foo', {})
+
         hit, done = instance.migrate_instance_keypairs(ctxt, 10)
-        self.assertEqual(2, hit)
+        self.assertEqual(3, hit)
         self.assertEqual(2, done)
         db_extra = db.instance_extra_get_by_instance_uuid(
             ctxt, inst1.uuid, ['keypairs'])
