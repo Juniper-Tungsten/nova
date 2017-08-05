@@ -1182,6 +1182,7 @@ class ServersControllerTest(ControllerTest):
             self.assertIsNotNone(search_opts)
             # Allowed by user
             self.assertIn('name', search_opts)
+            self.assertIn('terminated_at', search_opts)
             # OSAPI converts status to vm_state
             self.assertIn('vm_state', search_opts)
             # Allowed only by admins with admin API on
@@ -1192,7 +1193,8 @@ class ServersControllerTest(ControllerTest):
 
         self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
 
-        query_str = "name=foo&ip=10.*&status=active&unknown_option=meow"
+        query_str = ("name=foo&ip=10.*&status=active&unknown_option=meow&"
+                     "terminated_at=^2016-02-01.*")
         req = self.req('/fake/servers?%s' % query_str,
                                       use_admin_context=True)
         servers = self.controller.index(req)['servers']
@@ -1269,6 +1271,54 @@ class ServersControllerTest(ControllerTest):
 
         self.assertEqual(len(servers), 1)
         self.assertEqual(servers[0]['id'], server_uuid)
+
+    def test_get_servers_admin_allows_access_ip_v4(self):
+        """Test getting servers by access_ip_v4 with admin_api enabled and
+        admin context
+        """
+        server_uuid = uuids.fake
+
+        def fake_get_all(compute_self, context, search_opts=None,
+                         limit=None, marker=None,
+                         expected_attrs=None, sort_keys=None, sort_dirs=None):
+            self.assertIsNotNone(search_opts)
+            self.assertIn('access_ip_v4', search_opts)
+            self.assertEqual(search_opts['access_ip_v4'], 'ffff.*')
+            return objects.InstanceList(
+                objects=[fakes.stub_instance_obj(100, uuid=server_uuid)])
+
+        self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
+
+        req = self.req('/fake/servers?access_ip_v4=ffff.*',
+                       use_admin_context=True)
+        servers = self.controller.index(req)['servers']
+
+        self.assertEqual(1, len(servers))
+        self.assertEqual(server_uuid, servers[0]['id'])
+
+    def test_get_servers_admin_allows_access_ip_v6(self):
+        """Test getting servers by access_ip_v6 with admin_api enabled and
+        admin context
+        """
+        server_uuid = uuids.fake
+
+        def fake_get_all(compute_self, context, search_opts=None,
+                         limit=None, marker=None,
+                         expected_attrs=None, sort_keys=None, sort_dirs=None):
+            self.assertIsNotNone(search_opts)
+            self.assertIn('access_ip_v6', search_opts)
+            self.assertEqual(search_opts['access_ip_v6'], 'ffff.*')
+            return objects.InstanceList(
+                objects=[fakes.stub_instance_obj(100, uuid=server_uuid)])
+
+        self.stubs.Set(compute_api.API, 'get_all', fake_get_all)
+
+        req = self.req('/fake/servers?access_ip_v6=ffff.*',
+                       use_admin_context=True)
+        servers = self.controller.index(req)['servers']
+
+        self.assertEqual(1, len(servers))
+        self.assertEqual(server_uuid, servers[0]['id'])
 
     def test_get_all_server_details(self):
         expected_flavor = {
@@ -3274,18 +3324,6 @@ class ServersControllerCreateTest(test.TestCase):
 
         def fake_create(*args, **kwargs):
             raise exception.NetworkNotFound(network_id=network)
-
-        self.stubs.Set(compute_api.API, 'create', fake_create)
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          self._test_create_extra, params)
-
-    def test_create_instance_with_neturonv2_network_duplicated(self):
-        network = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-        requested_networks = [{'uuid': network}, {'uuid': network}]
-        params = {'networks': requested_networks}
-
-        def fake_create(*args, **kwargs):
-            raise exception.NetworkDuplicated(network_id=network)
 
         self.stubs.Set(compute_api.API, 'create', fake_create)
         self.assertRaises(webob.exc.HTTPBadRequest,

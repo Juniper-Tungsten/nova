@@ -1,5 +1,3 @@
-# coding=utf-8
-#
 # Copyright 2014 Hewlett-Packard Development Company, L.P.
 # All Rights Reserved.
 #
@@ -32,7 +30,7 @@ ironic = None
 IRONIC_GROUP = nova.conf.ironic.ironic_group
 
 # The API version required by the Ironic driver
-IRONIC_API_VERSION = (1, 28)
+IRONIC_API_VERSION = (1, 29)
 
 
 class IronicClientWrapper(object):

@@ -1,5 +1,3 @@
-# coding=utf-8
-#
 # Copyright 2014 Red Hat, Inc.
 # Copyright 2013 Hewlett-Packard Development Company, L.P.
 # All Rights Reserved.
@@ -1115,6 +1113,24 @@ class IronicDriver(virt_driver.ComputeDriver):
                     self._wait_for_power_state, instance, 'power on')
         timer.start(interval=CONF.ironic.api_retry_interval).wait()
         LOG.info(_LI('Successfully powered on Ironic node %s'),
+                 node.uuid, instance=instance)
+
+    def trigger_crash_dump(self, instance):
+        """Trigger crash dump mechanism on the given instance.
+
+        Stalling instances can be triggered to dump the crash data. How the
+        guest OS reacts in details, depends on the configuration of it.
+
+        :param instance: The instance where the crash dump should be triggered.
+
+        :return: None
+        """
+        LOG.debug('Trigger crash dump called for instance', instance=instance)
+        node = self._validate_instance_and_node(instance)
+
+        self.ironicclient.call("node.inject_nmi", node.uuid)
+
+        LOG.info(_LI('Successfully triggered crash dump into Ironic node %s'),
                  node.uuid, instance=instance)
 
     def refresh_security_group_rules(self, security_group_id):

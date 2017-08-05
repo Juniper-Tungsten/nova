@@ -105,6 +105,30 @@ base_create_v237['properties']['server']['properties']['networks'] = {
     ]}
 
 
+# 2.42 builds on 2.37 and re-introduces the tag field to the list of network
+# objects.
+base_create_v242 = copy.deepcopy(base_create_v237)
+base_create_v242['properties']['server']['properties']['networks'] = {
+    'oneOf': [
+        {'type': 'array',
+         'items': {
+             'type': 'object',
+             'properties': {
+                 'fixed_ip': parameter_types.ip_address,
+                 'port': {
+                     'oneOf': [{'type': 'string', 'format': 'uuid'},
+                               {'type': 'null'}]
+                 },
+                 'uuid': {'type': 'string', 'format': 'uuid'},
+                 'tag': parameter_types.tag,
+             },
+             'additionalProperties': False,
+         },
+        },
+        {'type': 'string', 'enum': ['none', 'auto']},
+    ]}
+
+
 base_update = {
     'type': 'object',
     'properties': {
@@ -300,7 +324,7 @@ query_params_v21 = {
         'flavor': common_regex_param,
         'reservation_id': common_regex_param,
         'launched_at': common_regex_param,
-        'terminate_at': common_regex_param,
+        'terminated_at': common_regex_param,
         'availability_zone': common_regex_param,
         # NOTE(alex_xu): This is pattern matching, it didn't get any benefit
         # from DB index.
@@ -316,8 +340,8 @@ query_params_v21 = {
         'uuid': common_param,
         'root_device_name': common_regex_param,
         'config_drive': common_regex_param,
-        'accessIPv4': common_regex_param,
-        'accessIPv6': common_regex_param,
+        'access_ip_v4': common_regex_param,
+        'access_ip_v6': common_regex_param,
         'auto_disk_config': common_regex_param,
         'progress': common_regex_param,
         'sort_key': multi_params(VALID_SORT_KEYS),

@@ -1129,6 +1129,12 @@ class ComputeManager(manager.Manager):
             # if the configuration is wrong.
             whitelist.Whitelist(CONF.pci.passthrough_whitelist)
 
+        # NOTE(sbauza): We want the compute node to hard fail if it can't be
+        # able to provide its resources to the placement API, or it would not
+        # be able to be eligible as a destination.
+        if CONF.placement.os_region_name is None:
+            raise exception.PlacementNotConfigured()
+
         self.driver.init_host(host=self.host)
         context = nova.context.get_admin_context()
         instances = objects.InstanceList.get_by_host(
@@ -1887,6 +1893,11 @@ class ComputeManager(manager.Manager):
             action=fields.NotificationAction.CREATE,
             phase=fields.NotificationPhase.START)
 
+        # NOTE(mikal): cache the keystone roles associated with the instance
+        # at boot time for later reference
+        instance.system_metadata.update(
+            {'boot_roles': ','.join(context.roles)})
+
         self._check_device_tagging(requested_networks, block_device_mapping)
 
         try:
@@ -1984,7 +1995,8 @@ class ComputeManager(manager.Manager):
                 exception.InvalidDiskInfo,
                 exception.InvalidDiskFormat,
                 exception.SignatureVerificationError,
-                exception.VolumeEncryptionNotSupported) as e:
+                exception.VolumeEncryptionNotSupported,
+                exception.InvalidInput) as e:
             self._notify_about_instance_usage(context, instance,
                     'create.error', fault=e)
             compute_utils.notify_about_instance_action(
@@ -6571,6 +6583,11 @@ class ComputeManager(manager.Manager):
                              {'id': cn.id, 'hh': cn.hypervisor_hostname,
                               'nodes': nodenames})
                 cn.destroy()
+                # Delete the corresponding resource provider in placement,
+                # along with any associated allocations and inventory.
+                # TODO(cdent): Move use of reportclient into resource tracker.
+                self.scheduler_client.reportclient.delete_resource_provider(
+                    context, cn, cascade=True)
 
     def _get_compute_nodes_in_db(self, context, use_slave=False):
         try:
@@ -6802,9 +6819,15 @@ class ComputeManager(manager.Manager):
                              {'event': event.key, 'error': six.text_type(e)},
                              instance=instance)
             elif event.name == 'network-vif-deleted':
-                self._process_instance_vif_deleted_event(context,
-                                                         instance,
-                                                         event.tag)
+                try:
+                    self._process_instance_vif_deleted_event(context,
+                                                             instance,
+                                                             event.tag)
+                except exception.NotFound as e:
+                    LOG.info(_LI('Failed to process external instance event '
+                                 '%(event)s due to: %(error)s'),
+                             {'event': event.key, 'error': six.text_type(e)},
+                             instance=instance)
             else:
                 self._process_instance_event(instance, event)
 

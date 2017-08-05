@@ -13,6 +13,7 @@
 from keystoneauth1 import exceptions as ks_exc
 import mock
 import six
+from six.moves.urllib import parse
 
 import nova.conf
 from nova import context
@@ -113,6 +114,21 @@ class SafeConnectedTestCase(test.NoDBTestCase):
             report.warn_limit(mock_self, 'warning')
         mock_log.warning.assert_has_calls([mock.call('warning'),
                                            mock.call('warning')])
+
+    @mock.patch('keystoneauth1.session.Session.request')
+    def test_failed_discovery(self, req):
+        """Test DiscoveryFailure behavior.
+
+        Failed discovery should not blow up.
+        """
+        req.side_effect = ks_exc.DiscoveryFailure()
+        self.client._get_resource_provider("fake")
+
+        # reset the call count to demonstrate that future calls still
+        # work
+        req.reset_mock()
+        self.client._get_resource_provider("fake")
+        self.assertTrue(req.called)
 
 
 class TestConstructor(test.NoDBTestCase):
@@ -268,6 +284,49 @@ class TestProviderOperations(SchedulerReportClientTestCase):
                 mock.sentinel.name,
         )
 
+    def test_get_filtered_resource_providers(self):
+        uuid = uuids.compute_node
+        resp_mock = mock.Mock(status_code=200)
+        json_data = {
+            'resource_providers': [
+                {'uuid': uuid,
+                 'name': uuid,
+                 'generation': 42}
+            ],
+        }
+        filters = {'resources': {'VCPU': 1, 'MEMORY_MB': 1024}}
+        resp_mock.json.return_value = json_data
+        self.ks_sess_mock.get.return_value = resp_mock
+
+        result = self.client.get_filtered_resource_providers(filters)
+
+        expected_provider = objects.ResourceProvider(
+                uuid=uuid,
+                name=uuid,
+                generation=42,
+        )
+        expected_url = '/resource_providers?%s' % parse.urlencode(
+            {'resources': 'MEMORY_MB:1024,VCPU:1'})
+        self.ks_sess_mock.get.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY, raise_exc=False,
+            headers={'OpenStack-API-Version': 'placement 1.4'})
+        self.assertTrue(obj_base.obj_equal_prims(expected_provider,
+                                                 result[0]))
+
+    def test_get_filtered_resource_providers_not_found(self):
+        # Ensure _get_resource_provider() just returns None when the placement
+        # API doesn't find a resource provider matching a UUID
+        resp_mock = mock.Mock(status_code=404)
+        self.ks_sess_mock.get.return_value = resp_mock
+
+        result = self.client.get_filtered_resource_providers({'foo': 'bar'})
+
+        expected_url = '/resource_providers?foo=bar'
+        self.ks_sess_mock.get.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY, raise_exc=False,
+            headers={'OpenStack-API-Version': 'placement 1.4'})
+        self.assertIsNone(result)
+
     def test_get_resource_provider_found(self):
         # Ensure _get_resource_provider() returns a ResourceProvider object if
         # it finds a resource provider record from the placement API
@@ -348,7 +407,7 @@ class TestProviderOperations(SchedulerReportClientTestCase):
         expected_provider = objects.ResourceProvider(
             uuid=uuid,
             name=name,
-            generation=1,
+            generation=0,
         )
         expected_url = '/resource_providers'
         self.ks_sess_mock.post.assert_called_once_with(
@@ -497,7 +556,7 @@ class TestComputeNodeToInventoryDict(test.NoDBTestCase):
                                            disk_allocation_ratio=1.0)
 
         self.flags(reserved_host_memory_mb=1000)
-        self.flags(reserved_host_disk_mb=2000)
+        self.flags(reserved_host_disk_mb=200)
 
         result = report._compute_node_to_inventory_dict(compute_node)
 
@@ -520,7 +579,7 @@ class TestComputeNodeToInventoryDict(test.NoDBTestCase):
             },
             'DISK_GB': {
                 'total': compute_node.local_gb,
-                'reserved': CONF.reserved_host_disk_mb * 1024,
+                'reserved': 1,  # this is ceil(1000/1024)
                 'min_unit': 1,
                 'max_unit': compute_node.local_gb,
                 'step_size': 1,
@@ -875,8 +934,8 @@ There was a conflict when trying to complete your request.
                 'put')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_ensure_resource_provider')
-    def test_update_inventory_conflicts(self, mock_ensure,
-                                        mock_put, mock_get):
+    def test_update_inventory_concurrent_update(self, mock_ensure,
+                                                mock_put, mock_get):
         # Ensure _update_inventory() returns a list of Inventories objects
         # after creating or updating the existing values
         uuid = uuids.compute_node
@@ -887,6 +946,7 @@ There was a conflict when trying to complete your request.
 
         mock_get.return_value = {}
         mock_put.return_value.status_code = 409
+        mock_put.return_value.text = 'Does not match inventory in use'
 
         inv_data = report._compute_node_to_inventory_dict(compute_node)
         result = self.client._update_inventory_attempt(
@@ -898,6 +958,37 @@ There was a conflict when trying to complete your request.
         self.assertNotIn(uuid, self.client._resource_providers)
         # Refreshed our resource provider
         mock_ensure.assert_called_once_with(uuid)
+
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_inventory')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    def test_update_inventory_inventory_in_use(self, mock_put, mock_get):
+        # Ensure _update_inventory() returns a list of Inventories objects
+        # after creating or updating the existing values
+        uuid = uuids.compute_node
+        compute_node = self.compute_node
+        rp = objects.ResourceProvider(uuid=uuid, name='foo', generation=42)
+        # Make sure the ResourceProvider exists for preventing to call the API
+        self.client._resource_providers[uuid] = rp
+
+        mock_get.return_value = {}
+        mock_put.return_value.status_code = 409
+        mock_put.return_value.text = (
+            "update conflict: Inventory for VCPU on "
+            "resource provider 123 in use"
+        )
+
+        inv_data = report._compute_node_to_inventory_dict(compute_node)
+        self.assertRaises(
+            exception.InventoryInUse,
+            self.client._update_inventory_attempt,
+            compute_node.uuid,
+            inv_data,
+        )
+
+        # Did NOT invalidate the cache
+        self.assertIn(uuid, self.client._resource_providers)
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_inventory')
@@ -1015,7 +1106,7 @@ class TestAllocations(SchedulerReportClientTestCase):
         inst = objects.Instance(
             uuid=uuids.inst,
             flavor=objects.Flavor(root_gb=10,
-                                  swap=1,
+                                  swap=1023,
                                   ephemeral_gb=100,
                                   memory_mb=1024,
                                   vcpus=2))
@@ -1210,3 +1301,83 @@ class TestAllocations(SchedulerReportClientTestCase):
         mock_log.info.assert_not_called()
         # make sure warning wasn't called for the 404
         mock_log.warning.assert_not_called()
+
+    @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
+                "delete")
+    @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
+                "_delete_allocation_for_instance")
+    @mock.patch("nova.objects.InstanceList.get_by_host_and_node")
+    def test_delete_resource_provider_cascade(self, mock_by_host,
+            mock_del_alloc, mock_delete):
+        cn = objects.ComputeNode(uuid=uuids.cn, host="fake_host",
+                hypervisor_hostname="fake_hostname", )
+        inst1 = objects.Instance(uuid=uuids.inst1)
+        inst2 = objects.Instance(uuid=uuids.inst2)
+        mock_by_host.return_value = objects.InstanceList(
+                objects=[inst1, inst2])
+        resp_mock = mock.Mock(status_code=204)
+        mock_delete.return_value = resp_mock
+        self.client.delete_resource_provider(self.context, cn, cascade=True)
+        self.assertEqual(2, mock_del_alloc.call_count)
+        exp_url = "/resource_providers/%s" % uuids.cn
+        mock_delete.assert_called_once_with(exp_url)
+
+    @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
+                "delete")
+    @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
+                "_delete_allocation_for_instance")
+    @mock.patch("nova.objects.InstanceList.get_by_host_and_node")
+    def test_delete_resource_provider_no_cascade(self, mock_by_host,
+            mock_del_alloc, mock_delete):
+        cn = objects.ComputeNode(uuid=uuids.cn, host="fake_host",
+                hypervisor_hostname="fake_hostname", )
+        inst1 = objects.Instance(uuid=uuids.inst1)
+        inst2 = objects.Instance(uuid=uuids.inst2)
+        mock_by_host.return_value = objects.InstanceList(
+                objects=[inst1, inst2])
+        resp_mock = mock.Mock(status_code=204)
+        mock_delete.return_value = resp_mock
+        self.client.delete_resource_provider(self.context, cn)
+        mock_del_alloc.assert_not_called()
+        exp_url = "/resource_providers/%s" % uuids.cn
+        mock_delete.assert_called_once_with(exp_url)
+
+    @mock.patch("nova.scheduler.client.report.SchedulerReportClient."
+                "delete")
+    @mock.patch('nova.scheduler.client.report.LOG')
+    def test_delete_resource_provider_log_calls(self, mock_log, mock_delete):
+        # First, check a successful call
+        cn = objects.ComputeNode(uuid=uuids.cn, host="fake_host",
+                hypervisor_hostname="fake_hostname", )
+        resp_mock = mock.MagicMock(status_code=204)
+        try:
+            resp_mock.__nonzero__.return_value = True
+        except AttributeError:
+            # py3 uses __bool__
+            resp_mock.__bool__.return_value = True
+        mock_delete.return_value = resp_mock
+        self.client.delete_resource_provider(self.context, cn)
+        # With a 204, only the info should be called
+        self.assertEqual(1, mock_log.info.call_count)
+        self.assertEqual(0, mock_log.warning.call_count)
+
+        # Now check a 404 response
+        mock_log.reset_mock()
+        resp_mock.status_code = 404
+        try:
+            resp_mock.__nonzero__.return_value = False
+        except AttributeError:
+            # py3 uses __bool__
+            resp_mock.__bool__.return_value = False
+        self.client.delete_resource_provider(self.context, cn)
+        # With a 404, neither log message should be called
+        self.assertEqual(0, mock_log.info.call_count)
+        self.assertEqual(0, mock_log.warning.call_count)
+
+        # Finally, check a 409 response
+        mock_log.reset_mock()
+        resp_mock.status_code = 409
+        self.client.delete_resource_provider(self.context, cn)
+        # With a 409, only the warning should be called
+        self.assertEqual(0, mock_log.info.call_count)
+        self.assertEqual(1, mock_log.warning.call_count)

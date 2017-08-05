@@ -682,16 +682,26 @@ class LibvirtDriver(driver.ComputeDriver):
     @staticmethod
     def _live_migration_uri(dest):
         uris = {
-            'kvm': 'qemu+tcp://%s/system',
-            'qemu': 'qemu+tcp://%s/system',
+            'kvm': 'qemu+%s://%s/system',
+            'qemu': 'qemu+%s://%s/system',
             'xen': 'xenmigr://%s/system',
             'parallels': 'parallels+tcp://%s/system',
         }
         virt_type = CONF.libvirt.virt_type
-        uri = CONF.libvirt.live_migration_uri or uris.get(virt_type)
+        # TODO(pkoniszewski): Remove fetching live_migration_uri in Pike
+        uri = CONF.libvirt.live_migration_uri
+        if uri:
+            return uri % dest
+
+        uri = uris.get(virt_type)
         if uri is None:
             raise exception.LiveMigrationURINotAvailable(virt_type=virt_type)
-        return uri % dest
+
+        str_format = (dest,)
+        if virt_type in ('kvm', 'qemu'):
+            scheme = CONF.libvirt.live_migration_scheme or 'tcp'
+            str_format = (scheme, dest)
+        return uris.get(virt_type) % str_format
 
     @staticmethod
     def _migrate_uri(dest):
@@ -859,9 +869,9 @@ class LibvirtDriver(driver.ComputeDriver):
                 state = dom_info.state
                 new_domid = dom_info.id
             except exception.InstanceNotFound:
-                LOG.info(_LI("During wait destroy, instance disappeared."),
-                         instance=instance)
-                raise loopingcall.LoopingCallDone()
+                LOG.debug("During wait destroy, instance disappeared.",
+                          instance=instance)
+                state = power_state.SHUTDOWN
 
             if state == power_state.SHUTDOWN:
                 LOG.info(_LI("Instance destroyed successfully."),
@@ -902,7 +912,8 @@ class LibvirtDriver(driver.ComputeDriver):
         try:
             guest = self._host.get_guest(instance)
             try:
-                guest.delete_configuration()
+                support_uefi = self._has_uefi_support()
+                guest.delete_configuration(support_uefi)
             except libvirt.libvirtError as e:
                 with excutils.save_and_reraise_exception():
                     errcode = e.get_error_code()
@@ -1240,7 +1251,8 @@ class LibvirtDriver(driver.ComputeDriver):
             #             If any part of this block fails, the domain is
             #             re-defined regardless.
             if guest.has_persistent_configuration():
-                guest.delete_configuration()
+                support_uefi = self._has_uefi_support()
+                guest.delete_configuration(support_uefi)
 
             # Start copy with VIR_DOMAIN_REBASE_REUSE_EXT flag to
             # allow writing to existing external volume file
@@ -1760,7 +1772,8 @@ class LibvirtDriver(driver.ComputeDriver):
             #             If any part of this block fails, the domain is
             #             re-defined regardless.
             if guest.has_persistent_configuration():
-                guest.delete_configuration()
+                support_uefi = self._has_uefi_support()
+                guest.delete_configuration(support_uefi)
 
             # NOTE (rmk): Establish a temporary mirror of our root disk and
             #             issue an abort once we have a complete copy.
@@ -2671,7 +2684,8 @@ class LibvirtDriver(driver.ComputeDriver):
         self._create_domain_and_network(
             context, xml, instance, network_info, disk_info,
             block_device_info=block_device_info,
-            post_xml_callback=gen_confdrive)
+            post_xml_callback=gen_confdrive,
+            destroy_disks_on_failure=True)
         LOG.debug("Instance is running", instance=instance)
 
         def _wait_for_boot():
@@ -2883,8 +2897,16 @@ class LibvirtDriver(driver.ComputeDriver):
     @staticmethod
     def _create_ephemeral(target, ephemeral_size,
                           fs_label, os_type, is_block_dev=False,
-                          context=None, specified_fs=None):
+                          context=None, specified_fs=None,
+                          vm_mode=None):
         if not is_block_dev:
+            if (CONF.libvirt.virt_type == "parallels" and
+                    vm_mode == fields.VMMode.EXE):
+
+                libvirt_utils.create_ploop_image('expanded', target,
+                                                 '%dG' % ephemeral_size,
+                                                 specified_fs)
+                return
             libvirt_utils.create_image('raw', target, '%dG' % ephemeral_size)
 
         # Run as root only for block devices.
@@ -2925,7 +2947,14 @@ class LibvirtDriver(driver.ComputeDriver):
         console_file = self._get_console_log_path(instance)
         LOG.debug('Ensure instance console log exists: %s', console_file,
                   instance=instance)
-        libvirt_utils.file_open(console_file, 'a').close()
+        try:
+            libvirt_utils.file_open(console_file, 'a').close()
+        # NOTE(sfinucan): We can safely ignore permission issues here and
+        # assume that it is libvirt that has taken ownership of this file.
+        except IOError as ex:
+            if ex.errno != errno.EPERM:
+                raise
+            LOG.debug('Console file already exists: %s.', console_file)
 
     @staticmethod
     def _get_disk_config_image_type():
@@ -3074,13 +3103,15 @@ class LibvirtDriver(driver.ComputeDriver):
         file_extension = disk_api.get_file_extension_for_os_type(
                                                           os_type_with_default)
 
+        vm_mode = fields.VMMode.get_from_instance(instance)
         ephemeral_gb = instance.flavor.ephemeral_gb
         if 'disk.local' in disk_mapping:
             disk_image = image('disk.local')
             fn = functools.partial(self._create_ephemeral,
                                    fs_label='ephemeral0',
                                    os_type=instance.os_type,
-                                   is_block_dev=disk_image.is_block_dev)
+                                   is_block_dev=disk_image.is_block_dev,
+                                   vm_mode=vm_mode)
             fname = "ephemeral_%s_%s" % (ephemeral_gb, file_extension)
             size = ephemeral_gb * units.Gi
             disk_image.cache(fetch_func=fn,
@@ -3102,7 +3133,8 @@ class LibvirtDriver(driver.ComputeDriver):
             fn = functools.partial(self._create_ephemeral,
                                    fs_label='ephemeral%d' % idx,
                                    os_type=instance.os_type,
-                                   is_block_dev=disk_image.is_block_dev)
+                                   is_block_dev=disk_image.is_block_dev,
+                                   vm_mode=vm_mode)
             size = eph['size'] * units.Gi
             fname = "ephemeral_%s_%s" % (eph['size'], file_extension)
             disk_image.cache(fetch_func=fn,
@@ -3530,6 +3562,19 @@ class LibvirtDriver(driver.ComputeDriver):
         block_device_mapping = driver.block_device_info_get_mapping(
             block_device_info)
         mount_rootfs = CONF.libvirt.virt_type == "lxc"
+
+        def _get_ephemeral_devices():
+            eph_devices = []
+            for idx, eph in enumerate(
+                driver.block_device_info_get_ephemerals(
+                    block_device_info)):
+                diskeph = self._get_guest_disk_config(
+                    instance,
+                    blockinfo.get_eph_disk(idx),
+                    disk_mapping, inst_type)
+                eph_devices.append(diskeph)
+            return eph_devices
+
         if mount_rootfs:
             fs = vconfig.LibvirtConfigGuestFilesys()
             fs.source_type = "mount"
@@ -3549,6 +3594,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 if 'disk' in disk_mapping:
                     fs = self._get_guest_fs_config(instance, "disk")
                     devices.append(fs)
+                devices = devices + _get_ephemeral_devices()
         else:
 
             if rescue:
@@ -3580,14 +3626,7 @@ class LibvirtDriver(driver.ComputeDriver):
                     instance.default_ephemeral_device = (
                         block_device.prepend_dev(disklocal.target_dev))
 
-                for idx, eph in enumerate(
-                    driver.block_device_info_get_ephemerals(
-                        block_device_info)):
-                    diskeph = self._get_guest_disk_config(
-                        instance,
-                        blockinfo.get_eph_disk(idx),
-                        disk_mapping, inst_type)
-                    devices.append(diskeph)
+                devices = devices + _get_ephemeral_devices()
 
                 if 'disk.swap' in disk_mapping:
                     diskswap = self._get_guest_disk_config(instance,
@@ -4995,19 +5034,21 @@ class LibvirtDriver(driver.ComputeDriver):
                 for vif in network_info if vif.get('active', True) is False]
 
     def _cleanup_failed_start(self, context, instance, network_info,
-                              block_device_info, guest):
+                              block_device_info, guest, destroy_disks):
         try:
             if guest and guest.is_active():
                 guest.poweroff()
         finally:
             self.cleanup(context, instance, network_info=network_info,
-                         block_device_info=block_device_info)
+                         block_device_info=block_device_info,
+                         destroy_disks=destroy_disks)
 
     def _create_domain_and_network(self, context, xml, instance, network_info,
                                    disk_info, block_device_info=None,
                                    power_on=True, reboot=False,
                                    vifs_already_plugged=False,
-                                   post_xml_callback=None):
+                                   post_xml_callback=None,
+                                   destroy_disks_on_failure=False):
 
         """Do required network setup and create domain."""
         block_device_mapping = driver.block_device_info_get_mapping(
@@ -5059,7 +5100,8 @@ class LibvirtDriver(driver.ComputeDriver):
             # bail here
             with excutils.save_and_reraise_exception():
                 self._cleanup_failed_start(context, instance, network_info,
-                                           block_device_info, guest)
+                                           block_device_info, guest,
+                                           destroy_disks_on_failure)
         except eventlet.timeout.Timeout:
             # We never heard from Neutron
             LOG.warning(_LW('Timeout waiting for vif plugging callback for '
@@ -5067,7 +5109,8 @@ class LibvirtDriver(driver.ComputeDriver):
                      instance=instance)
             if CONF.vif_plugging_is_fatal:
                 self._cleanup_failed_start(context, instance, network_info,
-                                           block_device_info, guest)
+                                           block_device_info, guest,
+                                           destroy_disks_on_failure)
                 raise exception.VirtualInterfaceCreateException()
         except Exception:
             # Any other error, be sure to clean up
@@ -5075,7 +5118,8 @@ class LibvirtDriver(driver.ComputeDriver):
                       instance=instance)
             with excutils.save_and_reraise_exception():
                 self._cleanup_failed_start(context, instance, network_info,
-                                           block_device_info, guest)
+                                           block_device_info, guest,
+                                           destroy_disks_on_failure)
 
         # Resume only if domain has been paused
         if pause:
@@ -5154,18 +5198,37 @@ class LibvirtDriver(driver.ComputeDriver):
         """
 
         total = 0
-        if CONF.libvirt.virt_type == 'lxc':
-            return total + 1
 
+        # Not all libvirt drivers will support the get_vcpus_info()
+        #
+        # For example, LXC does not have a concept of vCPUs, while
+        # QEMU (TCG) traditionally handles all vCPUs in a single
+        # thread. So both will report an exception when the vcpus()
+        # API call is made. In such a case we should report the
+        # guest as having 1 vCPU, since that lets us still do
+        # CPU over commit calculations that apply as the total
+        # guest count scales.
+        #
+        # It is also possible that we might see an exception if
+        # the guest is just in middle of shutting down. Technically
+        # we should report 0 for vCPU usage in this case, but we
+        # we can't reliably distinguish the vcpu not supported
+        # case from the just shutting down case. Thus we don't know
+        # whether to report 1 or 0 for vCPU count.
+        #
+        # Under-reporting vCPUs is bad because it could conceivably
+        # let the scheduler place too many guests on the host. Over-
+        # reporting vCPUs is not a problem as it'll auto-correct on
+        # the next refresh of usage data.
+        #
+        # Thus when getting an exception we always report 1 as the
+        # vCPU count, as the least worst value.
         for guest in self._host.list_guests():
             try:
                 vcpus = guest.get_vcpus_info()
                 total += len(list(vcpus))
-            except libvirt.libvirtError as e:
-                LOG.warning(
-                    _LW("couldn't obtain the vcpu count from domain id:"
-                        " %(uuid)s, exception: %(ex)s"),
-                    {"uuid": guest.uuid, "ex": e})
+            except libvirt.libvirtError:
+                total += 1
             # NOTE(gtt116): give other tasks a chance.
             greenthread.sleep(0)
         return total
@@ -7681,9 +7744,13 @@ class LibvirtDriver(driver.ComputeDriver):
         def _get_device_name(bdm):
             return block_device.strip_dev(bdm.device_name)
 
+        network_info = instance.info_cache.network_info
+        vlans_by_mac = netutils.get_cached_vifs_with_vlan(network_info)
         vifs = objects.VirtualInterfaceList.get_by_instance_uuid(context,
                                                                  instance.uuid)
-        tagged_vifs = {vif.address: vif for vif in vifs if vif.tag}
+        vifs_to_expose = {vif.address: vif for vif in vifs
+                          if ('tag' in vif and vif.tag) or
+                             vlans_by_mac.get(vif.address)}
         # TODO(mriedem): We should be able to avoid the DB query here by using
         # block_device_info['block_device_mapping'] which is passed into most
         # methods that call this function.
@@ -7701,16 +7768,18 @@ class LibvirtDriver(driver.ComputeDriver):
         for dev in guest_config.devices:
             # Build network interfaces related metadata
             if isinstance(dev, vconfig.LibvirtConfigGuestInterface):
-                vif = tagged_vifs.get(dev.mac_addr)
+                vif = vifs_to_expose.get(dev.mac_addr)
                 if not vif:
                     continue
                 bus = self._prepare_device_bus(dev)
-                device = objects.NetworkInterfaceMetadata(
-                    mac=vif.address,
-                    tags=[vif.tag]
-                )
+                device = objects.NetworkInterfaceMetadata(mac=vif.address)
+                if 'tag' in vif and vif.tag:
+                    device.tags = [vif.tag]
                 if bus:
                     device.bus = bus
+                vlan = vlans_by_mac.get(vif.address)
+                if vlan:
+                    device.vlan = int(vlan)
                 devices.append(device)
 
             # Build disks related metadata

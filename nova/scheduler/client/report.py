@@ -14,7 +14,9 @@
 #    under the License.
 
 import functools
+import math
 import re
+from six.moves.urllib import parse
 import time
 
 from keystoneauth1 import exceptions as ks_exc
@@ -24,6 +26,7 @@ from oslo_log import log as logging
 
 from nova.compute import utils as compute_utils
 import nova.conf
+from nova import exception
 from nova.i18n import _LE, _LI, _LW
 from nova import objects
 from nova.objects import fields
@@ -71,10 +74,26 @@ def safe_connect(f):
                     'Placement is optional in Newton, but required '
                     'in Ocata. Please enable the placement service '
                     'before upgrading.'))
+        except ks_exc.DiscoveryFailure:
+            # TODO(_gryf): Looks like DiscoveryFailure is not the only missing
+            # exception here. In Pike we should take care about keystoneauth1
+            # failures handling globally.
+            warn_limit(self,
+                       _LW('Discovering suitable URL for placement API '
+                           'failed.'))
         except ks_exc.ConnectFailure:
             msg = _LW('Placement API service is not responding.')
             LOG.warning(msg)
     return wrapper
+
+
+def _convert_mb_to_ceil_gb(mb_value):
+    gb_int = 0
+    if mb_value:
+        gb_float = mb_value / 1024.0
+        # ensure we reserve/allocate enough space by rounding up to nearest GB
+        gb_int = int(math.ceil(gb_float))
+    return gb_int
 
 
 def _compute_node_to_inventory_dict(compute_node):
@@ -106,9 +125,12 @@ def _compute_node_to_inventory_dict(compute_node):
             'allocation_ratio': compute_node.ram_allocation_ratio,
         }
     if compute_node.local_gb > 0:
+        # TODO(johngarbutt) We should either move to reserved_host_disk_gb
+        # or start tracking DISK_MB.
+        reserved_disk_gb = _convert_mb_to_ceil_gb(CONF.reserved_host_disk_mb)
         result[DISK_GB] = {
             'total': compute_node.local_gb,
-            'reserved': CONF.reserved_host_disk_mb * 1024,
+            'reserved': reserved_disk_gb,
             'min_unit': 1,
             'max_unit': compute_node.local_gb,
             'step_size': 1,
@@ -126,9 +148,11 @@ def _instance_to_allocations_dict(instance):
     # NOTE(danms): Boot-from-volume instances consume no local disk
     is_bfv = compute_utils.is_volume_backed_instance(instance._context,
                                                      instance)
+    # TODO(johngarbutt) we have to round up swap MB to the next GB.
+    # It would be better to claim disk in MB, but that is hard now.
+    swap_in_gb = _convert_mb_to_ceil_gb(instance.flavor.swap)
     disk = ((0 if is_bfv else instance.flavor.root_gb) +
-            instance.flavor.swap +
-            instance.flavor.ephemeral_gb)
+            swap_in_gb + instance.flavor.ephemeral_gb)
     alloc_dict = {
         MEMORY_MB: instance.flavor.memory_mb,
         VCPU: instance.flavor.vcpus,
@@ -206,6 +230,43 @@ class SchedulerReportClient(object):
         return self._client.delete(
             url,
             endpoint_filter=self.ks_filter, raise_exc=False)
+
+    # TODO(sbauza): Change that poor interface into passing a rich versioned
+    # object that would provide the ResourceProvider requirements.
+    @safe_connect
+    def get_filtered_resource_providers(self, filters):
+        """Returns a list of ResourceProviders matching the requirements
+        expressed by the filters argument, which can include a dict named
+        'resources' where amounts are keyed by resource class names.
+
+        eg. filters = {'resources': {'VCPU': 1}}
+        """
+        resources = filters.pop("resources", None)
+        if resources:
+            resource_query = ",".join(sorted("%s:%s" % (rc, amount)
+                                      for (rc, amount) in resources.items()))
+            filters['resources'] = resource_query
+        resp = self.get("/resource_providers?%s" % parse.urlencode(filters),
+                        version='1.4')
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_rps = data.get('resource_providers', [])
+            rps = [objects.ResourceProvider(uuid=rp['uuid'],
+                                            name=rp['name'],
+                                            generation=rp['generation'],
+                                            ) for rp in raw_rps]
+            return objects.ResourceProviderList(objects=rps)
+        else:
+            msg = _LE("Failed to retrieve filtered list of resource providers "
+                      "from placement API for filters %(filters)s. "
+                      "Got %(status_code)d: %(err_text)s.")
+            args = {
+                'filters': filters,
+                'status_code': resp.status_code,
+                'err_text': resp.text,
+            }
+            LOG.error(msg, args)
+            return None
 
     @safe_connect
     def _get_provider_aggregates(self, rp_uuid):
@@ -290,7 +351,7 @@ class SchedulerReportClient(object):
             return objects.ResourceProvider(
                     uuid=uuid,
                     name=name,
-                    generation=1,
+                    generation=0,
             )
         elif resp.status_code == 409:
             # Another thread concurrently created a resource provider with the
@@ -409,6 +470,42 @@ class SchedulerReportClient(object):
         if result.status_code == 409:
             LOG.info(_LI('Inventory update conflict for %s'),
                      rp_uuid)
+            # NOTE(jaypipes): There may be cases when we try to set a
+            # provider's inventory that results in attempting to delete an
+            # inventory record for a resource class that has an active
+            # allocation. We need to catch this particular case and raise an
+            # exception here instead of returning False, since we should not
+            # re-try the operation in this case.
+            #
+            # A use case for where this can occur is the following:
+            #
+            # 1) Provider created for each Ironic baremetal node in Newton
+            # 2) Inventory records for baremetal node created for VCPU,
+            #    MEMORY_MB and DISK_GB
+            # 3) A Nova instance consumes the baremetal node and allocation
+            #    records are created for VCPU, MEMORY_MB and DISK_GB matching
+            #    the total amount of those resource on the baremetal node.
+            # 3) Upgrade to Ocata and now resource tracker wants to set the
+            #    provider's inventory to a single record of resource class
+            #    CUSTOM_IRON_SILVER (or whatever the Ironic node's
+            #    "resource_class" attribute is)
+            # 4) Scheduler report client sends the inventory list containing a
+            #    single CUSTOM_IRON_SILVER record and placement service
+            #    attempts to delete the inventory records for VCPU, MEMORY_MB
+            #    and DISK_GB. An exception is raised from the placement service
+            #    because allocation records exist for those resource classes,
+            #    and a 409 Conflict is returned to the compute node. We need to
+            #    trigger a delete of the old allocation records and then set
+            #    the new inventory, and then set the allocation record to the
+            #    new CUSTOM_IRON_SILVER record.
+            match = _RE_INV_IN_USE.search(result.text)
+            if match:
+                rc = match.group(1)
+                raise exception.InventoryInUse(
+                    resource_classes=rc,
+                    resource_provider=rp_uuid,
+                )
+
             # Invalidate our cache and re-fetch the resource provider
             # to be sure to get the latest generation.
             del self._resource_providers[rp_uuid]
@@ -524,6 +621,10 @@ class SchedulerReportClient(object):
         """Creates or updates stats for the supplied compute node.
 
         :param compute_node: updated nova.objects.ComputeNode to report
+        :raises `exception.InventoryInUse` if the compute node has had changes
+                to its inventory but there are still active allocations for
+                resource classes that would be deleted by an update to the
+                placement API.
         """
         compute_node.save()
         self._ensure_resource_provider(compute_node.uuid,
@@ -534,6 +635,7 @@ class SchedulerReportClient(object):
         else:
             self._delete_inventory(compute_node.uuid)
 
+    @safe_connect
     def _get_allocations_for_instance(self, rp_uuid, instance):
         url = '/allocations/%s' % instance.uuid
         resp = self.get(url)
@@ -546,10 +648,7 @@ class SchedulerReportClient(object):
             return resp.json()['allocations'].get(
                 rp_uuid, {}).get('resources', {})
 
-    @safe_connect
     def _allocate_for_instance(self, rp_uuid, instance):
-        url = '/allocations/%s' % instance.uuid
-
         my_allocations = _instance_to_allocations_dict(instance)
         current_allocations = self._get_allocations_for_instance(rp_uuid,
                                                                  instance)
@@ -560,30 +659,49 @@ class SchedulerReportClient(object):
                       {'uuid': instance.uuid, 'alloc': allocstr})
             return
 
-        allocations = {
+        LOG.debug('Sending allocation for instance %s',
+                  my_allocations,
+                  instance=instance)
+        res = self._put_allocations(rp_uuid, instance.uuid, my_allocations)
+        if res:
+            LOG.info(_LI('Submitted allocation for instance'),
+                     instance=instance)
+
+    @safe_connect
+    def _put_allocations(self, rp_uuid, consumer_uuid, alloc_data):
+        """Creates allocation records for the supplied instance UUID against
+        the supplied resource provider.
+
+        :note Currently we only allocate against a single resource provider.
+              Once shared storage and things like NUMA allocations are a
+              reality, this will change to allocate against multiple providers.
+
+        :param rp_uuid: The UUID of the resource provider to allocate against.
+        :param consumer_uuid: The instance's UUID.
+        :param alloc_data: Dict, keyed by resource class, of amounts to
+                           consume.
+        :returns: True if the allocations were created, False otherwise.
+        """
+        payload = {
             'allocations': [
                 {
                     'resource_provider': {
                         'uuid': rp_uuid,
                     },
-                    'resources': my_allocations,
+                    'resources': alloc_data,
                 },
             ],
         }
-        LOG.debug('Sending allocation for instance %s',
-                  allocations,
-                  instance=instance)
-        r = self.put(url, allocations)
-        if r:
-            LOG.info(_LI('Submitted allocation for instance'),
-                     instance=instance)
-        else:
+        url = '/allocations/%s' % consumer_uuid
+        r = self.put(url, payload)
+        if r.status_code != 204:
             LOG.warning(
                 _LW('Unable to submit allocation for instance '
                     '%(uuid)s (%(code)i %(text)s)'),
-                {'uuid': instance.uuid,
+                {'uuid': consumer_uuid,
                  'code': r.status_code,
                  'text': r.text})
+        return r.status_code == 204
 
     @safe_connect
     def _delete_allocation_for_instance(self, uuid):
@@ -631,3 +749,40 @@ class SchedulerReportClient(object):
             LOG.warning(_LW('Deleting stale allocation for instance %s'),
                         uuid)
             self._delete_allocation_for_instance(uuid)
+
+    @safe_connect
+    def delete_resource_provider(self, context, compute_node, cascade=False):
+        """Deletes the ResourceProvider record for the compute_node.
+
+        :param context: The security context
+        :param compute_node: The nova.objects.ComputeNode object that is the
+                             resource provider being deleted.
+        :param cascade: Boolean value that, when True, will first delete any
+                        associated Allocation and Inventory records for the
+                        compute node
+        """
+        nodename = compute_node.hypervisor_hostname
+        host = compute_node.host
+        rp_uuid = compute_node.uuid
+        if cascade:
+            # Delete any allocations for this resource provider.
+            # Since allocations are by consumer, we get the consumers on this
+            # host, which are its instances.
+            instances = objects.InstanceList.get_by_host_and_node(context,
+                    host, nodename)
+            for instance in instances:
+                self._delete_allocation_for_instance(instance.uuid)
+        url = "/resource_providers/%s" % rp_uuid
+        resp = self.delete(url)
+        if resp:
+            LOG.info(_LI("Deleted resource provider %s"), rp_uuid)
+        else:
+            # Check for 404 since we don't need to log a warning if we tried to
+            # delete something which doesn"t actually exist.
+            if resp.status_code != 404:
+                LOG.warning(
+                    _LW("Unable to delete resource provider "
+                        "%(uuid)s: (%(code)i %(text)s)"),
+                    {"uuid": rp_uuid,
+                     "code": resp.status_code,
+                     "text": resp.text})

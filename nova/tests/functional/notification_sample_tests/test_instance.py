@@ -153,20 +153,16 @@ class TestInstanceNotificationSample(
         server = self._boot_a_server(
             extra_params={'networks': [{'port': self.neutron.port_1['id']}]})
 
-        instance_updates = self._get_notifications('instance.update')
+        instance_updates = self._wait_for_notifications('instance.update', 7)
 
-        # The first notification comes from the nova-api the rest is from the
-        # nova-compute. To keep the test simpler assert this fact and then
-        # modify the publisher_id of the first notification to match the
-        # template
-        self.assertEqual('nova-api:fake-mini',
+        # The first notification comes from the nova-conductor the
+        # rest is from the nova-compute. To keep the test simpler
+        # assert this fact and then modify the publisher_id of the
+        # first notification to match the template
+        self.assertEqual('conductor:fake-mini',
                          instance_updates[0]['publisher_id'])
         instance_updates[0]['publisher_id'] = 'nova-compute:fake-mini'
 
-        self.assertEqual(7, len(instance_updates),
-                         'Unexpected number of instance.update notifications. '
-                         'Expected 7, got %s: %s' % (
-                             len(instance_updates), instance_updates))
         create_steps = [
             # nothing -> scheduling
             {'reservation_id': server['reservation_id'],

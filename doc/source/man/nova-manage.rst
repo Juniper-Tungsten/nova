@@ -44,9 +44,16 @@ Nova Database
 
     Print the current main database version.
 
-``nova-manage db sync``
+``nova-manage db sync [--version <version>] [--local_cell]``
 
-    Sync the main database up to the most recent version. This is the standard way to create the db as well.
+    Upgrade the main database schema up to the most recent version or
+    ``--version`` if specified. By default, this command will also attempt to
+    upgrade the schema for the cell0 database if it is mapped (see the
+    ``map_cell0`` or ``simple_cell_setup`` commands for more details on mapping
+    the cell0 database). If ``--local_cell`` is specified, then only the main
+    database in the current cell is upgraded. The local database connection is
+    determined by ``[database]/connection`` in the configuration file passed to
+    nova-manage.
 
 ``nova-manage db archive_deleted_rows [--max_rows <number>] [--verbose]``
 
@@ -79,6 +86,82 @@ Nova Cells v2
     (or has already been done), 1 if no hosts are reporting (and cannot be
     mapped), 1 if no transport url is provided for the cell message queue,
     and 2 if run in a cells v1 environment.
+
+``nova-manage cell_v2 map_cell0 [--database_connection <database_connection>]``
+
+    Create a cell mapping to the database connection for the cell0 database.
+    If a database_connection is not specified, it will use the one defined by
+    ``[database]/connection`` in the configuration file passed to nova-manage.
+    The cell0 database is used for instances that have not been scheduled to
+    any cell. This generally applies to instances that have encountered an
+    error before they have been scheduled. Returns 0 if cell0 is created
+    successfully or already setup.
+
+``nova-manage cell_v2 map_instances --cell_uuid <cell_uuid> [--max-count <max_count>]``
+
+    Map instances to the provided cell. Instances in the nova database will
+    be queried from oldest to newest and mapped to the provided cell. A
+    max_count can be set on the number of instance to map in a single run.
+    Repeated runs of the command will start from where the last run finished
+    so it is not necessary to increase max-count to finish. Returns 0 if all
+    instances have been mapped, and 1 if there are still instances to be
+    mapped.
+
+``nova-manage cell_v2 map_cell_and_hosts [--name <cell_name>] [--transport-url <transport_url>] [--verbose]``
+
+    Create a cell mapping to the database connection and message queue
+    transport url, and map hosts to that cell. The database connection
+    comes from the ``[database]/connection`` defined in the configuration
+    file passed to nova-manage. If a transport_url is not specified, it will
+    use the one defined by ``[DEFAULT]/transport_url`` in the configuration
+    file. This command is idempotent (can be run multiple times), and the
+    verbose option will print out the resulting cell mapping uuid. Returns 0
+    on successful completion, and 1 if the transport url is missing.
+
+``nova-manage cell_v2 verify_instance --uuid <instance_uuid> [--quiet]``
+
+    Verify instance mapping to a cell. This command is useful to determine if
+    the cells v2 environment is properly setup, specifically in terms of the
+    cell, host, and instance mapping records required. Returns 0 when the
+    instance is successfully mapped to a cell, 1 if the instance is not
+    mapped to a cell (see the ``map_instances`` command), and 2 if the cell
+    mapping is missing (see the ``map_cell_and_hosts`` command if you are
+    upgrading from a cells v1 environment, and the ``simple_cell_setup`` if
+    you are upgrading from a non-cells v1 environment).
+
+``nova-manage cell_v2 create_cell [--name <cell_name>] [--transport-url <transport_url>] [--database_connection <database_connection>] [--verbose]``
+
+    Create a cell mapping to the database connection and message queue
+    transport url. If a database_connection is not specified, it will use
+    the one defined by ``[database]/connection`` in the configuration file
+    passed to nova-manage. If a transport_url is not specified, it will use
+    the one defined by ``[DEFAULT]/transport_url`` in the configuration file.
+    The verbose option will print out the resulting cell mapping uuid.
+    Returns 0 if the cell mapping was successfully created, 1 if the
+    transport url or database connection was missing, and 2 if a cell is
+    already using that transport url and database connection combination.
+
+``nova-manage cell_v2 discover_hosts [--cell_uuid <cell_uuid>] [--verbose]``
+
+    Searches cells, or a single cell, and maps found hosts. This command will
+    check the database for each cell (or a single one if passed in) and map
+    any hosts which are not currently mapped. If a host is already mapped
+    nothing will be done. You need to re-run this command each time you add
+    more compute hosts to a cell (otherwise the scheduler will never place
+    instances there).
+
+``nova-manage cell_v2 list_cells [--verbose]``
+
+    Lists the v2 cells in the deployment. By default only the cell name and
+    uuid are shown. Use the --verbose option to see transport url and
+    database connection details.
+
+``nova-manage cell_v2 delete_cell --cell_uuid <cell_uuid>``
+
+    Delete an empty cell by the given uuid. Returns 0 if the empty cell is
+    found and deleted successfully, 1 if a cell with that uuid could not be
+    found, 2 if host mappings were found for the cell (cell not empty), and
+    3 if there are instances mapped to the cell (cell not empty).
 
 Nova Logs
 ~~~~~~~~~

@@ -1177,7 +1177,7 @@ class _ComputeAPIUnitTestMixIn(object):
         self.mox.StubOutWithMock(rpcapi, 'terminate_instance')
 
         self.compute_api._lookup_instance(self.context,
-                                          inst.uuid).AndReturn(inst)
+                                          inst.uuid).AndReturn((None, inst))
         objects.BlockDeviceMappingList.get_by_instance_uuid(
             self.context, inst.uuid).AndReturn(
                 objects.BlockDeviceMappingList())
@@ -1451,7 +1451,7 @@ class _ComputeAPIUnitTestMixIn(object):
         @mock.patch.object(self.compute_api, '_attempt_delete_of_buildrequest',
                            return_value=True)
         @mock.patch.object(self.compute_api, '_lookup_instance',
-                           return_value=None)
+                           return_value=(None, None))
         @mock.patch.object(self.compute_api, '_create_reservations',
                            return_value=quota_mock)
         def test(mock_create_res, mock_lookup, mock_attempt):
@@ -1493,9 +1493,9 @@ class _ComputeAPIUnitTestMixIn(object):
         with mock.patch.object(objects.Instance, 'get_by_uuid',
                                return_value=instance) as mock_inst_get:
 
-            ret_instance = self.compute_api._lookup_instance(self.context,
-                                                             instance.uuid)
-            self.assertEqual(instance, ret_instance)
+            cell, ret_instance = self.compute_api._lookup_instance(
+                self.context, instance.uuid)
+            self.assertEqual((None, instance), (cell, ret_instance))
             mock_inst_get.assert_called_once_with(self.context, instance.uuid)
             self.assertFalse(mock_target_cell.called)
 
@@ -1508,9 +1508,9 @@ class _ComputeAPIUnitTestMixIn(object):
         with mock.patch.object(objects.Instance, 'get_by_uuid',
                                return_value=instance) as mock_inst_get:
 
-            ret_instance = self.compute_api._lookup_instance(self.context,
-                                                             instance.uuid)
-            self.assertEqual(instance, ret_instance)
+            cell, ret_instance = self.compute_api._lookup_instance(
+                self.context, instance.uuid)
+            self.assertEqual((None, instance), (cell, ret_instance))
             mock_inst_get.assert_called_once_with(self.context, instance.uuid)
             self.assertFalse(mock_target_cell.called)
 
@@ -1527,9 +1527,12 @@ class _ComputeAPIUnitTestMixIn(object):
         @mock.patch.object(objects.Instance, 'get_by_uuid',
                            return_value=instance)
         def test(mock_inst_get, mock_map_get):
-            ret_instance = self.compute_api._lookup_instance(self.context,
-                                                             instance.uuid)
-            self.assertEqual(instance, ret_instance)
+            cell, ret_instance = self.compute_api._lookup_instance(
+                self.context, instance.uuid)
+            expected_cell = (self.cell_type is None and
+                             inst_map.cell_mapping or None)
+            self.assertEqual((expected_cell, instance),
+                             (cell, ret_instance))
             mock_inst_get.assert_called_once_with(self.context, instance.uuid)
             if self.cell_type is None:
                 mock_target_cell.assert_called_once_with(self.context,
@@ -3487,6 +3490,7 @@ class _ComputeAPIUnitTestMixIn(object):
         do_test()
 
     def test_provision_instances_creates_build_request(self):
+        @mock.patch.object(objects.Instance, 'create')
         @mock.patch.object(self.compute_api, 'volume_api')
         @mock.patch.object(self.compute_api, '_check_num_instances_quota')
         @mock.patch.object(self.compute_api.security_group_api,
@@ -3496,7 +3500,7 @@ class _ComputeAPIUnitTestMixIn(object):
         @mock.patch.object(objects.InstanceMapping, 'create')
         def do_test(_mock_inst_mapping_create, mock_build_req,
                 mock_req_spec_from_components, _mock_ensure_default,
-                mock_check_num_inst_quota, mock_volume):
+                    mock_check_num_inst_quota, mock_volume, mock_inst_create):
 
             min_count = 1
             max_count = 2
@@ -4219,19 +4223,21 @@ class _ComputeAPIUnitTestMixIn(object):
             mock_get_inst_map):
 
         self.useFixture(fixtures.AllServicesCurrent())
-        # Just check that an InstanceMappingNotFound causes the instance to
-        # get looked up normally.
-        self.compute_api.get(self.context, uuids.inst_uuid)
-        mock_get_build_req.assert_not_called()
         if self.cell_type is None:
-            mock_get_inst_map.assert_called_once_with(self.context,
-                                                      uuids.inst_uuid)
-        mock_get_inst.assert_called_once_with(self.context, uuids.inst_uuid,
-                                              expected_attrs=[
-                                                  'metadata',
-                                                  'system_metadata',
-                                                  'security_groups',
-                                                  'info_cache'])
+            # No Mapping means NotFound
+            self.assertRaises(exception.InstanceNotFound,
+                              self.compute_api.get, self.context,
+                              uuids.inst_uuid)
+        else:
+            self.compute_api.get(self.context, uuids.inst_uuid)
+            mock_get_build_req.assert_not_called()
+            mock_get_inst.assert_called_once_with(self.context,
+                                                  uuids.inst_uuid,
+                                                  expected_attrs=[
+                                                      'metadata',
+                                                      'system_metadata',
+                                                      'security_groups',
+                                                      'info_cache'])
 
     @mock.patch.object(objects.Service, 'get_minimum_version', return_value=15)
     @mock.patch.object(objects.InstanceMapping, 'get_by_instance_uuid')
@@ -4332,23 +4338,21 @@ class _ComputeAPIUnitTestMixIn(object):
             uuid=instance.uuid)
         mock_get_inst.return_value = instance
 
-        inst_from_get = self.compute_api.get(self.context, instance.uuid)
-
-        inst_map_calls = [mock.call(self.context, instance.uuid),
-                          mock.call(self.context, instance.uuid)]
         if self.cell_type is None:
-            mock_get_inst_map.assert_has_calls(inst_map_calls)
-            self.assertEqual(2, mock_get_inst_map.call_count)
-            mock_get_build_req.assert_called_once_with(self.context,
-                                                       instance.uuid)
-            mock_target_cell.assert_not_called()
-        mock_get_inst.assert_called_once_with(self.context, instance.uuid,
-                                              expected_attrs=[
-                                                  'metadata',
-                                                  'system_metadata',
-                                                  'security_groups',
-                                                  'info_cache'])
-        self.assertEqual(instance, inst_from_get)
+            self.assertRaises(exception.InstanceNotFound,
+                              self.compute_api.get,
+                              self.context, instance.uuid)
+        else:
+            inst_from_get = self.compute_api.get(self.context, instance.uuid)
+
+            mock_get_inst.assert_called_once_with(self.context,
+                                                  instance.uuid,
+                                                  expected_attrs=[
+                                                      'metadata',
+                                                      'system_metadata',
+                                                      'security_groups',
+                                                      'info_cache'])
+            self.assertEqual(instance, inst_from_get)
 
     @mock.patch.object(context, 'target_cell')
     @mock.patch.object(objects.InstanceMapping, 'get_by_instance_uuid')
@@ -4529,8 +4533,9 @@ class _ComputeAPIUnitTestMixIn(object):
                 limit=10, marker='fake-marker', sort_keys=['baz'],
                 sort_dirs=['desc'])
 
-            for cm in mock_cm_get_all.return_value:
-                mock_target_cell.assert_any_call(self.context, cm)
+            if self.cell_type is None:
+                for cm in mock_cm_get_all.return_value:
+                    mock_target_cell.assert_any_call(self.context, cm)
             inst_get_calls = [mock.call(self.context, {'foo': 'bar'},
                                         limit=10, marker='fake-marker',
                                         expected_attrs=None, sort_keys=['baz'],
@@ -4584,8 +4589,9 @@ class _ComputeAPIUnitTestMixIn(object):
                 limit=10, marker='fake-marker', sort_keys=['baz'],
                 sort_dirs=['desc'])
 
-            for cm in mock_cm_get_all.return_value:
-                mock_target_cell.assert_any_call(self.context, cm)
+            if self.cell_type is None:
+                for cm in mock_cm_get_all.return_value:
+                    mock_target_cell.assert_any_call(self.context, cm)
             inst_get_calls = [mock.call(self.context, {'foo': 'bar'},
                                         limit=8, marker='fake-marker',
                                         expected_attrs=None, sort_keys=['baz'],
@@ -4640,8 +4646,9 @@ class _ComputeAPIUnitTestMixIn(object):
                 limit=10, marker=marker, sort_keys=['baz'],
                 sort_dirs=['desc'])
 
-            for cm in mock_cm_get_all.return_value:
-                mock_target_cell.assert_any_call(self.context, cm)
+            if self.cell_type is None:
+                for cm in mock_cm_get_all.return_value:
+                    mock_target_cell.assert_any_call(self.context, cm)
             inst_get_calls = [mock.call(self.context, {'foo': 'bar'},
                                         limit=10, marker=marker,
                                         expected_attrs=None, sort_keys=['baz'],
