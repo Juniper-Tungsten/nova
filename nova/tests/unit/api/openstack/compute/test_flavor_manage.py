@@ -13,8 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import datetime
-
 import mock
 from oslo_serialization import jsonutils
 import six
@@ -27,31 +25,6 @@ from nova import db
 from nova import exception
 from nova import test
 from nova.tests.unit.api.openstack import fakes
-
-
-def fake_db_flavor(**updates):
-    db_flavor = {
-        'root_gb': 1,
-        'ephemeral_gb': 1,
-        'name': u'frob',
-        'deleted': False,
-        'created_at': datetime.datetime(2012, 1, 19, 18, 49, 30, 877329),
-        'updated_at': None,
-        'memory_mb': 256,
-        'vcpus': 1,
-        'flavorid': 1,
-        'swap': 0,
-        'rxtx_factor': 1.0,
-        'extra_specs': {},
-        'deleted_at': None,
-        'vcpu_weight': None,
-        'id': 7,
-        'is_public': True,
-        'disabled': False,
-    }
-    if updates:
-        db_flavor.update(updates)
-    return db_flavor
 
 
 def fake_create(newflavor):
@@ -179,8 +152,6 @@ class FlavorManageTestV21(test.NoDBTestCase):
                              self.expected_flavor["flavor"][key])
 
     def _create_flavor_bad_request_case(self, body):
-        self.stubs.UnsetAll()
-
         self.assertRaises(self.validation_error, self.controller._create,
                           self._get_http_request(), body=body)
 
@@ -324,14 +295,12 @@ class FlavorManageTestV21(test.NoDBTestCase):
                         flavorid, swap, rxtx_factor, is_public):
             raise exception.FlavorExists(name=name)
 
-        self.stubs.Set(flavors, "create", fake_create)
+        self.stub_out('nova.compute.flavors.create', fake_create)
         self.assertRaises(webob.exc.HTTPConflict, self.controller._create,
                           self._get_http_request(), body=expected)
 
     def test_invalid_memory_mb(self):
         """Check negative and decimal number can't be accepted."""
-
-        self.stubs.UnsetAll()
         self.assertRaises(exception.InvalidInput, flavors.create, "abc",
                           -512, 2, 1, 1, 1234, 512, 1, True)
         self.assertRaises(exception.InvalidInput, flavors.create, "abcd",

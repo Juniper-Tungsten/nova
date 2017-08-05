@@ -43,7 +43,8 @@ Possible values:
 Allow destination machine to match source for resize. Useful when
 testing in single-host environments. By default it is not allowed
 to resize to the same host. Setting this option to true will add
-the same host to the destination options.
+the same host to the destination options. Also set to true
+if you allow the ServerGroupAffinityFilter and need to resize.
 """),
     cfg.StrOpt('default_schedule_zone',
         help="""
@@ -222,7 +223,6 @@ Related options:
 * ``flat_inject``: This must be set to ``True`` to ensure nova embeds network
   configuration information in the metadata provided through the config drive.
 """),
-    # TODO(sfinucan): This should be a BooleanOpt
     cfg.StrOpt('preallocate_images',
         default='none',
         choices=('none', 'space'),
@@ -397,7 +397,6 @@ Possible values:
 ]
 
 allocation_ratio_opts = [
-    # TODO(sfinucan): Add min parameter
     cfg.FloatOpt('cpu_allocation_ratio',
         default=0.0,
         min=0.0,
@@ -421,7 +420,6 @@ Possible values:
 
 * Any valid positive integer or float value
 """),
-    # TODO(sfinucan): Add min parameter
     cfg.FloatOpt('ram_allocation_ratio',
         default=0.0,
         min=0.0,
@@ -446,7 +444,6 @@ Possible values:
 
 * Any valid positive integer or float value
 """),
-    # TODO(sfinucan): Add min parameter
     cfg.FloatOpt('disk_allocation_ratio',
         default=0.0,
         min=0.0,
@@ -480,7 +477,7 @@ Possible values:
 compute_manager_opts = [
     cfg.StrOpt('console_host',
         default=socket.gethostname(),
-        sample_default="socket.gethostname()",
+        sample_default="<current_hostname>",
         help="""
 Console proxy host to be used to connect to instances on this host. It is the
 publicly visible name for the console host.
@@ -807,8 +804,7 @@ Possible values:
 
 Related options:
 
-* ``block_device_allocate_retries'' in compute_manager_opts
-      group.
+* ``block_device_allocate_retries`` in compute_manager_opts group.
 """),
     cfg.IntOpt('scheduler_instance_sync_interval',
         default=120,
@@ -962,7 +958,7 @@ Possible values:
 
 Related options:
 
-* running_deleted_instance_poll
+* running_deleted_instance_poll_interval
 * running_deleted_instance_timeout
 """),
     cfg.IntOpt("running_deleted_instance_poll_interval",

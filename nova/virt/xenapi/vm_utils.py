@@ -157,7 +157,7 @@ def get_vm_device_id(session, image_meta):
 
 def _hypervisor_supports_device_id(version):
     version_as_string = '.'.join(str(v) for v in version)
-    return(versionutils.is_compatible('6.1', version_as_string))
+    return versionutils.is_compatible('6.1', version_as_string)
 
 
 def create_vm(session, instance, name_label, kernel, ramdisk,
@@ -338,7 +338,7 @@ def unplug_vbd(session, vbd_ref, this_vm_ref):
                 LOG.info(_LI('VBD %s already detached'), vbd_ref)
                 return
             elif _should_retry_unplug_vbd(err):
-                LOG.info(_LI('VBD %(vbd_ref)s uplug failed with "%(err)s", '
+                LOG.info(_LI('VBD %(vbd_ref)s unplug failed with "%(err)s", '
                              'attempt %(num_attempt)d/%(max_attempts)d'),
                          {'vbd_ref': vbd_ref, 'num_attempt': num_attempt,
                           'max_attempts': max_attempts, 'err': err})
@@ -1144,7 +1144,7 @@ def generate_configdrive(session, context, instance, vm_ref, userdevice,
 def _create_kernel_image(context, session, instance, name_label, image_id,
                          image_type):
     """Creates kernel/ramdisk file from the image stored in the cache.
-    If the image is not present in the cache, it streams it from glance.
+    If the image is not present in the cache, fetch it from glance.
 
     Returns: A list of dictionaries that describe VDIs
     """

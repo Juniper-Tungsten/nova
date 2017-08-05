@@ -106,7 +106,7 @@ class HostState(object):
     previously used and lock down access.
     """
 
-    def __init__(self, host, node):
+    def __init__(self, host, node, cell_uuid):
         self.host = host
         self.nodename = node
         self._lock_name = (host, node)
@@ -151,6 +151,9 @@ class HostState(object):
         self.ram_allocation_ratio = None
         self.cpu_allocation_ratio = None
         self.disk_allocation_ratio = None
+
+        # Host cell (v2) membership
+        self.cell_uuid = cell_uuid
 
         self.updated = None
 
@@ -330,10 +333,11 @@ class HostManager(object):
     """Base HostManager class."""
 
     # Can be overridden in a subclass
-    def host_state_cls(self, host, node, **kwargs):
-        return HostState(host, node)
+    def host_state_cls(self, host, node, cell, **kwargs):
+        return HostState(host, node, cell)
 
     def __init__(self):
+        self.cells = None
         self.host_state_map = {}
         self.filter_handler = filters.HostFilterHandler()
         filter_classes = self.filter_handler.get_matching_classes(
@@ -397,7 +401,7 @@ class HostManager(object):
             if aggregate.id in self.host_aggregates_map[host]:
                 self.host_aggregates_map[host].remove(aggregate.id)
 
-    def _init_instance_info(self, compute_nodes=None):
+    def _init_instance_info(self, computes_by_cell=None):
         """Creates the initial view of instances for all hosts.
 
         As this initial population of instance information may take some time,
@@ -409,46 +413,56 @@ class HostManager(object):
         if is None, compute_nodes will be looked up in database
         """
 
-        def _async_init_instance_info(compute_nodes):
+        def _async_init_instance_info(computes_by_cell):
             context = context_module.RequestContext()
+            self._load_cells(context)
             LOG.debug("START:_async_init_instance_info")
             self._instance_info = {}
 
-            if not compute_nodes:
-                compute_nodes = objects.ComputeNodeList.get_all(
-                    context).objects
+            count = 0
+            if not computes_by_cell:
+                computes_by_cell = {}
+                for cell in self.cells:
+                    with context_module.target_cell(context, cell):
+                        cell_cns = objects.ComputeNodeList.get_all(
+                            context).objects
+                        computes_by_cell[cell] = cell_cns
+                        count += len(cell_cns)
 
-            LOG.debug("Total number of compute nodes: %s", len(compute_nodes))
-            # Break the queries into batches of 10 to reduce the total number
-            # of calls to the DB.
-            batch_size = 10
-            start_node = 0
-            end_node = batch_size
-            while start_node <= len(compute_nodes):
-                curr_nodes = compute_nodes[start_node:end_node]
-                start_node += batch_size
-                end_node += batch_size
-                filters = {"host": [curr_node.host
-                                    for curr_node in curr_nodes],
-                           "deleted": False}
-                result = objects.InstanceList.get_by_filters(
-                    context.elevated(), filters)
-                instances = result.objects
-                LOG.debug("Adding %s instances for hosts %s-%s",
-                          len(instances), start_node, end_node)
-                for instance in instances:
-                    host = instance.host
-                    if host not in self._instance_info:
-                        self._instance_info[host] = {"instances": {},
-                                                     "updated": False}
-                    inst_dict = self._instance_info[host]
-                    inst_dict["instances"][instance.uuid] = instance
-                # Call sleep() to cooperatively yield
-                time.sleep(0)
-            LOG.debug("END:_async_init_instance_info")
+            LOG.debug("Total number of compute nodes: %s", count)
+
+            for cell, compute_nodes in computes_by_cell.items():
+                # Break the queries into batches of 10 to reduce the total
+                # number of calls to the DB.
+                batch_size = 10
+                start_node = 0
+                end_node = batch_size
+                while start_node <= len(compute_nodes):
+                    curr_nodes = compute_nodes[start_node:end_node]
+                    start_node += batch_size
+                    end_node += batch_size
+                    filters = {"host": [curr_node.host
+                                        for curr_node in curr_nodes],
+                               "deleted": False}
+                    with context_module.target_cell(context, cell):
+                        result = objects.InstanceList.get_by_filters(
+                            context.elevated(), filters)
+                    instances = result.objects
+                    LOG.debug("Adding %s instances for hosts %s-%s",
+                              len(instances), start_node, end_node)
+                    for instance in instances:
+                        host = instance.host
+                        if host not in self._instance_info:
+                            self._instance_info[host] = {"instances": {},
+                                                         "updated": False}
+                        inst_dict = self._instance_info[host]
+                        inst_dict["instances"][instance.uuid] = instance
+                    # Call sleep() to cooperatively yield
+                    time.sleep(0)
+                LOG.debug("END:_async_init_instance_info")
 
         # Run this async so that we don't block the scheduler start-up
-        utils.spawn_n(_async_init_instance_info, compute_nodes)
+        utils.spawn_n(_async_init_instance_info, computes_by_cell)
 
     def _choose_host_filters(self, filter_cls_names):
         """Since the caller may specify which filters to use we need
@@ -542,7 +556,7 @@ class HostManager(object):
         force_nodes = spec_obj.force_nodes or []
         requested_node = spec_obj.requested_destination
 
-        if requested_node is not None:
+        if requested_node is not None and 'host' in requested_node:
             # NOTE(sbauza): Reduce a potentially long set of hosts as much as
             # possible to any requested destination nodes before passing the
             # list to the filters
@@ -576,53 +590,107 @@ class HostManager(object):
         return self.weight_handler.get_weighed_objects(self.weighers,
                 hosts, spec_obj)
 
-    def get_host_states_by_uuids(self, context, compute_uuids):
-        compute_nodes = objects.ComputeNodeList.get_all_by_uuids(context,
-                                                                 compute_uuids)
-        return self._get_host_states(context, compute_nodes)
+    def _get_computes_for_cells(self, context, cells, compute_uuids=None):
+        """Get a tuple of compute node and service information.
+
+        Returns a tuple (compute_nodes, services) where:
+         - compute_nodes is cell-uuid keyed dict of compute node lists
+         - services is a dict of services indexed by hostname
+        """
+
+        compute_nodes = collections.defaultdict(list)
+        services = {}
+        for cell in cells:
+            LOG.debug('Getting compute nodes and services for cell %(cell)s',
+                      {'cell': cell.identity})
+            with context_module.target_cell(context, cell):
+                if compute_uuids is None:
+                    compute_nodes[cell.uuid].extend(
+                        objects.ComputeNodeList.get_all(
+                            context))
+                else:
+                    compute_nodes[cell.uuid].extend(
+                        objects.ComputeNodeList.get_all_by_uuids(
+                            context, compute_uuids))
+                services.update(
+                    {service.host: service
+                     for service in objects.ServiceList.get_by_binary(
+                             context, 'nova-compute',
+                             include_disabled=True)})
+        return compute_nodes, services
+
+    def _load_cells(self, context):
+        if not self.cells:
+            # NOTE(danms): global list of cells cached forever right now
+            self.cells = objects.CellMappingList.get_all(context)
+            LOG.debug('Found %(count)i cells: %(cells)s',
+                      {'count': len(self.cells),
+                       'cells': ', '.join([c.uuid for c in self.cells])})
+
+    def get_host_states_by_uuids(self, context, compute_uuids, spec_obj):
+
+        self._load_cells(context)
+        if (spec_obj and 'requested_destination' in spec_obj and
+                spec_obj.requested_destination and
+                'cell' in spec_obj.requested_destination):
+            only_cell = spec_obj.requested_destination.cell
+        else:
+            only_cell = None
+
+        if only_cell:
+            cells = [only_cell]
+        else:
+            cells = self.cells
+
+        compute_nodes, services = self._get_computes_for_cells(
+            context, cells, compute_uuids=compute_uuids)
+        return self._get_host_states(context, compute_nodes, services)
 
     def get_all_host_states(self, context):
         """Returns a list of HostStates that represents all the hosts
         the HostManager knows about. Also, each of the consumable resources
         in HostState are pre-populated and adjusted based on data in the db.
         """
-        compute_nodes = objects.ComputeNodeList.get_all(context)
-        return self._get_host_states(context, compute_nodes)
+        self._load_cells(context)
+        compute_nodes, services = self._get_computes_for_cells(context,
+                                                               self.cells)
+        return self._get_host_states(context, compute_nodes, services)
 
-    def _get_host_states(self, context, compute_nodes):
+    def _get_host_states(self, context, compute_nodes, services):
         """Returns a tuple of HostStates given a list of computes.
 
         Also updates the HostStates internal mapping for the HostManager.
         """
-        service_refs = {service.host: service
-                        for service in objects.ServiceList.get_by_binary(
-                            context, 'nova-compute', include_disabled=True)}
         # Get resource usage across the available compute nodes:
         seen_nodes = set()
-        for compute in compute_nodes:
-            service = service_refs.get(compute.host)
+        for cell_uuid, computes in compute_nodes.items():
+            for compute in computes:
+                service = services.get(compute.host)
 
-            if not service:
-                LOG.warning(_LW(
-                    "No compute service record found for host %(host)s"),
-                    {'host': compute.host})
-                continue
-            host = compute.host
-            node = compute.hypervisor_hostname
-            state_key = (host, node)
-            host_state = self.host_state_map.get(state_key)
-            if not host_state:
-                host_state = self.host_state_cls(host, node, compute=compute)
-                self.host_state_map[state_key] = host_state
-            # We force to update the aggregates info each time a new request
-            # comes in, because some changes on the aggregates could have been
-            # happening after setting this field for the first time
-            host_state.update(compute,
-                              dict(service),
-                              self._get_aggregates_info(host),
-                              self._get_instance_info(context, compute))
+                if not service:
+                    LOG.warning(_LW(
+                        "No compute service record found for host %(host)s"),
+                        {'host': compute.host})
+                    continue
+                host = compute.host
+                node = compute.hypervisor_hostname
+                state_key = (host, node)
+                host_state = self.host_state_map.get(state_key)
+                if not host_state:
+                    host_state = self.host_state_cls(host, node,
+                                                     cell_uuid,
+                                                     compute=compute)
+                    self.host_state_map[state_key] = host_state
+                # We force to update the aggregates info each time a
+                # new request comes in, because some changes on the
+                # aggregates could have been happening after setting
+                # this field for the first time
+                host_state.update(compute,
+                                  dict(service),
+                                  self._get_aggregates_info(host),
+                                  self._get_instance_info(context, compute))
 
-            seen_nodes.add(state_key)
+                seen_nodes.add(state_key)
 
         # remove compute nodes from host_state_map if they are not active
         dead_nodes = set(self.host_state_map.keys()) - seen_nodes
@@ -637,6 +705,12 @@ class HostManager(object):
     def _get_aggregates_info(self, host):
         return [self.aggs_by_id[agg_id] for agg_id in
                 self.host_aggregates_map[host]]
+
+    def _get_instances_by_host(self, context, host_name):
+        hm = objects.HostMapping.get_by_host(context, host_name)
+        with context_module.target_cell(context, hm.cell_mapping):
+            inst_list = objects.InstanceList.get_by_host(context, host_name)
+            return {inst.uuid: inst for inst in inst_list}
 
     def _get_instance_info(self, context, compute):
         """Gets the host instance info from the compute host.
@@ -654,17 +728,14 @@ class HostManager(object):
             inst_dict = host_info["instances"]
         else:
             # Host is running old version, or updates aren't flowing.
-            inst_list = objects.InstanceList.get_by_host(context, host_name)
-            inst_dict = {instance.uuid: instance
-                         for instance in inst_list.objects}
+            inst_dict = self._get_instances_by_host(context, host_name)
         return inst_dict
 
     def _recreate_instance_info(self, context, host_name):
         """Get the InstanceList for the specified host, and store it in the
         _instance_info dict.
         """
-        instances = objects.InstanceList.get_by_host(context, host_name)
-        inst_dict = {instance.uuid: instance for instance in instances}
+        inst_dict = self._get_instances_by_host(context, host_name)
         host_info = self._instance_info[host_name] = {}
         host_info["instances"] = inst_dict
         host_info["updated"] = False

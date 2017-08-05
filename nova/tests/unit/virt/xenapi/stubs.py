@@ -22,7 +22,6 @@ import mock
 from os_xenapi.client import session
 from os_xenapi.client import XenAPI
 from oslo_serialization import jsonutils
-import six
 
 from nova import test
 import nova.tests.unit.image.fake
@@ -70,8 +69,8 @@ def stubout_session(stubs, cls, product_version=(5, 6, 2),
 
 def stubout_get_this_vm_uuid(stubs):
     def f(session):
-        vms = [rec['uuid'] for ref, rec
-               in six.iteritems(fake.get_all_records('VM'))
+        vms = [rec['uuid'] for rec
+               in fake.get_all_records('VM').values()
                if rec['is_control_domain']]
         return vms[0]
     stubs.Set(vm_utils, 'get_this_vm_uuid', f)
@@ -397,6 +396,10 @@ def get_fake_session(error=None):
 class XenAPITestBase(test.TestCase):
     def setUp(self):
         super(XenAPITestBase, self).setUp()
+        # TODO(mriedem): The tests need to be fixed to work with the
+        # XenAPIOpenVswitchDriver vif driver.
+        self.flags(vif_driver='nova.virt.xenapi.vif.XenAPIBridgeDriver',
+                   group='xenserver')
         self.useFixture(ReplaceModule('XenAPI', fake))
         fake.reset()
 
@@ -404,5 +407,9 @@ class XenAPITestBase(test.TestCase):
 class XenAPITestBaseNoDB(test.NoDBTestCase):
     def setUp(self):
         super(XenAPITestBaseNoDB, self).setUp()
+        # TODO(mriedem): The tests need to be fixed to work with the
+        # XenAPIOpenVswitchDriver vif driver.
+        self.flags(vif_driver='nova.virt.xenapi.vif.XenAPIBridgeDriver',
+                   group='xenserver')
         self.useFixture(ReplaceModule('XenAPI', fake))
         fake.reset()

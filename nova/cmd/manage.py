@@ -235,14 +235,14 @@ class ProjectCommands(object):
                     value = -1
                 if int(value) < -1:
                     print(_('Quota limit must be -1 or greater.'))
-                    return(2)
+                    return 2
                 if ((int(value) < minimum) and
                    (maximum != -1 or (maximum == -1 and int(value) != -1))):
                     print(_('Quota limit must be greater than %s.') % minimum)
-                    return(2)
+                    return 2
                 if maximum != -1 and int(value) > maximum:
                     print(_('Quota limit must be less than %s.') % maximum)
-                    return(2)
+                    return 2
                 try:
                     db.quota_create(ctxt, project_id, key, value,
                                     user_id=user_id)
@@ -253,7 +253,7 @@ class ProjectCommands(object):
                 print(_('%(key)s is not a valid quota key. Valid options are: '
                         '%(options)s.') % {'key': key,
                                            'options': ', '.join(quota)})
-                return(2)
+                return 2
         print_format = "%-36s %-10s %-10s %-10s"
         print(print_format % (
                     _('Quota'),
@@ -302,10 +302,11 @@ AccountCommands = ProjectCommands
 class FloatingIpCommands(object):
     """Class for managing floating IP."""
 
+    # TODO(stephenfin): Remove these when we remove cells v1
     description = ('DEPRECATED: Floating IP commands are deprecated since '
                    'nova-network is deprecated in favor of Neutron. The '
-                   'floating IP commands will be removed in the Nova 15.0.0 '
-                   'Ocata release.')
+                   'floating IP commands will be removed in an upcoming '
+                   'release.')
 
     @staticmethod
     def address_to_hosts(addresses):
@@ -353,7 +354,7 @@ class FloatingIpCommands(object):
             # instead of printing, but logging isn't used here and I
             # don't know why.
             print('error: %s' % exc)
-            return(1)
+            return 1
 
     @args('--ip_range', metavar='<range>', help='IP range')
     def delete(self, ip_range):
@@ -398,17 +399,17 @@ def validate_network_plugin(f, *args, **kwargs):
     if utils.is_neutron():
         print(_("ERROR: Network commands are not supported when using the "
                 "Neutron API.  Use python-neutronclient instead."))
-        return(2)
+        return 2
     return f(*args, **kwargs)
 
 
 class NetworkCommands(object):
     """Class for managing networks."""
 
+    # TODO(stephenfin): Remove these when we remove cells v1
     description = ('DEPRECATED: Network commands are deprecated since '
                    'nova-network is deprecated in favor of Neutron. The '
-                   'network commands will be removed in the Nova 15.0.0 Ocata '
-                   'release.')
+                   'network commands will be removed in an upcoming release.')
 
     @validate_network_plugin
     @args('--label', metavar='<label>', help='Label for network (ex: public)')
@@ -554,7 +555,7 @@ class NetworkCommands(object):
                 error_msg = "ERROR: Unexpected arguments provided. Please " \
                     "use separate commands."
                 print(error_msg)
-                return(1)
+                return 1
             db.network_update(admin_context, network['id'], net)
             return
 
@@ -666,11 +667,11 @@ class DbCommands(object):
         max_rows = int(max_rows)
         if max_rows < 0:
             print(_("Must supply a positive value for max_rows"))
-            return(2)
+            return 2
         if max_rows > db.MAX_INT:
             print(_('max rows must be <= %(max_value)d') %
                   {'max_value': db.MAX_INT})
-            return(2)
+            return 2
 
         table_to_rows_archived = {}
         if until_complete and verbose:
@@ -935,7 +936,7 @@ class GetLogCommands(object):
             log_file = '/var/log/messages'
         else:
             print(_('Unable to find system log file!'))
-            return(1)
+            return 1
         lines = [line.strip() for line in open(log_file, "r")]
         lines.reverse()
         print(_('Last %s nova syslog entries:-') % (entries))
@@ -1020,7 +1021,7 @@ class CellCommands(object):
         if cell_type not in ['parent', 'child', 'api', 'compute']:
             print("Error: cell type must be 'parent'/'api' or "
                 "'child'/'compute'")
-            return(2)
+            return 2
 
         # Set up the transport URL
         transport_hosts = self._create_transport_hosts(
@@ -1077,7 +1078,7 @@ class CellV2Commands(object):
                   'is not set in the configuration file.')
         return transport_url
 
-    @args('--transport-url', metavar='<transport url>', dest='transport_url',
+    @args('--transport-url', metavar='<transport_url>', dest='transport_url',
           help='The transport url for the cell message queue')
     def simple_cell_setup(self, transport_url=None):
         """Simple cellsv2 setup.
@@ -1307,9 +1308,9 @@ class CellV2Commands(object):
             print(cell_mapping_uuid)
         return cell_mapping_uuid
 
-    @args('--transport-url', metavar='<transport url>', dest='transport_url',
+    @args('--transport-url', metavar='<transport_url>', dest='transport_url',
           help='The transport url for the cell message queue')
-    @args('--name', metavar='<name>', help='The name of the cell')
+    @args('--name', metavar='<cell_name>', help='The name of the cell')
     @args('--verbose', action='store_true',
           help='Output the cell mapping uuid for any newly mapped hosts.')
     def map_cell_and_hosts(self, transport_url=None, name=None, verbose=False):
@@ -1333,7 +1334,7 @@ class CellV2Commands(object):
         # partial work so 0 is appropriate.
         return 0
 
-    @args('--uuid', metavar='<uuid>', dest='uuid', required=True,
+    @args('--uuid', metavar='<instance_uuid>', dest='uuid', required=True,
           help=_('The instance UUID to verify'))
     @args('--quiet', action='store_true', dest='quiet',
           help=_('Do not print anything'))
@@ -1395,11 +1396,11 @@ class CellV2Commands(object):
         _("Add a new cell to nova API database. "
           "DB and MQ urls can be provided directly "
           "or can be taken from config. The result is cell uuid."))
-    @args('--name', metavar='<name>', help=_('The name of the cell'))
-    @args('--database_connection', metavar='<database url>',
+    @args('--name', metavar='<cell_name>', help=_('The name of the cell'))
+    @args('--database_connection', metavar='<database_connection>',
           dest='database_connection',
           help=_('The database url for the cell database'))
-    @args('--transport-url', metavar='<transport url>', dest='transport_url',
+    @args('--transport-url', metavar='<transport_url>', dest='transport_url',
           help=_('The transport url for the cell message queue'))
     @args('--verbose', action='store_true',
           help=_('Output the uuid of the created cell'))
@@ -1463,11 +1464,17 @@ class CellV2Commands(object):
     def delete_cell(self, cell_uuid):
         """Delete an empty cell by the given uuid.
 
+        If the cell is cell0 this command will return a non-zero exit code.
+
         If the cell is not found by uuid or it is not empty (it has host or
         instance mappings) this command will return a non-zero exit code.
 
         Returns 0 if the empty cell is found and deleted successfully.
         """
+        if cell_uuid == objects.CellMapping.CELL0_UUID:
+            print(_('Cell 0 can not be deleted.'))
+            return 5
+
         ctxt = context.get_admin_context()
         # Find the CellMapping given the uuid.
         try:
@@ -1496,6 +1503,55 @@ class CellV2Commands(object):
         cell_mapping.destroy()
         return 0
 
+    @args('--cell_uuid', metavar='<cell_uuid>', dest='cell_uuid',
+          required=True, help=_('The uuid of the cell to update.'))
+    @args('--name', metavar='<cell_name>', dest='name',
+          help=_('Set the cell name.'))
+    @args('--transport-url', metavar='<transport_url>', dest='transport_url',
+          help=_('Set the cell transport_url. NOTE that running nodes '
+                 'will not see the change until restart!'))
+    @args('--database_connection', metavar='<database_connection>',
+          dest='db_connection',
+          help=_('Set the cell database_connection. NOTE that running nodes '
+                 'will not see the change until restart!'))
+    def update_cell(self, cell_uuid, name=None, transport_url=None,
+                    db_connection=None):
+        """Updates the properties of a cell by the given uuid.
+
+        If the cell is not found by uuid, this command will return an exit
+        code of 1. If the properties cannot be set, this will return 2.
+        Otherwise, the exit code will be 0.
+
+        NOTE: Updating the transport_url or database_connection fields on
+        a running system will NOT result in all nodes immediately using the
+        new values. Use caution when changing these values.
+        """
+        ctxt = context.get_admin_context()
+        try:
+            cell_mapping = objects.CellMapping.get_by_uuid(ctxt, cell_uuid)
+        except exception.CellMappingNotFound:
+            print(_('Cell with uuid %s was not found.') % cell_uuid)
+            return 1
+
+        if name:
+            cell_mapping.name = name
+
+        transport_url = transport_url or CONF.transport_url
+        if transport_url:
+            cell_mapping.transport_url = transport_url
+
+        db_connection = db_connection or CONF.database.connection
+        if db_connection:
+            cell_mapping.database_connection = db_connection
+
+        try:
+            cell_mapping.save()
+        except Exception as e:
+            print(_('Unable to update CellMapping: %s') % e)
+            return 2
+
+        return 0
+
 
 CATEGORIES = {
     'account': AccountCommands,
@@ -1522,10 +1578,14 @@ category_opt = cfg.SubCommandOpt('category',
                                  help='Available categories',
                                  handler=add_command_parsers)
 
+post_mortem_opt = cfg.BoolOpt('post-mortem',
+                              default=False,
+                              help='Allow post-mortem debugging')
+
 
 def main():
     """Parse options and call the appropriate class/method."""
-    CONF.register_cli_opt(category_opt)
+    CONF.register_cli_opts([category_opt, post_mortem_opt])
     config.parse_args(sys.argv)
     logging.set_defaults(
         default_log_levels=logging.get_default_log_levels() +
@@ -1535,17 +1595,21 @@ def main():
 
     if CONF.category.name == "version":
         print(version.version_string_with_package())
-        return(0)
+        return 0
 
     if CONF.category.name == "bash-completion":
         cmd_common.print_bash_completion(CATEGORIES)
-        return(0)
+        return 0
 
     try:
         fn, fn_args, fn_kwargs = cmd_common.get_action_fn()
         ret = fn(*fn_args, **fn_kwargs)
         rpc.cleanup()
-        return(ret)
+        return ret
     except Exception:
-        print(_("An error has occurred:\n%s") % traceback.format_exc())
-        return(1)
+        if CONF.post_mortem:
+            import pdb
+            pdb.post_mortem()
+        else:
+            print(_("An error has occurred:\n%s") % traceback.format_exc())
+        return 1

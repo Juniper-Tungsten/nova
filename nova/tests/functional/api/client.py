@@ -15,7 +15,6 @@
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 import requests
-import six
 from six.moves.urllib import parse
 
 
@@ -192,7 +191,7 @@ class TestOpenStackClient(object):
                     raise OpenStackApiAuthorizationException(response=response)
                 else:
                     raise OpenStackApiException(
-                        message="Unexpected status code",
+                        message="Unexpected status code: %s" % response.text,
                         response=response)
 
         return response
@@ -255,7 +254,7 @@ class TestOpenStackClient(object):
 
         if search_opts is not None:
             qparams = {}
-            for opt, val in six.iteritems(search_opts):
+            for opt, val in search_opts.items():
                 qparams[opt] = val
             if qparams:
                 query_string = "?%s" % parse.urlencode(qparams)
@@ -394,3 +393,6 @@ class TestOpenStackClient(object):
 
     def delete_aggregate(self, aggregate_id):
         self.api_delete('/os-aggregates/%s' % aggregate_id)
+
+    def get_limits(self):
+        return self.api_get('/limits').body['limits']

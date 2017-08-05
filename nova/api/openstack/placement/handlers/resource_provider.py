@@ -12,8 +12,8 @@
 """Placement API handlers for resource providers."""
 
 import copy
-import jsonschema
 
+import jsonschema
 from oslo_db import exception as db_exc
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
@@ -22,6 +22,7 @@ import webob
 
 from nova.api.openstack.placement import microversion
 from nova.api.openstack.placement import util
+from nova.api.openstack.placement import wsgi_wrapper
 from nova import exception
 from nova.i18n import _
 from nova import objects
@@ -93,7 +94,7 @@ def _normalize_resources_qs_param(qs):
     instance that will consume 2 vCPUs, 1024 MB of RAM and 50GB of disk space,
     they would use the following query string:
 
-        ?resources=VCPU:2,MEMORY_MB:1024:DISK_GB:50
+        ?resources=VCPU:2,MEMORY_MB:1024,DISK_GB:50
 
     The returned value would be:
 
@@ -117,8 +118,7 @@ def _normalize_resources_qs_param(qs):
                     'query string parameter in form: '
                     '?resources=VCPU:2,MEMORY_MB:1024. Got: %s.')
             msg = msg % rt
-            raise webob.exc.HTTPBadRequest(msg,
-                    json_formatter=util.json_error_formatter)
+            raise webob.exc.HTTPBadRequest(msg)
         try:
             amount = int(amount)
         except ValueError:
@@ -128,8 +128,7 @@ def _normalize_resources_qs_param(qs):
                 'resource_name': rc_name,
                 'amount': amount,
             }
-            raise webob.exc.HTTPBadRequest(msg,
-                    json_formatter=util.json_error_formatter)
+            raise webob.exc.HTTPBadRequest(msg)
         if amount < 1:
             msg = _('Requested resource %(resource_name)s requires '
                     'amount >= 1. Got: %(amount)d.')
@@ -137,8 +136,7 @@ def _normalize_resources_qs_param(qs):
                 'resource_name': rc_name,
                 'amount': amount,
             }
-            raise webob.exc.HTTPBadRequest(msg,
-                    json_formatter=util.json_error_formatter)
+            raise webob.exc.HTTPBadRequest(msg)
         result[rc_name] = amount
     return result
 
@@ -146,7 +144,7 @@ def _normalize_resources_qs_param(qs):
 def _serialize_links(environ, resource_provider):
     url = util.resource_provider_url(environ, resource_provider)
     links = [{'rel': 'self', 'href': url}]
-    for rel in ('aggregates', 'inventories', 'usages'):
+    for rel in ('aggregates', 'inventories', 'usages', 'traits'):
         links.append({'rel': rel, 'href': '%s/%s' % (url, rel)})
     return links
 
@@ -169,7 +167,7 @@ def _serialize_providers(environ, resource_providers):
     return {"resource_providers": output}
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.require_content('application/json')
 def create_resource_provider(req):
     """POST to create a resource provider.
@@ -187,14 +185,12 @@ def create_resource_provider(req):
         resource_provider.create()
     except db_exc.DBDuplicateEntry as exc:
         raise webob.exc.HTTPConflict(
-            _('Conflicting resource provider already exists: %(error)s') %
-            {'error': exc},
-            json_formatter=util.json_error_formatter)
+            _('Conflicting resource provider %(name)s already exists.') %
+            {'name': data['name']})
     except exception.ObjectActionError as exc:
         raise webob.exc.HTTPBadRequest(
             _('Unable to create resource provider %(rp_uuid)s: %(error)s') %
-            {'rp_uuid': uuid, 'error': exc},
-            json_formatter=util.json_error_formatter)
+            {'rp_uuid': uuid, 'error': exc})
 
     req.response.location = util.resource_provider_url(
         req.environ, resource_provider)
@@ -203,7 +199,7 @@ def create_resource_provider(req):
     return req.response
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 def delete_resource_provider(req):
     """DELETE to destroy a single resource provider.
 
@@ -219,8 +215,7 @@ def delete_resource_provider(req):
     except exception.ResourceProviderInUse as exc:
         raise webob.exc.HTTPConflict(
             _('Unable to delete resource provider %(rp_uuid)s: %(error)s') %
-            {'rp_uuid': uuid, 'error': exc},
-            json_formatter=util.json_error_formatter)
+            {'rp_uuid': uuid, 'error': exc})
     except exception.NotFound as exc:
         raise webob.exc.HTTPNotFound(
             _("No resource provider with uuid %s found for delete") % uuid)
@@ -229,7 +224,7 @@ def delete_resource_provider(req):
     return req.response
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.check_accept('application/json')
 def get_resource_provider(req):
     """Get a single resource provider.
@@ -250,7 +245,7 @@ def get_resource_provider(req):
     return req.response
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.check_accept('application/json')
 def list_resource_providers(req):
     """GET a list of resource providers.
@@ -272,8 +267,7 @@ def list_resource_providers(req):
     except jsonschema.ValidationError as exc:
         raise webob.exc.HTTPBadRequest(
             _('Invalid query string parameters: %(exc)s') %
-            {'exc': exc},
-            json_formatter=util.json_error_formatter)
+            {'exc': exc})
 
     filters = {}
     for attr in ['uuid', 'name', 'member_of']:
@@ -294,8 +288,7 @@ def list_resource_providers(req):
                     if not uuidutils.is_uuid_like(aggr_uuid):
                         raise webob.exc.HTTPBadRequest(
                             _('Invalid uuid value: %(uuid)s') %
-                            {'uuid': aggr_uuid},
-                            json_formatter=util.json_error_formatter)
+                            {'uuid': aggr_uuid})
             filters[attr] = value
     if 'resources' in req.GET:
         resources = _normalize_resources_qs_param(req.GET['resources'])
@@ -306,8 +299,7 @@ def list_resource_providers(req):
     except exception.ResourceClassNotFound as exc:
         raise webob.exc.HTTPBadRequest(
             _('Invalid resource class in resources parameter: %(error)s') %
-            {'error': exc},
-            json_formatter=util.json_error_formatter)
+            {'error': exc})
 
     response = req.response
     response.body = encodeutils.to_utf8(
@@ -316,7 +308,7 @@ def list_resource_providers(req):
     return response
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.require_content('application/json')
 def update_resource_provider(req):
     """PUT to update a single resource provider.
@@ -339,14 +331,12 @@ def update_resource_provider(req):
         resource_provider.save()
     except db_exc.DBDuplicateEntry as exc:
         raise webob.exc.HTTPConflict(
-            _('Conflicting resource provider already exists: %(error)s') %
-            {'error': exc},
-            json_formatter=util.json_error_formatter)
+            _('Conflicting resource provider %(name)s already exists.') %
+            {'name': data['name']})
     except exception.ObjectActionError as exc:
         raise webob.exc.HTTPBadRequest(
             _('Unable to save resource provider %(rp_uuid)s: %(error)s') %
-            {'rp_uuid': uuid, 'error': exc},
-            json_formatter=util.json_error_formatter)
+            {'rp_uuid': uuid, 'error': exc})
 
     req.response.body = encodeutils.to_utf8(jsonutils.dumps(
         _serialize_provider(req.environ, resource_provider)))

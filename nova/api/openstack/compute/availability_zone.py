@@ -16,8 +16,8 @@ from nova.api.openstack.compute.schemas import availability_zone as schema
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
 from nova import availability_zones
+from nova import compute
 import nova.conf
-from nova import objects
 from nova.policies import availability_zone as az_policies
 from nova import servicegroup
 
@@ -32,6 +32,7 @@ class AvailabilityZoneController(wsgi.Controller):
     def __init__(self):
         super(AvailabilityZoneController, self).__init__()
         self.servicegroup_api = servicegroup.API()
+        self.host_api = compute.HostAPI()
 
     def _get_filtered_availability_zones(self, zones, is_available):
         result = []
@@ -62,8 +63,9 @@ class AvailabilityZoneController(wsgi.Controller):
             availability_zones.get_availability_zones(ctxt)
 
         # Available services
-        enabled_services = objects.ServiceList.get_all(context, disabled=False,
-                                                       set_zones=True)
+        enabled_services = self.host_api.service_get_all(
+            context, {'disabled': False}, set_zones=True, all_cells=True)
+
         zone_hosts = {}
         host_services = {}
         api_services = ('nova-osapi_compute', 'nova-ec2', 'nova-metadata')
@@ -140,16 +142,18 @@ class AvailabilityZone(extensions.V21APIExtensionBase):
         """
         return []
 
-    # NOTE(gmann): This function is not supposed to use 'body_deprecated_param'
-    # parameter as this is placed to handle scheduler_hint extension for V2.1.
-    def server_create(self, server_dict, create_kwargs, body_deprecated_param):
-        # NOTE(alex_xu): For v2.1 compat mode, we strip the spaces when create
-        # availability_zone. But we don't strip at here for backward-compatible
-        # with some users already created availability_zone with
-        # leading/trailing spaces with legacy v2 API.
-        create_kwargs['availability_zone'] = server_dict.get(ATTRIBUTE_NAME)
 
-    def get_server_create_schema(self, version):
-        if version == "2.0":
-            return schema.server_create_v20
-        return schema.server_create
+# NOTE(gmann): This function is not supposed to use 'body_deprecated_param'
+# parameter as this is placed to handle scheduler_hint extension for V2.1.
+def server_create(server_dict, create_kwargs, body_deprecated_param):
+    # NOTE(alex_xu): For v2.1 compat mode, we strip the spaces when create
+    # availability_zone. But we don't strip at here for backward-compatible
+    # with some users already created availability_zone with
+    # leading/trailing spaces with legacy v2 API.
+    create_kwargs['availability_zone'] = server_dict.get(ATTRIBUTE_NAME)
+
+
+def get_server_create_schema(version):
+    if version == "2.0":
+        return schema.server_create_v20
+    return schema.server_create

@@ -9,7 +9,12 @@
 ==============================
 
 Adds neighbor cells, lists neighbor cells, and shows the capabilities of
-the local cell.
+the local cell. By default, only administrators can manage cells.
+
+.. note:: These APIs refer to a Cells v1 deployment which is optional and not
+  recommended for new deployments of Nova. These are not used with Cells v2
+  which is required beginning with the 15.0.0 Ocata release where all Nova
+  deployments consist of at least one Cells v2 cell.
 
 List Cells
 ==========
@@ -29,6 +34,8 @@ Request
 .. rest_parameters:: parameters.yaml
 
   - tenant_id: tenant_id
+  - limit: limit_simple
+  - offset: offset_simple
 
 .. TODO(cdent): How do we indicate optionality of a URI parameter?
 
@@ -79,6 +86,14 @@ Normal response codes: 200
 
 Error response codes: badRequest(400), unauthorized(401), forbidden(403),
 NotImplemented(501)
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - limit: limit_simple
+  - offset: offset_simple
 
 Response
 --------

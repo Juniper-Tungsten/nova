@@ -183,6 +183,15 @@ Ocata (15.0.0)
   corresponding ``cpu_allocation_ratio``, ``ram_allocation_ratio``, and/or
   ``disk_allocation_ratio`` configuration options to be very high values, e.g.
   9999.0.
+* Users of CellsV1 will need to deploy a placement per cell, matching
+  the scope and cardinality of the regular ``nova-scheduler`` process.
+
+Pike (16.0.0)
+~~~~~~~~~~~~~
+
+* The ``nova.scheduler.filter_scheduler.FilterScheduler`` in Pike will
+  no longer fall back to not using the Placement Service, even if older
+  computes are running in the deployment.
 
 
 REST API

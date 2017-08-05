@@ -203,7 +203,8 @@ class ComputeDriver(object):
         :returns: Dict of estimated overhead values.
         """
         return {'memory_mb': 0,
-                'disk_gb': 0}
+                'disk_gb': 0,
+                'vcpus': 0}
 
     def list_instances(self):
         """Return the names of all the instances known to the virtualization
@@ -356,7 +357,7 @@ class ComputeDriver(object):
         :param context: security context
         :param instance: nova.objects.instance.Instance
 
-        :returns an instance of console.type.ConsoleVNC
+        :returns: an instance of console.type.ConsoleVNC
         """
         raise NotImplementedError()
 
@@ -366,7 +367,7 @@ class ComputeDriver(object):
         :param context: security context
         :param instance: nova.objects.instance.Instance
 
-        :returns an instance of console.type.ConsoleSpice
+        :returns: an instance of console.type.ConsoleSpice
         """
         raise NotImplementedError()
 
@@ -376,7 +377,7 @@ class ComputeDriver(object):
         :param context: security context
         :param instance: nova.objects.instance.Instance
 
-        :returns an instance of console.type.ConsoleRDP
+        :returns: an instance of console.type.ConsoleRDP
         """
         raise NotImplementedError()
 
@@ -386,7 +387,7 @@ class ComputeDriver(object):
         :param context: security context
         :param instance: nova.objects.instance.Instance
 
-        :returns an instance of console.type.ConsoleSerial
+        :returns: an instance of console.type.ConsoleSerial
         """
         raise NotImplementedError()
 
@@ -774,6 +775,12 @@ class ComputeDriver(object):
         """
         raise NotImplementedError()
 
+    def get_inventory(self, nodename):
+        """Return a dict, keyed by resource class, of inventory information for
+        the supplied node.
+        """
+        raise NotImplementedError()
+
     def get_available_resource(self, nodename):
         """Retrieve resource information.
 
@@ -1114,7 +1121,7 @@ class ComputeDriver(object):
             ""startup", "shutdown" and "reboot".
 
         :return: The result of the power action
-        :rtype: : str
+        :rtype: str
         """
 
         raise NotImplementedError()

@@ -29,8 +29,6 @@ from nova.api.openstack import versioned_method
 from nova import exception
 from nova import i18n
 from nova.i18n import _
-from nova.i18n import _LE
-from nova.i18n import _LI
 from nova import utils
 from nova import wsgi
 
@@ -421,14 +419,14 @@ class ResourceExceptionHandler(object):
                     explanation=ex_value.format_message()))
         elif isinstance(ex_value, TypeError):
             exc_info = (ex_type, ex_value, ex_traceback)
-            LOG.error(_LE('Exception handling resource: %s'), ex_value,
+            LOG.error('Exception handling resource: %s', ex_value,
                       exc_info=exc_info)
             raise Fault(webob.exc.HTTPBadRequest())
         elif isinstance(ex_value, Fault):
-            LOG.info(_LI("Fault thrown: %s"), ex_value)
+            LOG.info("Fault thrown: %s", ex_value)
             raise ex_value
         elif isinstance(ex_value, webob.exc.HTTPException):
-            LOG.info(_LI("HTTP exception thrown: %s"), ex_value)
+            LOG.info("HTTP exception thrown: %s", ex_value)
             raise Fault(ex_value)
 
         # We didn't handle the exception
@@ -627,13 +625,7 @@ class Resource(wsgi.Application):
 
         # Now, deserialize the request body...
         try:
-            contents = {}
-            if self._should_have_body(request):
-                # allow empty body with PUT and POST
-                if request.content_length == 0:
-                    contents = {'body': None}
-                else:
-                    contents = self.deserialize(body)
+            contents = self._get_request_content(body, request)
         except exception.MalformedRequestBody:
             msg = _("Malformed request body")
             return Fault(webob.exc.HTTPBadRequest(explanation=msg))
@@ -700,6 +692,16 @@ class Resource(wsgi.Application):
                 response.headers.add('Vary', LEGACY_API_VERSION_REQUEST_HEADER)
 
         return response
+
+    def _get_request_content(self, body, request):
+        contents = {}
+        if self._should_have_body(request):
+            # allow empty body with PUT and POST
+            if request.content_length == 0 or request.content_length is None:
+                contents = {'body': None}
+            else:
+                contents = self.deserialize(body)
+        return contents
 
     def get_method(self, request, action, content_type, body):
         meth, extensions = self._get_method(request,

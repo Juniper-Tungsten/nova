@@ -5,6 +5,7 @@ fixtures:
 defaults:
     request_headers:
         x-auth-token: admin
+        accept: application/json
 
 tests:
 
@@ -53,7 +54,9 @@ tests:
       uuid: $ENVIRON['RP_UUID']
   status: 409
   response_strings:
-      - Conflicting resource provider already exists
+      - Conflicting resource provider $ENVIRON['RP_NAME'] already exists
+  response_json_paths:
+      $.errors[0].title: Conflict
 
 - name: try to create same name again
   POST: /resource_providers
@@ -64,7 +67,9 @@ tests:
       uuid: ada30fb5-566d-4fe1-b43b-28a9e988790c
   status: 409
   response_strings:
-      - Conflicting resource provider already exists
+      - Conflicting resource provider $ENVIRON['RP_NAME'] already exists
+  response_json_paths:
+      $.errors[0].title: Conflict
 
 - name: confirm the correct post
   GET: /resource_providers/$ENVIRON['RP_UUID']
@@ -78,6 +83,7 @@ tests:
       $.links[?rel = "inventories"].href: /resource_providers/$ENVIRON['RP_UUID']/inventories
       $.links[?rel = "aggregates"].href: /resource_providers/$ENVIRON['RP_UUID']/aggregates
       $.links[?rel = "usages"].href: /resource_providers/$ENVIRON['RP_UUID']/usages
+      $.links[?rel = "traits"].href: /resource_providers/$ENVIRON['RP_UUID']/traits
 
 - name: get resource provider works with no accept
   GET: /resource_providers/$ENVIRON['RP_UUID']
@@ -91,6 +97,8 @@ tests:
   status: 404
   response_strings:
       - No resource provider with uuid d67370b5-4dc0-470d-a4fa-85e8e89abc6c found
+  response_json_paths:
+      $.errors[0].title: Not Found
 
 - name: list one resource providers
   GET: /resource_providers
@@ -103,6 +111,7 @@ tests:
       $.resource_providers[0].links[?rel = "inventories"].href: /resource_providers/$ENVIRON['RP_UUID']/inventories
       $.resource_providers[0].links[?rel = "aggregates"].href: /resource_providers/$ENVIRON['RP_UUID']/aggregates
       $.resource_providers[0].links[?rel = "usages"].href: /resource_providers/$ENVIRON['RP_UUID']/usages
+      $.resource_providers[0].links[?rel = "traits"].href: /resource_providers/$ENVIRON['RP_UUID']/traits
 
 - name: filter out all resource providers by name
   GET: /resource_providers?name=flubblebubble
@@ -124,18 +133,23 @@ tests:
       $.resource_providers[0].links[?rel = "inventories"].href: /resource_providers/$ENVIRON['RP_UUID']/inventories
       $.resource_providers[0].links[?rel = "aggregates"].href: /resource_providers/$ENVIRON['RP_UUID']/aggregates
       $.resource_providers[0].links[?rel = "usages"].href: /resource_providers/$ENVIRON['RP_UUID']/usages
+      $.resource_providers[0].links[?rel = "traits"].href: /resource_providers/$ENVIRON['RP_UUID']/traits
 
 - name: list resource providers filtering by invalid uuid
   GET: /resource_providers?uuid=spameggs
   status: 400
   response_strings:
       - 'Invalid query string parameters'
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: list resource providers providing an invalid filter
   GET: /resource_providers?spam=eggs
   status: 400
   response_strings:
       - 'Invalid query string parameters'
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: list one resource provider filtering by uuid
   GET: /resource_providers?uuid=$ENVIRON['RP_UUID']
@@ -147,6 +161,7 @@ tests:
       $.resource_providers[0].links[?rel = "inventories"].href: /resource_providers/$ENVIRON['RP_UUID']/inventories
       $.resource_providers[0].links[?rel = "aggregates"].href: /resource_providers/$ENVIRON['RP_UUID']/aggregates
       $.resource_providers[0].links[?rel = "usages"].href: /resource_providers/$ENVIRON['RP_UUID']/usages
+      $.resource_providers[0].links[?rel = "traits"].href: /resource_providers/$ENVIRON['RP_UUID']/traits
 
 - name: update a resource provider
   PUT: /resource_providers/$RESPONSE['$.resource_providers[0].uuid']
@@ -179,6 +194,8 @@ tests:
   status: 400
   response_strings:
       - 'JSON does not validate'
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: create a new provider
   POST: /resource_providers
@@ -195,6 +212,8 @@ tests:
   data:
       name: new name
   status: 409
+  response_json_paths:
+      $.errors[0].title: Conflict
 
 - name: fail to put that provider with uuid
   PUT: $LAST_URL
@@ -206,6 +225,8 @@ tests:
   status: 400
   response_strings:
       - Additional properties are not allowed
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: delete resource provider
   DELETE: $LAST_URL
@@ -214,16 +235,22 @@ tests:
 - name: 404 on deleted provider
   DELETE: $LAST_URL
   status: 404
+  response_json_paths:
+      $.errors[0].title: Not Found
 
 - name: fail to get a provider
   GET: /resource_providers/random_sauce
   status: 404
+  response_json_paths:
+      $.errors[0].title: Not Found
 
 - name: delete non-existing resource provider
   DELETE: /resource_providers/d67370b5-4dc0-470d-a4fa-85e8e89abc6c
   status: 404
   response_strings:
       - No resource provider with uuid d67370b5-4dc0-470d-a4fa-85e8e89abc6c found for delete
+  response_json_paths:
+      $.errors[0].title: Not Found
 
 - name: post resource provider no uuid
   POST: /resource_providers
@@ -243,6 +270,8 @@ tests:
   status: 400
   response_strings:
       - 'Malformed JSON:'
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: post bad uuid in resource provider
   POST: /resource_providers
@@ -254,6 +283,8 @@ tests:
   status: 400
   response_strings:
       - "Failed validating 'format'"
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: try to create resource provider with name exceed max characters
   POST: /resource_providers
@@ -264,6 +295,8 @@ tests:
   status: 400
   response_strings:
       - "Failed validating 'maxLength'"
+  response_json_paths:
+      $.errors[0].title: Bad Request
 
 - name: try to update resource provider with name exceed max characters
   PUT: /resource_providers/$ENVIRON['RP_UUID']
@@ -274,3 +307,5 @@ tests:
   status: 400
   response_strings:
       - "Failed validating 'maxLength'"
+  response_json_paths:
+      $.errors[0].title: Bad Request

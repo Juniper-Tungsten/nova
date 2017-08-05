@@ -5,7 +5,7 @@
 ===================================================================
 
 Attaches volumes that are created through the volume API to server
-instances. Also, lists volume attachments for a server instance, shows
+instances. Also, lists volume attachments for a server, shows
 details for a volume attachment, and detaches a volume.
 
 List volume attachments for an instance
@@ -25,6 +25,8 @@ Request
 .. rest_parameters:: parameters.yaml
 
   - server_id: server_id_path
+  - limit: limit_simple
+  - offset: offset_simple
 
 Response
 --------
@@ -62,7 +64,7 @@ Request
 .. rest_parameters:: parameters.yaml
 
   - server_id: server_id_path
-  - volumeAttachment: volumeAttachment
+  - volumeAttachment: volumeAttachment_post
   - volumeId: volumeId
   - device: device
 
@@ -140,7 +142,7 @@ Request
 
   - server_id: server_id_path
   - attachment_id: attachment_id
-  - volumeAttachment: volumeAttachment
+  - volumeAttachment: volumeAttachment_put
   - volumeId: volumeId_swap
 
 **Example Update a volume attachment: JSON request**

@@ -76,8 +76,6 @@ Possible values:
    multiple schedulers
 ** 'chance_scheduler', which simply picks a host at random
 ** 'fake_scheduler', which is used for testing
-** A custom scheduler driver. In this case, you will be responsible for
-   creating and maintaining the entry point in your 'setup.cfg' file
 """),
     cfg.IntOpt("periodic_task_interval",
         default=60,
@@ -192,9 +190,9 @@ Possible values:
 * An integer, where the integer corresponds to the max number of instances
   that can be actively performing IO on any given host.
 """),
-    # TODO(sfinucan): Add 'min' parameter
     cfg.IntOpt("max_instances_per_host",
         default=50,
+        min=1,
         deprecated_group="DEFAULT",
         help="""
 Maximum number of instances that be active on a host.
@@ -405,7 +403,7 @@ stack vs spread.
 
 This option is only used by the FilterScheduler and its subclasses; if you use
 a different scheduler, this option has no effect. Also note that this setting
-only affects scheduling if the 'ram' weigher is enabled.
+only affects scheduling if the 'disk' weigher is enabled.
 
 Possible values:
 
@@ -586,8 +584,8 @@ Configuration options for enabling Trusted Platform Module.
 """)
 
 trusted_opts = [
-    cfg.StrOpt("attestation_server",
-            help="""
+    cfg.HostAddressOpt("attestation_server",
+                       help="""
 The host to use as the attestation server.
 
 Cloud computing pools can involve thousands of compute nodes located at
@@ -710,9 +708,9 @@ Related options:
 * attestation_auth_timeout
 * attestation_insecure_ssl
 """),
-    # TODO(stephenfin): Add min parameter
     cfg.IntOpt("attestation_auth_timeout",
             default=60,
+            min=0,
             help="""
 This value controls how long a successful attestation is cached. Once this
 period has elapsed, a new attestation request will be made. See the

@@ -16,6 +16,7 @@
 
 import inspect
 
+import mock
 import six
 from webob.util import status_reasons
 
@@ -91,6 +92,7 @@ class WrapExceptionTestCase(test.NoDBTestCase):
         self.assertEqual(3, notification.payload['args']['extra'])
         for key in ['exception', 'args']:
             self.assertIn(key, notification.payload.keys())
+        self.assertNotIn('context', notification.payload['args'].keys())
 
         self.assertEqual(1, len(fake_notifier.VERSIONED_NOTIFICATIONS))
         notification = fake_notifier.VERSIONED_NOTIFICATIONS[0]
@@ -108,6 +110,33 @@ class WrapExceptionTestCase(test.NoDBTestCase):
         self.assertEqual('bad_function_exception', payload['function_name'])
         self.assertEqual('nova.tests.unit.test_exception',
                          payload['module_name'])
+
+    @mock.patch('nova.rpc.NOTIFIER')
+    @mock.patch('nova.notifications.objects.exception.'
+                'ExceptionNotification.__init__')
+    def test_wrap_exception_notification_not_emitted_if_disabled(
+            self, mock_notification, mock_notifier):
+        mock_notifier.is_enabled.return_value = False
+
+        wrapped = exception_wrapper.wrap_exception(rpc.get_notifier('fake'),
+                                                   binary='fake-binary')
+        ctxt = context.get_admin_context()
+        self.assertRaises(test.TestingException,
+                          wrapped(bad_function_exception), 1, ctxt, 3, zoo=3)
+        self.assertFalse(mock_notification.called)
+
+    @mock.patch('nova.notifications.objects.exception.'
+                'ExceptionNotification.__init__')
+    def test_wrap_exception_notification_not_emitted_if_unversioned(
+            self, mock_notifier):
+        self.flags(notification_format='unversioned', group='notifications')
+
+        wrapped = exception_wrapper.wrap_exception(rpc.get_notifier('fake'),
+                                                   binary='fake-binary')
+        ctxt = context.get_admin_context()
+        self.assertRaises(test.TestingException,
+                          wrapped(bad_function_exception), 1, ctxt, 3, zoo=3)
+        self.assertFalse(mock_notifier.called)
 
 
 class NovaExceptionTestCase(test.NoDBTestCase):

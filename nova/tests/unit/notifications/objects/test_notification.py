@@ -17,6 +17,7 @@ import mock
 from oslo_utils import timeutils
 from oslo_versionedobjects import fixture
 
+from nova import exception
 from nova.network import model as network_model
 from nova.notifications import base as notification_base
 from nova.notifications.objects import base as notification
@@ -25,6 +26,7 @@ from nova.objects import base
 from nova.objects import fields
 from nova import test
 from nova.tests.unit.objects import test_objects
+from nova.tests import uuidsentinel as uuids
 
 
 class TestNotificationBase(test.NoDBTestCase):
@@ -36,7 +38,16 @@ class TestNotificationBase(test.NoDBTestCase):
             'field_1': fields.StringField(),
             'field_2': fields.IntegerField(),
             'not_important_field': fields.IntegerField(),
+            'lazy_field': fields.IntegerField()
         }
+
+        def obj_load_attr(self, attrname):
+            if attrname == 'lazy_field':
+                self.lazy_field = 42
+            else:
+                raise exception.ObjectActionError(
+                    action='obj_load_attr',
+                    reason='attribute %s not lazy-loadable' % attrname)
 
     @base.NovaObjectRegistry.register_if(False)
     class TestNotificationPayload(notification.NotificationPayloadBase):
@@ -45,12 +56,15 @@ class TestNotificationBase(test.NoDBTestCase):
         SCHEMA = {
             'field_1': ('source_field', 'field_1'),
             'field_2': ('source_field', 'field_2'),
+            'lazy_field': ('source_field', 'lazy_field')
         }
 
         fields = {
             'extra_field': fields.StringField(),  # filled by ctor
-            'field_1': fields.StringField(),  # filled by the schema
+            # filled by the schema
+            'field_1': fields.StringField(nullable=True),
             'field_2': fields.IntegerField(),   # filled by the schema
+            'lazy_field': fields.IntegerField()  # filled by the schema
         }
 
         def populate_schema(self, source_field):
@@ -88,6 +102,7 @@ class TestNotificationBase(test.NoDBTestCase):
         'deleted_at': None,
         'deleted': False,
         'id': 123,
+        'uuid': uuids.service,
         'host': 'fake-host',
         'binary': 'nova-fake',
         'topic': 'fake-service-topic',
@@ -103,7 +118,8 @@ class TestNotificationBase(test.NoDBTestCase):
         'nova_object.data': {
             'extra_field': 'test string',
             'field_1': 'test1',
-            'field_2': 42},
+            'field_2': 42,
+            'lazy_field': 42},
         'nova_object.version': '1.0',
         'nova_object.namespace': 'nova'}
 
@@ -223,6 +239,32 @@ class TestNotificationBase(test.NoDBTestCase):
         self.assertRaises(AssertionError, noti.emit, mock_context)
         self.assertFalse(mock_notifier.called)
 
+    def test_lazy_load_source_field(self):
+        my_obj = self.TestObject(field_1='test1',
+                                 field_2=42,
+                                 not_important_field=13)
+        payload = self.TestNotificationPayload(extra_field='test string')
+
+        payload.populate_schema(my_obj)
+
+        self.assertEqual(42, payload.lazy_field)
+
+    def test_uninited_source_field_defaulted_to_none(self):
+        my_obj = self.TestObject(field_2=42,
+                                 not_important_field=13)
+        payload = self.TestNotificationPayload(extra_field='test string')
+
+        payload.populate_schema(my_obj)
+
+        self.assertIsNone(payload.field_1)
+
+    def test_uninited_source_field_not_nullable_payload_field_fails(self):
+        my_obj = self.TestObject(field_1='test1',
+                                 not_important_field=13)
+        payload = self.TestNotificationPayload(extra_field='test string')
+
+        self.assertRaises(ValueError, payload.populate_schema, my_obj)
+
     @mock.patch('nova.rpc.NOTIFIER')
     def test_empty_schema(self, mock_notifier):
         non_populated_payload = self.TestNotificationPayloadEmptySchema(
@@ -255,17 +297,65 @@ class TestNotificationBase(test.NoDBTestCase):
         self.assertIn('test-update-1.json', self.TestNotification.samples)
         self.assertIn('test-update-2.json', self.TestNotification.samples)
 
+    @mock.patch('nova.notifications.objects.base.NotificationBase._emit')
+    @mock.patch('nova.rpc.NOTIFIER')
+    def test_payload_is_not_generated_if_notifier_is_not_enabled(
+            self, mock_notifier, mock_emit):
+        mock_notifier.is_enabled.return_value = False
+
+        payload = self.TestNotificationPayload(
+            extra_field='test string')
+        self.payload.populate_schema(source_field=self.my_obj)
+        noti = self.TestNotification(
+            event_type=notification.EventType(
+                object='test_object',
+                action=fields.NotificationAction.UPDATE),
+            publisher=notification.NotificationPublisher.from_service_obj(
+                self.service_obj),
+            priority=fields.NotificationPriority.INFO,
+            payload=payload)
+
+        mock_context = mock.Mock()
+
+        noti.emit(mock_context)
+
+        self.assertFalse(payload.populated)
+        self.assertFalse(mock_emit.called)
+
+    @mock.patch('nova.notifications.objects.base.NotificationBase._emit')
+    def test_payload_is_not_generated_if_notification_format_is_unversioned(
+            self, mock_emit):
+        self.flags(notification_format='unversioned', group='notifications')
+
+        payload = self.TestNotificationPayload(
+            extra_field='test string')
+        self.payload.populate_schema(source_field=self.my_obj)
+        noti = self.TestNotification(
+            event_type=notification.EventType(
+                object='test_object',
+                action=fields.NotificationAction.UPDATE),
+            publisher=notification.NotificationPublisher.from_service_obj(
+                self.service_obj),
+            priority=fields.NotificationPriority.INFO,
+            payload=payload)
+
+        mock_context = mock.Mock()
+
+        noti.emit(mock_context)
+
+        self.assertFalse(payload.populated)
+        self.assertFalse(mock_emit.called)
 
 notification_object_data = {
     'AggregateNotification': '1.0-a73147b93b520ff0061865849d3dfa56',
-    'AggregatePayload': '1.0-2550af604410af7b4ad5d46fb29ba45b',
+    'AggregatePayload': '1.1-1eb9adcc4440d8627de6ec37c6398746',
     'AuditPeriodPayload': '1.0-2b429dd307b8374636703b843fa3f9cb',
     'BandwidthPayload': '1.0-ee2616a7690ab78406842a2b68e34130',
     'EventType': '1.5-ffa6d332f4462c45a2a363356a14165f',
     'ExceptionNotification': '1.0-a73147b93b520ff0061865849d3dfa56',
     'ExceptionPayload': '1.0-27db46ee34cd97e39f2643ed92ad0cc5',
     'FlavorNotification': '1.0-a73147b93b520ff0061865849d3dfa56',
-    'FlavorPayload': '1.2-6f73fa3dc2d5f7abff1a27aac70b8759',
+    'FlavorPayload': '1.3-6335e626893d7df5f96f87e6731fef56',
     'InstanceActionNotification': '1.0-a73147b93b520ff0061865849d3dfa56',
     'InstanceActionPayload': '1.1-8d12efc3251c606b61b3d479a9da51be',
     'InstanceActionVolumeSwapNotification':
@@ -284,7 +374,7 @@ notification_object_data = {
 
 class TestNotificationObjectVersions(test.NoDBTestCase):
     def setUp(self):
-        super(test.NoDBTestCase, self).setUp()
+        super(TestNotificationObjectVersions, self).setUp()
         base.NovaObjectRegistry.register_notification_objects()
 
     def test_versions(self):
@@ -340,33 +430,79 @@ def get_extra_data(obj_class):
 
 
 class TestInstanceNotification(test.NoDBTestCase):
+    def setUp(self):
+        super(TestInstanceNotification, self).setUp()
+        self.test_keys = ['memory_mb', 'vcpus', 'root_gb', 'ephemeral_gb',
+                          'swap']
+        self.flavor_values = {k: 123 for k in self.test_keys}
+        instance_values = {k: 456 for k in self.test_keys}
+        flavor = objects.Flavor(flavorid='test-flavor', name='test-flavor',
+                                disabled=False, projects=[], is_public=True,
+                                extra_specs={}, **self.flavor_values)
+        info_cache = objects.InstanceInfoCache(
+            network_info=network_model.NetworkInfo())
+        self.instance = objects.Instance(
+            flavor=flavor,
+            info_cache=info_cache,
+            metadata={},
+            uuid=uuids.instance1,
+            locked=False,
+            **instance_values)
+        self.payload = {
+            'bandwidth': {},
+            'audit_period_ending': timeutils.utcnow(),
+            'audit_period_beginning': timeutils.utcnow(),
+        }
+
     @mock.patch('nova.notifications.objects.instance.'
                 'InstanceUpdateNotification._emit')
     def test_send_version_instance_update_uses_flavor(self, mock_emit):
         # Make sure that the notification payload chooses the values in
         # instance.flavor.$value instead of instance.$value
-        test_keys = ['memory_mb', 'vcpus', 'root_gb', 'ephemeral_gb']
-        flavor_values = {k: 123 for k in test_keys}
-        instance_values = {k: 456 for k in test_keys}
-        flavor = objects.Flavor(**flavor_values)
-        info_cache = objects.InstanceInfoCache(
-            network_info=network_model.NetworkInfo())
-        instance = objects.Instance(
-            flavor=flavor,
-            info_cache=info_cache,
-            **instance_values)
-        payload = {
-            'bandwidth': {},
-            'audit_period_ending': timeutils.utcnow(),
-            'audit_period_beginning': timeutils.utcnow(),
-        }
         notification_base._send_versioned_instance_update(
             mock.MagicMock(),
-            instance,
-            payload,
+            self.instance,
+            self.payload,
             'host',
             'compute')
         payload = mock_emit.call_args_list[0][1]['payload']['nova_object.data']
         flavor_payload = payload['flavor']['nova_object.data']
-        data = {k: flavor_payload[k] for k in test_keys}
-        self.assertEqual(flavor_values, data)
+        data = {k: flavor_payload[k] for k in self.test_keys}
+        self.assertEqual(self.flavor_values, data)
+
+    @mock.patch('nova.rpc.NOTIFIER')
+    @mock.patch('nova.notifications.objects.instance.'
+                'InstanceUpdatePayload.__init__', return_value=None)
+    @mock.patch('nova.notifications.objects.instance.'
+                'InstanceUpdateNotification.__init__', return_value=None)
+    def test_send_versioned_instance_notification_is_not_called_disabled(
+            self, mock_notification, mock_payload, mock_notifier):
+        mock_notifier.is_enabled.return_value = False
+
+        notification_base._send_versioned_instance_update(
+            mock.MagicMock(),
+            self.instance,
+            self.payload,
+            'host',
+            'compute')
+
+        self.assertFalse(mock_payload.called)
+        self.assertFalse(mock_notification.called)
+
+    @mock.patch('nova.notifications.objects.instance.'
+                'InstanceUpdatePayload.__init__', return_value=None)
+    @mock.patch('nova.notifications.objects.instance.'
+                'InstanceUpdateNotification.__init__', return_value=None)
+    def test_send_versioned_instance_notification_is_not_called_unversioned(
+            self, mock_notification, mock_payload):
+        self.flags(notification_format='unversioned', group='notifications')
+
+        notification_base._send_versioned_instance_update(
+            mock.MagicMock(),
+            self.instance,
+            self.payload,
+            'host',
+            'compute')
+
+        self.assertFalse(mock_payload.called)
+        self.assertFalse(mock_notification.called)

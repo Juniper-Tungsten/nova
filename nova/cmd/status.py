@@ -17,17 +17,18 @@ CLI interface for nova status commands.
 """
 
 from __future__ import print_function
+
+# enum comes from the enum34 package if python < 3.4, else it's stdlib
+import enum
 import functools
 import sys
 import textwrap
 import traceback
 
-# enum comes from the enum34 package if python < 3.4, else it's stdlib
-import enum
 from keystoneauth1 import exceptions as ks_exc
 from keystoneauth1 import loading as keystone
-from keystoneauth1 import session
 from oslo_config import cfg
+import pkg_resources
 import prettytable
 from sqlalchemy import func as sqlfunc
 from sqlalchemy import MetaData, Table, select
@@ -180,10 +181,13 @@ class UpgradeCommands(object):
 
         """
         ks_filter = {'service_type': 'placement',
-                     'region_name': CONF.placement.os_region_name}
+                     'region_name': CONF.placement.os_region_name,
+                     'interface': CONF.placement.os_interface}
         auth = keystone.load_auth_from_conf_options(
             CONF, 'placement')
-        client = session.Session(auth=auth)
+        client = keystone.load_session_from_conf_options(
+            CONF, 'placement', auth=auth)
+
         return client.get(path, endpoint_filter=ks_filter).json()
 
     def _check_placement(self):
@@ -197,11 +201,11 @@ class UpgradeCommands(object):
         """
         try:
             versions = self._placement_get("/")
-            max_version = float(versions["versions"][0]["max_version"])
-            # The required version is a bit tricky but we know that we at least
-            # need 1.0 for Newton computes. This minimum might change in the
-            # future.
-            needs_version = 1.0
+            max_version = pkg_resources.parse_version(
+                versions["versions"][0]["max_version"])
+            # NOTE(rpodolyaka): 1.4 is needed in Pike and further as
+            # FilterScheduler will no longer fall back to not using placement
+            needs_version = pkg_resources.parse_version("1.4")
             if max_version < needs_version:
                 msg = (_('Placement API version %(needed)s needed, '
                          'you have %(current)s.') %
@@ -452,7 +456,7 @@ def main():
     try:
         fn, fn_args, fn_kwargs = cmd_common.get_action_fn()
         ret = fn(*fn_args, **fn_kwargs)
-        return(ret)
+        return ret
     except Exception:
         print(_('Error:\n%s') % traceback.format_exc())
         # This is 255 so it's not confused with the upgrade check exit codes.

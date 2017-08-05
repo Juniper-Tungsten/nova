@@ -15,20 +15,29 @@
 #    under the License.
 
 import copy
+
 from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_utils import strutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import six
-import stevedore
 import webob
 from webob import exc
 
 from nova.api.openstack import api_version_request
 from nova.api.openstack import common
+from nova.api.openstack.compute import availability_zone
+from nova.api.openstack.compute import block_device_mapping
+from nova.api.openstack.compute import block_device_mapping_v1
+from nova.api.openstack.compute import config_drive
 from nova.api.openstack.compute import helpers
+from nova.api.openstack.compute import keypairs
+from nova.api.openstack.compute import multiple_create
+from nova.api.openstack.compute import scheduler_hints
 from nova.api.openstack.compute.schemas import servers as schema_servers
+from nova.api.openstack.compute import security_groups
+from nova.api.openstack.compute import user_data
 from nova.api.openstack.compute.views import servers as views_servers
 from nova.api.openstack import extensions
 from nova.api.openstack import wsgi
@@ -40,7 +49,6 @@ import nova.conf
 from nova import context as nova_context
 from nova import exception
 from nova.i18n import _
-from nova.i18n import _LW
 from nova.image import glance
 from nova import objects
 from nova.policies import servers as server_policies
@@ -57,8 +65,6 @@ LOG = logging.getLogger(__name__)
 
 class ServersController(wsgi.Controller):
     """The Server API base controller class for the OpenStack API."""
-
-    EXTENSION_CREATE_NAMESPACE = 'nova.api.v21.extensions.server.create'
 
     _view_builder_class = views_servers.ViewBuilder
 
@@ -79,6 +85,34 @@ class ServersController(wsgi.Controller):
     schema_server_create_v237 = schema_servers.base_create_v237
     schema_server_create_v242 = schema_servers.base_create_v242
 
+    # NOTE(alex_xu): Please do not add more items into this list. This list
+    # should be removed in the future.
+    schema_func_list = [
+        availability_zone.get_server_create_schema,
+        block_device_mapping.get_server_create_schema,
+        block_device_mapping_v1.get_server_create_schema,
+        config_drive.get_server_create_schema,
+        keypairs.get_server_create_schema,
+        multiple_create.get_server_create_schema,
+        scheduler_hints.get_server_create_schema,
+        security_groups.get_server_create_schema,
+        user_data.get_server_create_schema,
+    ]
+
+    # NOTE(alex_xu): Please do not add more items into this list. This list
+    # should be removed in the future.
+    server_create_func_list = [
+        availability_zone.server_create,
+        block_device_mapping.server_create,
+        block_device_mapping_v1.server_create,
+        config_drive.server_create,
+        keypairs.server_create,
+        multiple_create.server_create,
+        scheduler_hints.server_create,
+        security_groups.server_create,
+        user_data.server_create,
+    ]
+
     @staticmethod
     def _add_location(robj):
         # Just in case...
@@ -93,102 +127,21 @@ class ServersController(wsgi.Controller):
         return robj
 
     def __init__(self, **kwargs):
-        def _check_load_extension(required_function):
+        # TODO(alex_xu): Remove this line when 'extension_info' won't be passed
+        # in when creating controller.
+        kwargs.pop('extension_info', None)
 
-            def should_load_extension(ext):
-                # Check whitelist is either empty or if not then the extension
-                # is in the whitelist
-                whitelist = CONF.osapi_v21.extensions_whitelist
-                blacklist = CONF.osapi_v21.extensions_blacklist
-                if not whitelist:
-                    # if there is no whitelist, we accept everything,
-                    # so we only care about the blacklist.
-                    if ext.obj.alias in blacklist:
-                        return False
-                    else:
-                        return True
-                else:
-                    if ext.obj.alias in whitelist:
-                        if ext.obj.alias in blacklist:
-                            LOG.warning(
-                                _LW(
-                                    "Extension %s is both in whitelist and "
-                                    "blacklist, blacklisting takes precedence"
-                                ),
-                                ext.obj.alias)
-                            return False
-                        else:
-                            return True
-                    else:
-                        return False
-
-            def check_load_extension(ext):
-                if isinstance(ext.obj, extensions.V21APIExtensionBase):
-                    # Filter out for the existence of the required
-                    # function here rather than on every request. We
-                    # don't have a new abstract base class to reduce
-                    # duplication in the extensions as they may want
-                    # to implement multiple server (and other) entry
-                    # points if hasattr(ext.obj, 'server_create'):
-                    if hasattr(ext.obj, required_function):
-                        LOG.debug('extension %(ext_alias)s detected by '
-                                  'servers extension for function %(func)s',
-                                  {'ext_alias': ext.obj.alias,
-                                   'func': required_function})
-                        return should_load_extension(ext)
-                    else:
-                        LOG.debug(
-                            'extension %(ext_alias)s is missing %(func)s',
-                            {'ext_alias': ext.obj.alias,
-                            'func': required_function})
-                        return False
-                else:
-                    return False
-            return check_load_extension
-
-        self.extension_info = kwargs.pop('extension_info')
         super(ServersController, self).__init__(**kwargs)
         self.compute_api = compute.API()
 
-        # Look for implementation of extension point of server creation
-        self.create_extension_manager = \
-          stevedore.enabled.EnabledExtensionManager(
-              namespace=self.EXTENSION_CREATE_NAMESPACE,
-              check_func=_check_load_extension('server_create'),
-              invoke_on_load=True,
-              invoke_kwds={"extension_info": self.extension_info},
-              propagate_map_exceptions=True)
-        if not list(self.create_extension_manager):
-            LOG.debug("Did not find any server create extensions")
-
-        # Look for API schema of server create extension
-        self.create_schema_manager = \
-            stevedore.enabled.EnabledExtensionManager(
-                namespace=self.EXTENSION_CREATE_NAMESPACE,
-                check_func=_check_load_extension('get_server_create_schema'),
-                invoke_on_load=True,
-                invoke_kwds={"extension_info": self.extension_info},
-                propagate_map_exceptions=True)
-        if list(self.create_schema_manager):
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create_v242,
-                                           '2.42')
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create_v237,
-                                           '2.37')
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create_v232,
-                                          '2.32')
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create_v219,
-                                          '2.19')
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create, '2.1')
-            self.create_schema_manager.map(self._create_extension_schema,
-                                           self.schema_server_create_v20,
-                                           '2.0')
-        else:
-            LOG.debug("Did not find any server create schemas")
+        # TODO(alex_xu): The final goal is that merging all of
+        # extended json-schema into server main json-schema.
+        self._create_schema(self.schema_server_create_v242, '2.42')
+        self._create_schema(self.schema_server_create_v237, '2.37')
+        self._create_schema(self.schema_server_create_v232, '2.32')
+        self._create_schema(self.schema_server_create_v219, '2.19')
+        self._create_schema(self.schema_server_create, '2.1')
+        self._create_schema(self.schema_server_create_v20, '2.0')
 
     @extensions.expected_errors((400, 403))
     @validation.query_schema(schema_servers.query_params_v226, '2.26')
@@ -323,6 +276,11 @@ class ServersController(wsgi.Controller):
                 context.can(server_policies.SERVERS % 'index:get_all_tenants')
             elevated = context.elevated()
         else:
+            # As explained in lp:#1185290, if `all_tenants` is not passed
+            # we must ignore the `tenant_id` search option. As explained
+            # in a above code comment, any change to this behavior would
+            # require a microversion bump.
+            search_opts.pop('tenant_id', None)
             if context.project_id:
                 search_opts['project_id'] = context.project_id
             else:
@@ -417,36 +375,6 @@ class ServersController(wsgi.Controller):
             expl = _("Duplicate networks (%s) are not allowed") % net_id
             raise exc.HTTPBadRequest(explanation=expl)
 
-    @staticmethod
-    def _validate_auto_or_none_network_request(requested_networks):
-        """Validates a set of network requests with 'auto' or 'none' in it.
-
-        :param requested_networks: nova.objects.NetworkRequestList
-        :returns: nova.objects.NetworkRequestList - the same list as the input
-            if validation is OK, None if the request can't be honored due to
-            the minimum nova-compute service version in the deployment is not
-            new enough to support auto-allocated networking.
-        """
-
-        # Check the minimum nova-compute service version since Mitaka
-        # computes can't handle network IDs that aren't UUIDs.
-        # TODO(mriedem): Remove this check in Ocata.
-        min_compute_version = objects.Service.get_minimum_version(
-            nova_context.get_admin_context(), 'nova-compute')
-
-        # NOTE(mriedem): If the minimum compute version is not new enough
-        # for supporting auto-allocation, change the network request to
-        # None so it works the same as it did in Mitaka when you don't
-        # request anything.
-        if min_compute_version < 12:
-            LOG.debug("User requested network '%s' but the minimum "
-                      "nova-compute version in the deployment is not new "
-                      "enough to support that request, so treating it as "
-                      "though a specific network was not requested.",
-                      requested_networks[0].network_id)
-            return None
-        return requested_networks
-
     def _get_requested_networks(self, requested_networks,
                                 supports_device_tagging=False):
         """Create a list of requested networks from the networks attribute."""
@@ -455,12 +383,9 @@ class ServersController(wsgi.Controller):
         # list or a string enum with value 'auto' or 'none'. The auto/none
         # values are verified via jsonschema so we don't check them again here.
         if isinstance(requested_networks, six.string_types):
-            req_nets = objects.NetworkRequestList(
+            return objects.NetworkRequestList(
                 objects=[objects.NetworkRequest(
                     network_id=requested_networks)])
-            # Check the minimum nova-compute service version for supporting
-            # these special values.
-            return self._validate_auto_or_none_network_request(req_nets)
 
         networks = []
         network_uuids = []
@@ -544,16 +469,10 @@ class ServersController(wsgi.Controller):
         # Arguments to be passed to instance create function
         create_kwargs = {}
 
-        # Query extensions which want to manipulate the keyword
-        # arguments.
-        # NOTE(cyeoh): This is the hook that extensions use
-        # to replace the extension specific code below.
-        # When the extensions are ported this will also result
-        # in some convenience function from this class being
-        # moved to the extension
-        if list(self.create_extension_manager):
-            self.create_extension_manager.map(self._create_extension_point,
-                                              server_dict, create_kwargs, body)
+        # TODO(alex_xu): This is for back-compatible with stevedore
+        # extension interface. But the final goal is that merging
+        # all of extended code into ServersController.
+        self._create_by_func_list(server_dict, create_kwargs, body)
 
         availability_zone = create_kwargs.pop("availability_zone", None)
 
@@ -605,10 +524,7 @@ class ServersController(wsgi.Controller):
         return_reservation_id = create_kwargs.pop('return_reservation_id',
                                                   False)
 
-        requested_networks = None
-        if ('os-networks' in self.extension_info.get_extensions()
-                or utils.is_neutron()):
-            requested_networks = server_dict.get('networks')
+        requested_networks = server_dict.get('networks', None)
 
         if requested_networks is not None:
             requested_networks = self._get_requested_networks(
@@ -731,12 +647,10 @@ class ServersController(wsgi.Controller):
     # NOTE(gmann): Parameter 'req_body' is placed to handle scheduler_hint
     # extension for V2.1. No other extension supposed to use this as
     # it will be removed soon.
-    def _create_extension_point(self, ext, server_dict,
-                                create_kwargs, req_body):
-        handler = ext.obj
-        LOG.debug("Running _create_extension_point for %s", ext.obj)
-
-        handler.server_create(server_dict, create_kwargs, req_body)
+    def _create_by_func_list(self, server_dict,
+                             create_kwargs, req_body):
+        for func in self.server_create_func_list:
+            func(server_dict, create_kwargs, req_body)
 
     def _rebuild_extension_point(self, ext, rebuild_dict, rebuild_kwargs):
         handler = ext.obj
@@ -744,12 +658,15 @@ class ServersController(wsgi.Controller):
 
         handler.server_rebuild(rebuild_dict, rebuild_kwargs)
 
-    def _create_extension_schema(self, ext, create_schema, version):
-        handler = ext.obj
-        LOG.debug("Running _create_extension_schema for %s", ext.obj)
+    def _create_schema(self, create_schema, version):
+        for schema_func in self.schema_func_list:
+            self._create_schema_by_func(create_schema, version, schema_func)
 
-        schema = handler.get_server_create_schema(version)
-        if ext.obj.name == 'SchedulerHints':
+    def _create_schema_by_func(self, create_schema, version, schema_func):
+        schema = schema_func(version)
+
+        if (schema_func.__module__ ==
+                'nova.api.openstack.compute.scheduler_hints'):
             # NOTE(oomichi): The request parameter position of scheduler-hint
             # extension is different from the other extensions, so here handles
             # the difference.
@@ -1130,9 +1047,16 @@ class ServersController(wsgi.Controller):
     def _get_instance(self, context, instance_uuid):
         try:
             attrs = ['system_metadata', 'metadata']
-            return objects.Instance.get_by_uuid(context, instance_uuid,
-                                                expected_attrs=attrs)
-        except exception.InstanceNotFound as e:
+            if not CONF.cells.enable:
+                # NOTE(danms): We can't target a cell database if we're
+                # in cellsv1 otherwise we'll short-circuit the replication.
+                mapping = objects.InstanceMapping.get_by_instance_uuid(
+                    context, instance_uuid)
+                nova_context.set_target_cell(context, mapping.cell_mapping)
+            return objects.Instance.get_by_uuid(
+                context, instance_uuid, expected_attrs=attrs)
+        except (exception.InstanceNotFound,
+                exception.InstanceMappingNotFound) as e:
             raise webob.exc.HTTPNotFound(explanation=e.format_message())
 
     @wsgi.response(202)

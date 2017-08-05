@@ -27,7 +27,6 @@ from nova.api.openstack import wsgi
 from nova.api import validation
 import nova.exception
 from nova.i18n import _
-from nova.i18n import _LE
 from nova import objects
 from nova.policies import server_groups as sg_policies
 
@@ -60,10 +59,9 @@ class ServerGroupController(wsgi.Controller):
         members = []
         if group.members:
             # Display the instances that are not deleted.
-            filters = {'uuid': group.members, 'deleted': False}
-            instances = objects.InstanceList.get_by_filters(
-                context, filters=filters)
-            members = [instance.uuid for instance in instances]
+            mappings = objects.InstanceMappingList.get_by_instance_uuids(
+                context, group.members)
+            members = [mapping.instance_uuid for mapping in mappings]
         server_group['members'] = members
         # Add project id information to the response data for
         # API version v2.13
@@ -85,7 +83,7 @@ class ServerGroupController(wsgi.Controller):
     @wsgi.response(204)
     @extensions.expected_errors(404)
     def delete(self, req, id):
-        """Delete an server group."""
+        """Delete a server group."""
         context = _authorize_context(req, 'delete')
         try:
             sg = objects.InstanceGroup.get_by_uuid(context, id)
@@ -101,8 +99,7 @@ class ServerGroupController(wsgi.Controller):
                            user_id=user_id, server_groups=-1)
         except Exception:
             quotas = None
-            LOG.exception(_LE("Failed to update usages deallocating "
-                                  "server group"))
+            LOG.exception("Failed to update usages deallocating server group")
 
         try:
             sg.destroy()

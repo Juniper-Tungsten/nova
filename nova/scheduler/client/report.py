@@ -16,13 +16,12 @@
 import functools
 import math
 import re
-from six.moves.urllib import parse
 import time
 
 from keystoneauth1 import exceptions as ks_exc
 from keystoneauth1 import loading as keystone
-from keystoneauth1 import session
 from oslo_log import log as logging
+from six.moves.urllib import parse
 
 from nova.compute import utils as compute_utils
 import nova.conf
@@ -175,11 +174,15 @@ def _extract_inventory_in_use(body):
     return None
 
 
+def get_placement_request_id(response):
+    if response is not None:
+        return response.headers.get(
+            'openstack-request-id',
+            response.headers.get('x-openstack-request-id'))
+
+
 class SchedulerReportClient(object):
     """Client class for updating the scheduler."""
-
-    ks_filter = {'service_type': 'placement',
-                 'region_name': CONF.placement.os_region_name}
 
     def __init__(self):
         # A dict, keyed by the resource provider UUID, of ResourceProvider
@@ -191,9 +194,13 @@ class SchedulerReportClient(object):
         self._provider_aggregate_map = {}
         auth_plugin = keystone.load_auth_from_conf_options(
             CONF, 'placement')
-        self._client = session.Session(auth=auth_plugin)
+        self._client = keystone.load_session_from_conf_options(
+            CONF, 'placement', auth=auth_plugin)
         # NOTE(danms): Keep track of how naggy we've been
         self._warn_count = 0
+        self.ks_filter = {'service_type': 'placement',
+                          'region_name': CONF.placement.os_region_name,
+                          'interface': CONF.placement.os_interface}
 
     def get(self, url, version=None):
         kwargs = {}
@@ -208,14 +215,22 @@ class SchedulerReportClient(object):
             url,
             endpoint_filter=self.ks_filter, raise_exc=False, **kwargs)
 
-    def post(self, url, data):
+    def post(self, url, data, version=None):
         # NOTE(sdague): using json= instead of data= sets the
         # media type to application/json for us. Placement API is
         # more sensitive to this than other APIs in the OpenStack
         # ecosystem.
+        kwargs = {}
+        if version is not None:
+            # TODO(mriedem): Perform some version discovery at some point.
+            kwargs = {
+                'headers': {
+                    'OpenStack-API-Version': 'placement %s' % version
+                },
+            }
         return self._client.post(
             url, json=data,
-            endpoint_filter=self.ks_filter, raise_exc=False)
+            endpoint_filter=self.ks_filter, raise_exc=False, **kwargs)
 
     def put(self, url, data):
         # NOTE(sdague): using json= instead of data= sets the
@@ -250,12 +265,7 @@ class SchedulerReportClient(object):
                         version='1.4')
         if resp.status_code == 200:
             data = resp.json()
-            raw_rps = data.get('resource_providers', [])
-            rps = [objects.ResourceProvider(uuid=rp['uuid'],
-                                            name=rp['name'],
-                                            generation=rp['generation'],
-                                            ) for rp in raw_rps]
-            return objects.ResourceProviderList(objects=rps)
+            return data.get('resource_providers', [])
         else:
             msg = _LE("Failed to retrieve filtered list of resource providers "
                       "from placement API for filters %(filters)s. "
@@ -281,15 +291,23 @@ class SchedulerReportClient(object):
         if resp.status_code == 200:
             data = resp.json()
             return set(data['aggregates'])
+
+        placement_req_id = get_placement_request_id(resp)
         if resp.status_code == 404:
-            msg = _LW("Tried to get a provider's aggregates; however the "
-                      "provider %s does not exist.")
-            LOG.warning(msg, rp_uuid)
-        else:
-            msg = _LE("Failed to retrieve aggregates from placement API "
-                      "for resource provider with UUID %(uuid)s. "
-                      "Got %(status_code)d: %(err_text)s.")
+            msg = _LW("[%(placement_req_id)s] Tried to get a provider's "
+                      "aggregates; however the provider %(uuid)s does not "
+                      "exist.")
             args = {
+                'uuid': rp_uuid,
+                'placement_req_id': placement_req_id,
+            }
+            LOG.warning(msg, args)
+        else:
+            msg = _LE("[%(placement_req_id)s] Failed to retrieve aggregates "
+                      "from placement API for resource provider with UUID "
+                      "%(uuid)s. Got %(status_code)d: %(err_text)s.")
+            args = {
+                'placement_req_id': placement_req_id,
                 'uuid': rp_uuid,
                 'status_code': resp.status_code,
                 'err_text': resp.text,
@@ -301,7 +319,7 @@ class SchedulerReportClient(object):
         """Queries the placement API for a resource provider record with the
         supplied UUID.
 
-        Returns an `objects.ResourceProvider` object if found or None if no
+        Returns a dict of resource provider information if found or None if no
         such resource provider could be found.
 
         :param uuid: UUID identifier for the resource provider to look up
@@ -309,21 +327,19 @@ class SchedulerReportClient(object):
         resp = self.get("/resource_providers/%s" % uuid)
         if resp.status_code == 200:
             data = resp.json()
-            return objects.ResourceProvider(
-                    uuid=uuid,
-                    name=data['name'],
-                    generation=data['generation'],
-            )
+            return data
         elif resp.status_code == 404:
             return None
         else:
-            msg = _LE("Failed to retrieve resource provider record from "
-                      "placement API for UUID %(uuid)s. "
+            placement_req_id = get_placement_request_id(resp)
+            msg = _LE("[%(placement_req_id)s] Failed to retrieve resource "
+                      "provider record from placement API for UUID %(uuid)s. "
                       "Got %(status_code)d: %(err_text)s.")
             args = {
                 'uuid': uuid,
                 'status_code': resp.status_code,
                 'err_text': resp.text,
+                'placement_req_id': placement_req_id,
             }
             LOG.error(msg, args)
 
@@ -331,8 +347,8 @@ class SchedulerReportClient(object):
     def _create_resource_provider(self, uuid, name):
         """Calls the placement API to create a new resource provider record.
 
-        Returns an `objects.ResourceProvider` object representing the
-        newly-created resource provider object.
+        Returns a dict of resource provider information object representing
+        the newly-created resource provider.
 
         :param uuid: UUID of the new resource provider
         :param name: Name of the resource provider
@@ -343,12 +359,18 @@ class SchedulerReportClient(object):
             'name': name,
         }
         resp = self.post(url, payload)
+        placement_req_id = get_placement_request_id(resp)
         if resp.status_code == 201:
-            msg = _LI("Created resource provider record via placement API "
-                      "for resource provider with UUID {0} and name {1}.")
-            msg = msg.format(uuid, name)
-            LOG.info(msg)
-            return objects.ResourceProvider(
+            msg = _LI("[%(placement_req_id)s] Created resource provider "
+                      "record via placement API for resource provider with "
+                      "UUID %(uuid)s and name %(name)s.")
+            args = {
+                'uuid': uuid,
+                'name': name,
+                'placement_req_id': placement_req_id,
+            }
+            LOG.info(msg, args)
+            return dict(
                     uuid=uuid,
                     name=name,
                     generation=0,
@@ -357,20 +379,24 @@ class SchedulerReportClient(object):
             # Another thread concurrently created a resource provider with the
             # same UUID. Log a warning and then just return the resource
             # provider object from _get_resource_provider()
-            msg = _LI("Another thread already created a resource provider "
-                      "with the UUID {0}. Grabbing that record from "
-                      "the placement API.")
-            msg = msg.format(uuid)
-            LOG.info(msg)
+            msg = _LI("[%(placement_req_id)s] Another thread already created "
+                      "a resource provider with the UUID %(uuid)s. Grabbing "
+                      "that record from the placement API.")
+            args = {
+                'uuid': uuid,
+                'placement_req_id': placement_req_id,
+            }
+            LOG.info(msg, args)
             return self._get_resource_provider(uuid)
         else:
-            msg = _LE("Failed to create resource provider record in "
-                      "placement API for UUID %(uuid)s. "
+            msg = _LE("[%(placement_req_id)s] Failed to create resource "
+                      "provider record in placement API for UUID %(uuid)s. "
                       "Got %(status_code)d: %(err_text)s.")
             args = {
                 'uuid': uuid,
                 'status_code': resp.status_code,
                 'err_text': resp.text,
+                'placement_req_id': placement_req_id,
             }
             LOG.error(msg, args)
 
@@ -438,12 +464,12 @@ class SchedulerReportClient(object):
         server_gen = curr.get('resource_provider_generation')
         if server_gen:
             my_rp = self._resource_providers[rp_uuid]
-            if server_gen != my_rp.generation:
+            if server_gen != my_rp['generation']:
                 LOG.debug('Updating our resource provider generation '
                           'from %(old)i to %(new)i',
-                          {'old': my_rp.generation,
+                          {'old': my_rp['generation'],
                            'new': server_gen})
-            my_rp.generation = server_gen
+            my_rp['generation'] = server_gen
         return curr
 
     def _update_inventory_attempt(self, rp_uuid, inv_data):
@@ -460,7 +486,7 @@ class SchedulerReportClient(object):
         if inv_data == curr.get('inventories', {}):
             return True
 
-        cur_rp_gen = self._resource_providers[rp_uuid].generation
+        cur_rp_gen = self._resource_providers[rp_uuid]['generation']
         payload = {
             'resource_provider_generation': cur_rp_gen,
             'inventories': inv_data,
@@ -468,8 +494,12 @@ class SchedulerReportClient(object):
         url = '/resource_providers/%s/inventories' % rp_uuid
         result = self.put(url, payload)
         if result.status_code == 409:
-            LOG.info(_LI('Inventory update conflict for %s'),
-                     rp_uuid)
+            LOG.info(_LI('[%(placement_req_id)s] Inventory update conflict '
+                         'for %(resource_provider_uuid)s with generation ID '
+                         '%(generation_id)s'),
+                     {'placement_req_id': get_placement_request_id(result),
+                      'resource_provider_uuid': rp_uuid,
+                      'generation_id': cur_rp_gen})
             # NOTE(jaypipes): There may be cases when we try to set a
             # provider's inventory that results in attempting to delete an
             # inventory record for a resource class that has an active
@@ -515,19 +545,30 @@ class SchedulerReportClient(object):
             self._ensure_resource_provider(rp_uuid)
             return False
         elif not result:
-            LOG.warning(_LW('Failed to update inventory for resource provider '
+            placement_req_id = get_placement_request_id(result)
+            LOG.warning(_LW('[%(placement_req_id)s] Failed to update '
+                            'inventory for resource provider '
                             '%(uuid)s: %(status)i %(text)s'),
-                        {'uuid': rp_uuid,
+                        {'placement_req_id': placement_req_id,
+                         'uuid': rp_uuid,
                          'status': result.status_code,
                          'text': result.text})
+            # log the body at debug level
+            LOG.debug('[%(placement_req_id)s] Failed inventory update request '
+                      'for resource provider %(uuid)s with body: %(payload)s',
+                      {'placement_req_id': placement_req_id,
+                       'uuid': rp_uuid,
+                       'payload': payload})
             return False
 
         if result.status_code != 200:
+            placement_req_id = get_placement_request_id(result)
             LOG.info(
-                _LI('Received unexpected response code %(code)i while '
-                    'trying to update inventory for resource provider %(uuid)s'
-                    ': %(text)s'),
-                {'uuid': rp_uuid,
+                _LI('[%(placement_req_id)s] Received unexpected response code '
+                    '%(code)i while trying to update inventory for resource '
+                    'provider %(uuid)s: %(text)s'),
+                {'placement_req_id': placement_req_id,
+                 'uuid': rp_uuid,
                  'code': result.status_code,
                  'text': result.text})
             return False
@@ -536,7 +577,7 @@ class SchedulerReportClient(object):
         updated_inventories_result = result.json()
         new_gen = updated_inventories_result['resource_provider_generation']
 
-        self._resource_providers[rp_uuid].generation = new_gen
+        self._resource_providers[rp_uuid]['generation'] = new_gen
         LOG.debug('Updated inventory for %s at generation %i',
                   rp_uuid, new_gen)
         return True
@@ -576,48 +617,142 @@ class SchedulerReportClient(object):
         LOG.info(msg, rp_uuid)
 
         url = '/resource_providers/%s/inventories' % rp_uuid
-        cur_rp_gen = self._resource_providers[rp_uuid].generation
+        cur_rp_gen = self._resource_providers[rp_uuid]['generation']
         payload = {
             'resource_provider_generation': cur_rp_gen,
             'inventories': {},
         }
         r = self.put(url, payload)
+        placement_req_id = get_placement_request_id(r)
         if r.status_code == 200:
             # Update our view of the generation for next time
             updated_inv = r.json()
             new_gen = updated_inv['resource_provider_generation']
 
-            self._resource_providers[rp_uuid].generation = new_gen
+            self._resource_providers[rp_uuid]['generation'] = new_gen
             msg_args = {
                 'rp_uuid': rp_uuid,
                 'generation': new_gen,
+                'placement_req_id': placement_req_id,
             }
-            LOG.info(_LI('Deleted all inventory for resource provider '
-                         '%(rp_uuid)s at generation %(generation)i'),
+            LOG.info(_LI('[%(placement_req_id)s] Deleted all inventory for '
+                         'resource provider %(rp_uuid)s at generation '
+                         '%(generation)i'),
                      msg_args)
             return
         elif r.status_code == 409:
             rc_str = _extract_inventory_in_use(r.text)
             if rc_str is not None:
-                msg = _LW("We cannot delete inventory %(rc_str)s for resource "
-                          "provider %(rp_uuid)s because the inventory is "
-                          "in use.")
+                msg = _LW("[%(placement_req_id)s] We cannot delete inventory "
+                          "%(rc_str)s for resource provider %(rp_uuid)s "
+                          "because the inventory is in use.")
                 msg_args = {
                     'rp_uuid': rp_uuid,
                     'rc_str': rc_str,
+                    'placement_req_id': placement_req_id,
                 }
                 LOG.warning(msg, msg_args)
                 return
 
-        msg = _LE("Failed to delete inventory for resource provider "
-                  "%(rp_uuid)s. Got error response: %(err)s")
+        msg = _LE("[%(placement_req_id)s] Failed to delete inventory for "
+                  "resource provider %(rp_uuid)s. Got error response: %(err)s")
         msg_args = {
             'rp_uuid': rp_uuid,
             'err': r.text,
+            'placement_req_id': placement_req_id,
         }
         LOG.error(msg, msg_args)
 
-    def update_resource_stats(self, compute_node):
+    def set_inventory_for_provider(self, rp_uuid, rp_name, inv_data):
+        """Given the UUID of a provider, set the inventory records for the
+        provider to the supplied dict of resources.
+
+        :param rp_uuid: UUID of the resource provider to set inventory for
+        :param rp_name: Name of the resource provider in case we need to create
+                        a record for it in the placement API
+        :param inv_data: Dict, keyed by resource class name, of inventory data
+                         to set against the provider
+
+        :raises: exc.InvalidResourceClass if a supplied custom resource class
+                 name does not meet the placement API's format requirements.
+        """
+        self._ensure_resource_provider(rp_uuid, rp_name)
+
+        new_inv = {}
+        for rc_name, inv in inv_data.items():
+            if rc_name not in fields.ResourceClass.STANDARD:
+                # Auto-create custom resource classes coming from a virt driver
+                self._get_or_create_resource_class(rc_name)
+
+            new_inv[rc_name] = inv
+
+        if new_inv:
+            self._update_inventory(rp_uuid, new_inv)
+        else:
+            self._delete_inventory(rp_uuid)
+
+    @safe_connect
+    def _get_or_create_resource_class(self, name):
+        """Queries the placement API for a resource class supplied resource
+        class string name. If the resource class does not exist, creates it.
+
+        Returns the resource class name if exists or was created, else None.
+
+        :param name: String name of the resource class to check/create.
+        """
+        resp = self.get("/resource_classes/%s" % name, version="1.2")
+        if 200 <= resp.status_code < 300:
+            return name
+        elif resp.status_code == 404:
+            self._create_resource_class(name)
+            return name
+        else:
+            msg = _LE("Failed to retrieve resource class record from "
+                      "placement API for resource class %(rc_name)s. "
+                      "Got %(status_code)d: %(err_text)s.")
+            args = {
+                'rc_name': name,
+                'status_code': resp.status_code,
+                'err_text': resp.text,
+            }
+            LOG.error(msg, args)
+            return None
+
+    def _create_resource_class(self, name):
+        """Calls the placement API to create a new resource class.
+
+        :param name: String name of the resource class to create.
+
+        :returns: None on successful creation.
+        :raises: `exception.InvalidResourceClass` upon error.
+        """
+        url = "/resource_classes"
+        payload = {
+            'name': name,
+        }
+        resp = self.post(url, payload, version="1.2")
+        if 200 <= resp.status_code < 300:
+            msg = _LI("Created resource class record via placement API "
+                      "for resource class %s.")
+            LOG.info(msg, name)
+        elif resp.status_code == 409:
+            # Another thread concurrently created a resource class with the
+            # same name. Log a warning and then just return
+            msg = _LI("Another thread already created a resource class "
+                      "with the name %s. Returning.")
+            LOG.info(msg, name)
+        else:
+            msg = _LE("Failed to create resource class %(resource_class)s in "
+                      "placement API. Got %(status_code)d: %(err_text)s.")
+            args = {
+                'resource_class': name,
+                'status_code': resp.status_code,
+                'err_text': resp.text,
+            }
+            LOG.error(msg, args)
+            raise exception.InvalidResourceClass(resource_class=name)
+
+    def update_compute_node(self, compute_node):
         """Creates or updates stats for the supplied compute node.
 
         :param compute_node: updated nova.objects.ComputeNode to report
@@ -626,7 +761,6 @@ class SchedulerReportClient(object):
                 resource classes that would be deleted by an update to the
                 placement API.
         """
-        compute_node.save()
         self._ensure_resource_provider(compute_node.uuid,
                                        compute_node.hypervisor_hostname)
         inv_data = _compute_node_to_inventory_dict(compute_node)
@@ -776,6 +910,9 @@ class SchedulerReportClient(object):
         resp = self.delete(url)
         if resp:
             LOG.info(_LI("Deleted resource provider %s"), rp_uuid)
+            # clean the caches
+            self._resource_providers.pop(rp_uuid, None)
+            self._provider_aggregate_map.pop(rp_uuid, None)
         else:
             # Check for 404 since we don't need to log a warning if we tried to
             # delete something which doesn"t actually exist.

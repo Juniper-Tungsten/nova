@@ -69,7 +69,7 @@ Request
 **Example Add (Associate) Floating Ip (addFloatingIp Action)**
 
 .. literalinclude:: ../../doc/api_samples/servers/server-action-addfloatingip.json
-  :language: javascript
+   :language: javascript
 
 Response
 --------
@@ -271,7 +271,9 @@ Request
 Response
 --------
 
-If successful, this method does not return content in the response body.
+.. rest_parameters:: parameters.yaml
+
+  - image_location: image_location
 
 
 Lock Server (lock Action)
@@ -396,7 +398,7 @@ set the ``preserve_ephemeral`` parameter to ``true``.
 Normal response codes: 202
 
 Error response codes: badRequest(400),unauthorized(401), forbidden(403),
-itemNotFound(404), conflict(409), payloadTooLarge(413)
+itemNotFound(404), conflict(409)
 
 Request
 -------
@@ -407,7 +409,7 @@ Request
   - rebuild: rebuild
   - imageRef: imageRef
   - name: server_name_optional
-  - adminPass: adminPass_evacuate_rebuild
+  - adminPass: adminPass_request
   - metadata: metadata
   - personality: personality
   - preserve_ephemeral: preserve_ephemeral
@@ -455,11 +457,10 @@ Request
   - removeFloatingIp: removeFloatingIp
   - address: address
 
-.. TODO(sdague) build example for this
-   **Example Remove (Disassociate) Floating Ip (removeFloatingIp Action)**
+**Example Remove (Disassociate) Floating Ip (removeFloatingIp Action)**
 
-   .. literalinclude:: ../../doc/api_samples/servers-action/removeFloatingIp-req.json
-                       :language: javascript
+.. literalinclude:: ../../doc/api_samples/servers/server-action-removefloatingip.json
+   :language: javascript
 
 Response
 --------
@@ -519,7 +520,7 @@ reference, the base image reference is used by default.
 After you successfully rescue a server and make a ``GET
 /servers/​{server_id}​`` request, its status changes to ``RESCUE``.
 
-Normal response codes: 202
+Normal response codes: 200
 
 Error response codes: badRequest(400), unauthorized(401), forbidden(403),
 itemNotFound(404), conflict(409), notImplemented(501)
@@ -531,7 +532,7 @@ Request
 
   - server_id: server_id_path
   - rescue: rescue
-  - adminPass: adminPass_rescue
+  - adminPass: adminPass_rescue_request
   - rescue_image_ref: rescue_image_ref
 
 **Example Rescue server**
@@ -544,7 +545,7 @@ Response
 
 .. rest_parameters:: parameters.yaml
 
-  - adminPass: adminPass
+  - adminPass: adminPass_response
 
 **Example Extended rescue server**
 
@@ -710,7 +711,6 @@ to start the server.
 **Asynchronous Postconditions**
 
 After you successfully start a server, its status changes to ``ACTIVE``.
-The server appears on the compute node that the Compute service manages.
 
 **Troubleshooting**
 
@@ -762,8 +762,8 @@ to stop the server.
 **Asynchronous Postconditions**
 
 After you successfully stop a server, its status changes to ``SHUTOFF``.
-The server instance data appears only on the compute node that
-Compute service manages.
+This API operation does not delete the server instance data and the data
+will be available again after ``os-start`` action.
 
 Normal response codes: 202
 

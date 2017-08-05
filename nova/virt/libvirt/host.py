@@ -104,6 +104,8 @@ class Host(object):
         #                STOPPED lifecycle event some seconds.
         self._lifecycle_delay = 15
 
+        self._initialized = False
+
     def _native_thread(self):
         """Receives async events coming in from libvirtd.
 
@@ -468,6 +470,9 @@ class Host(object):
         pass
 
     def initialize(self):
+        if self._initialized:
+            return
+
         # NOTE(dkliban): Error handler needs to be registered before libvirt
         #                connection is used for the first time.  Otherwise, the
         #                handler does not get registered.
@@ -527,7 +532,7 @@ class Host(object):
 
         :returns: a nova.virt.libvirt.Guest object
         :raises exception.InstanceNotFound: The domain was not found
-        :raises exception.InternalError: A libvirt error occured
+        :raises exception.InternalError: A libvirt error occurred
         """
         return libvirt_guest.Guest(self.get_domain(instance))
 
@@ -542,7 +547,7 @@ class Host(object):
 
         :returns: a libvirt.Domain object
         :raises exception.InstanceNotFound: The domain was not found
-        :raises exception.InternalError: A libvirt error occured
+        :raises exception.InternalError: A libvirt error occurred
         """
         try:
             conn = self.get_connection()

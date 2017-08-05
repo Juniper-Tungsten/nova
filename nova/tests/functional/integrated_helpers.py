@@ -57,7 +57,7 @@ def generate_new_element(items, prefix, numeric=False):
             candidate = prefix + generate_random_alphanumeric(8)
         if candidate not in items:
             return candidate
-        LOG.debug("Random collision on %s" % candidate)
+        LOG.debug("Random collision on %s", candidate)
 
 
 class _IntegratedTestBase(test.TestCase):
@@ -72,7 +72,6 @@ class _IntegratedTestBase(test.TestCase):
     def setUp(self):
         super(_IntegratedTestBase, self).setUp()
 
-        self.flags(verbose=True)
         # TODO(mriedem): Fix the functional tests to work with Neutron.
         self.flags(use_neutron=self.USE_NEUTRON)
 
@@ -143,7 +142,7 @@ class _IntegratedTestBase(test.TestCase):
 
         # Set a valid flavorId
         flavor = self.api.get_flavors()[0]
-        LOG.debug("Using flavor: %s" % flavor)
+        LOG.debug("Using flavor: %s", flavor)
         server[self._flavor_ref_parameter] = ('http://fake.server/%s'
                                               % flavor['id'])
 
@@ -184,14 +183,14 @@ class _IntegratedTestBase(test.TestCase):
     def _build_server(self, flavor_id):
         server = {}
         image = self.api.get_images()[0]
-        LOG.debug("Image: %s" % image)
+        LOG.debug("Image: %s", image)
 
         # We now have a valid imageId
         server[self._image_ref_parameter] = image['id']
 
         # Set a valid flavorId
         flavor = self.api.get_flavor(flavor_id)
-        LOG.debug("Using flavor: %s" % flavor)
+        LOG.debug("Using flavor: %s", flavor)
         server[self._flavor_ref_parameter] = ('http://fake.server/%s'
                                               % flavor['id'])
 

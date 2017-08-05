@@ -1197,6 +1197,66 @@ class NUMATopologyTest(test.NoDBTestCase):
                 },
                 "expect": exception.RealtimeMaskNotFoundOrInvalid,
             },
+            {   # We pass an invalid option
+                "flavor": objects.Flavor(vcpus=16, memory_mb=2048,
+                                         extra_specs={
+                    "hw:emulator_threads_policy": "foo",
+                }),
+                "image": {
+                    "properties": {}
+                },
+                "expect": exception.InvalidEmulatorThreadsPolicy,
+            },
+            {   # We request emulator threads option without numa topology
+                "flavor": objects.Flavor(vcpus=16, memory_mb=2048,
+                                         extra_specs={
+                    "hw:emulator_threads_policy": "isolate",
+                }),
+                "image": {
+                    "properties": {}
+                },
+                "expect": exception.BadRequirementEmulatorThreadsPolicy,
+            },
+            {   # We request a valid emulator threads options with
+                # cpu_policy based from flavor
+                "flavor": objects.Flavor(vcpus=4, memory_mb=2048,
+                                         extra_specs={
+                    "hw:emulator_threads_policy": "isolate",
+                    "hw:cpu_policy": "dedicated",
+                }),
+                "image": {
+                    "properties": {}
+                },
+                "expect": objects.InstanceNUMATopology(
+                    emulator_threads_policy=
+                      fields.CPUEmulatorThreadsPolicy.ISOLATE,
+                    cells=[
+                        objects.InstanceNUMACell(
+                            id=0, cpuset=set([0, 1, 2, 3]), memory=2048,
+                            cpu_policy=fields.CPUAllocationPolicy.DEDICATED,
+                        )]),
+            },
+            {   # We request a valid emulator threads options with cpu
+                # policy based from image
+                "flavor": objects.Flavor(vcpus=4, memory_mb=2048,
+                                         extra_specs={
+                    "hw:emulator_threads_policy": "isolate",
+                }),
+                "image": {
+                    "properties": {
+                        "hw_cpu_policy": "dedicated",
+                    }
+                },
+                "expect": objects.InstanceNUMATopology(
+                    emulator_threads_policy=
+                      fields.CPUEmulatorThreadsPolicy.ISOLATE,
+                    cells=[
+                        objects.InstanceNUMACell(
+                            id=0, cpuset=set([0, 1, 2, 3]), memory=2048,
+                            cpu_policy=fields.CPUAllocationPolicy.DEDICATED,
+                        )]),
+            },
+
         ]
 
         for testitem in testdata:
@@ -1216,6 +1276,10 @@ class NUMATopologyTest(test.NoDBTestCase):
                 self.assertIsNotNone(topology)
                 self.assertEqual(len(testitem["expect"].cells),
                                  len(topology.cells))
+                self.assertEqual(
+                    testitem["expect"].emulator_threads_isolated,
+                    topology.emulator_threads_isolated)
+
                 for i in range(len(topology.cells)):
                     self.assertEqual(testitem["expect"].cells[i].id,
                                      topology.cells[i].id)
@@ -2808,6 +2872,30 @@ class CPUPinningTestCase(test.NoDBTestCase, _CPUPinningTestCaseBase):
         self.assertEqual(new_cell.cells[0].cpu_usage, 1)
 
 
+class CPUSReservedCellTestCase(test.NoDBTestCase):
+    def _test_reserved(self, reserved):
+        host_cell = objects.NUMACell(id=0, cpuset=set([0, 1, 2]),
+                                     memory=2048, memory_usage=0, siblings=[],
+                                     mempages=[], pinned_cpus=set([]))
+        inst_cell = objects.InstanceNUMACell(cpuset=set([0, 1]), memory=2048)
+        return hw._numa_fit_instance_cell_with_pinning(
+            host_cell, inst_cell, reserved)
+
+    def test_no_reserved(self):
+        inst_cell = self._test_reserved(reserved=0)
+        self.assertEqual(set([0, 1]), inst_cell.cpuset)
+        self.assertIsNone(inst_cell.cpuset_reserved)
+
+    def test_reserved(self):
+        inst_cell = self._test_reserved(reserved=1)
+        self.assertEqual(set([0, 1]), inst_cell.cpuset)
+        self.assertEqual(set([2]), inst_cell.cpuset_reserved)
+
+    def test_reserved_exceeded(self):
+        inst_cell = self._test_reserved(reserved=2)
+        self.assertIsNone(inst_cell)
+
+
 class CPURealtimeTestCase(test.NoDBTestCase):
     def test_success_flavor(self):
         flavor = objects.Flavor(vcpus=3, memory_mb=2048,
@@ -2839,3 +2927,176 @@ class CPURealtimeTestCase(test.NoDBTestCase):
         self.assertRaises(
             exception.RealtimeMaskNotFoundOrInvalid,
             hw.vcpus_realtime_topology, flavor, image)
+
+
+class EmulatorThreadsTestCase(test.NoDBTestCase):
+
+    @staticmethod
+    def _host_topology():
+        return objects.NUMATopology(
+            cells=[objects.NUMACell(id=0, cpuset=set([0, 1]), memory=2048,
+                                    cpu_usage=0,
+                                    memory_usage=0, siblings=[],
+                                    mempages=[], pinned_cpus=set([])),
+                   objects.NUMACell(id=1, cpuset=set([2, 3]), memory=2048,
+                                    cpu_usage=0,
+                                    memory_usage=0, siblings=[],
+                                    mempages=[], pinned_cpus=set([]))])
+
+    def test_single_node_not_defined(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertEqual({0: 0}, inst_topo.cells[0].cpu_pinning)
+        self.assertIsNone(inst_topo.cells[0].cpuset_reserved)
+
+    def test_single_node_shared(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.SHARE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertEqual({0: 0}, inst_topo.cells[0].cpu_pinning)
+        self.assertIsNone(inst_topo.cells[0].cpuset_reserved)
+
+    def test_single_node_isolate(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertEqual({0: 0}, inst_topo.cells[0].cpu_pinning)
+        self.assertEqual(set([1]), inst_topo.cells[0].cpuset_reserved)
+
+    def test_single_node_isolate_exceeded(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0, 1, 2, 4]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertIsNone(inst_topo)
+
+    def test_multi_nodes_isolate(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED),
+            objects.InstanceNUMACell(
+                id=1,
+                cpuset=set([1]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertEqual({0: 0}, inst_topo.cells[0].cpu_pinning)
+        self.assertEqual(set([1]), inst_topo.cells[0].cpuset_reserved)
+        self.assertEqual({1: 2}, inst_topo.cells[1].cpu_pinning)
+        self.assertIsNone(inst_topo.cells[1].cpuset_reserved)
+
+    def test_multi_nodes_isolate_exceeded(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0, 1]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED),
+            objects.InstanceNUMACell(
+                id=1,
+                cpuset=set([2]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        # The guest NUMA node 0 is requesting 2pCPUs + 1 additional
+        # pCPU for emulator threads, the host can't handle the
+        # request.
+        self.assertIsNone(inst_topo)
+
+    def test_multi_nodes_isolate_full_usage(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED),
+            objects.InstanceNUMACell(
+                id=1,
+                cpuset=set([1, 2]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED)])
+
+        inst_topo = hw.numa_fit_instance_to_host(host_topo, inst_topo)
+        self.assertEqual({0: 0}, inst_topo.cells[0].cpu_pinning)
+        self.assertEqual(set([1]), inst_topo.cells[0].cpuset_reserved)
+        self.assertEqual({1: 2, 2: 3}, inst_topo.cells[1].cpu_pinning)
+        self.assertIsNone(inst_topo.cells[1].cpuset_reserved)
+
+    def test_isolate_usage(self):
+        host_topo = self._host_topology()
+        inst_topo = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED,
+                cpu_pinning={0: 0},
+                cpuset_reserved=set([1]))])
+
+        host_topo = hw.numa_usage_from_instances(
+            host_topo, [inst_topo])
+        self.assertEqual(2, host_topo.cells[0].cpu_usage)
+        self.assertEqual(set([0, 1]), host_topo.cells[0].pinned_cpus)
+        self.assertEqual(0, host_topo.cells[1].cpu_usage)
+        self.assertEqual(set([]), host_topo.cells[1].pinned_cpus)
+
+    def test_isolate_full_usage(self):
+        host_topo = self._host_topology()
+        inst_topo1 = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=0,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED,
+                cpu_pinning={0: 0},
+                cpuset_reserved=set([1]))])
+        inst_topo2 = objects.InstanceNUMATopology(
+            emulator_threads_policy=(
+                fields.CPUEmulatorThreadsPolicy.ISOLATE),
+            cells=[objects.InstanceNUMACell(
+                id=1,
+                cpuset=set([0]), memory=2048,
+                cpu_policy=fields.CPUAllocationPolicy.DEDICATED,
+                cpu_pinning={0: 2},
+                cpuset_reserved=set([3]))])
+
+        host_topo = hw.numa_usage_from_instances(
+            host_topo, [inst_topo1, inst_topo2])
+        self.assertEqual(2, host_topo.cells[0].cpu_usage)
+        self.assertEqual(set([0, 1]), host_topo.cells[0].pinned_cpus)

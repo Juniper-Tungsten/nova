@@ -33,29 +33,6 @@ CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
-class NumaHostInfo(fakelibvirt.HostInfo):
-    def __init__(self, **kwargs):
-        super(NumaHostInfo, self).__init__(**kwargs)
-        self.numa_mempages_list = []
-
-    def get_numa_topology(self):
-        if self.numa_topology:
-            return self.numa_topology
-
-        topology = self._gen_numa_topology(self.cpu_nodes, self.cpu_sockets,
-                                           self.cpu_cores, self.cpu_threads,
-                                           self.kB_mem)
-        self.numa_topology = topology
-
-        # update number of active cpus
-        cpu_count = len(topology.cells) * len(topology.cells[0].cpus)
-        self.cpus = cpu_count - len(self.disabled_cpus_list)
-        return topology
-
-    def set_custom_numa_toplogy(self, topology):
-        self.numa_topology = topology
-
-
 class NUMAServersTest(ServersTestBase):
 
     def setUp(self):
@@ -101,7 +78,7 @@ class NUMAServersTest(ServersTestBase):
         post = {'server': good_server}
 
         created_server = self.api.post_server(post)
-        LOG.debug("created_server: %s" % created_server)
+        LOG.debug("created_server: %s", created_server)
         self.assertTrue(created_server['id'])
         created_server_id = created_server['id']
 
@@ -125,7 +102,7 @@ class NUMAServersTest(ServersTestBase):
 
     def _get_connection(self, host_info):
         fake_connection = fakelibvirt.Connection('qemu:///system',
-                                                 version=1002007,
+                                                 version=1002009,
                                                  hv_version=2001000,
                                                  host_info=host_info)
         return fake_connection
@@ -138,8 +115,9 @@ class NUMAServersTest(ServersTestBase):
 
     def test_create_server_with_numa_topology(self):
 
-        host_info = NumaHostInfo(cpu_nodes=2, cpu_sockets=1, cpu_cores=2,
-                                 cpu_threads=2, kB_mem=15740000)
+        host_info = fakelibvirt.NUMAHostInfo(cpu_nodes=2, cpu_sockets=1,
+                                             cpu_cores=2, cpu_threads=2,
+                                             kB_mem=15740000)
         fake_connection = self._get_connection(host_info=host_info)
 
         # Create a flavor
@@ -157,8 +135,9 @@ class NUMAServersTest(ServersTestBase):
 
     def test_create_server_with_pinning(self):
 
-        host_info = NumaHostInfo(cpu_nodes=1, cpu_sockets=1, cpu_cores=5,
-                                 cpu_threads=2, kB_mem=15740000)
+        host_info = fakelibvirt.NUMAHostInfo(cpu_nodes=1, cpu_sockets=1,
+                                             cpu_cores=5, cpu_threads=2,
+                                             kB_mem=15740000)
         fake_connection = self._get_connection(host_info=host_info)
 
         # Create a flavor
@@ -184,8 +163,8 @@ class NUMAServersTest(ServersTestBase):
 
     def test_create_server_with_numa_fails(self):
 
-        host_info = NumaHostInfo(cpu_nodes=1, cpu_sockets=1, cpu_cores=2,
-                                 kB_mem=15740000)
+        host_info = fakelibvirt.NUMAHostInfo(cpu_nodes=1, cpu_sockets=1,
+                                             cpu_cores=2, kB_mem=15740000)
         fake_connection = self._get_connection(host_info=host_info)
 
         # Create a flavor

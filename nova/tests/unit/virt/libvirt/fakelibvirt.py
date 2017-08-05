@@ -17,7 +17,6 @@ import time
 
 import fixtures
 from lxml import etree
-import six
 
 from nova.objects import fields as obj_fields
 from nova.tests import uuidsentinel as uuids
@@ -156,9 +155,9 @@ VIR_SECRET_USAGE_TYPE_CEPH = 2
 VIR_SECRET_USAGE_TYPE_ISCSI = 3
 
 # Libvirt version to match MIN_LIBVIRT_VERSION in driver.py
-FAKE_LIBVIRT_VERSION = 1002001
+FAKE_LIBVIRT_VERSION = 1002009
 # Libvirt version to match MIN_QEMU_VERSION in driver.py
-FAKE_QEMU_VERSION = 1005003
+FAKE_QEMU_VERSION = 2001000
 
 PF_CAP_TYPE = 'virt_functions'
 VF_CAP_TYPE = 'phys_function'
@@ -238,14 +237,11 @@ class FakePciDevice(object):
 
 
 class HostPciSRIOVDevicesInfo(object):
+    """Represent a pool of host SR-IOV devices."""
 
-    def __init__(self):
-        self.sriov_devices = {}
-
-    def create_pci_devices(self, vf_product_id=1515, pf_product_id=1528,
-                           num_pfs=2, num_vfs=8, group=47, numa_node=None,
-                           total_numa_nodes=2):
-        """Populate pci devices
+    def __init__(self, vf_product_id=1515, pf_product_id=1528, num_pfs=2,
+                 num_vfs=8, group=47, numa_node=None, total_numa_nodes=2):
+        """Create a new HostPciSRIOVDevicesInfo object.
 
         :param vf_product_id: (int) Product ID of the Virtual Functions
         :param pf_product_id=1528: (int) Product ID of the Physical Functions
@@ -259,38 +255,42 @@ class HostPciSRIOVDevicesInfo(object):
         def _calc_numa_node(dev):
             return dev % total_numa_nodes if numa_node is None else numa_node
 
-        vf_ratio = num_vfs // num_pfs
+        self.devices = {}
+        if num_vfs and not num_pfs:
+            raise ValueError('Cannot create VFs without PFs')
+
+        vf_ratio = num_vfs // num_pfs if num_pfs else 0
 
         # Generate PFs
         for dev in range(num_pfs):
             dev_group = group + dev + 1
             pci_dev_name = 'pci_0000_81_%(slot)s_%(dev)d' % {'slot': PF_SLOT,
                                                              'dev': dev}
-            self.sriov_devices[pci_dev_name] = FakePciDevice('PF', vf_ratio,
-                                                             dev_group, dev,
-                                                             pf_product_id,
-                                                        _calc_numa_node(dev))
+            self.devices[pci_dev_name] = FakePciDevice('PF', vf_ratio,
+                                                       dev_group, dev,
+                                                       pf_product_id,
+                                                       _calc_numa_node(dev))
 
         # Generate VFs
         for dev in range(num_vfs):
             dev_group = group + dev + 1
             pci_dev_name = 'pci_0000_81_%(slot)s_%(dev)d' % {'slot': VF_SLOT,
                                                              'dev': dev}
-            self.sriov_devices[pci_dev_name] = FakePciDevice('VF', vf_ratio,
-                                                             dev_group, dev,
-                                                             vf_product_id,
-                                                        _calc_numa_node(dev))
+            self.devices[pci_dev_name] = FakePciDevice('VF', vf_ratio,
+                                                       dev_group, dev,
+                                                       vf_product_id,
+                                                       _calc_numa_node(dev))
 
     def get_all_devices(self):
-        return self.sriov_devices.keys()
+        return self.devices.keys()
 
     def get_device_by_name(self, device_name):
-
-        pci_dev = self.sriov_devices.get(device_name)
+        pci_dev = self.devices.get(device_name)
         return pci_dev
 
 
 class HostInfo(object):
+
     def __init__(self, arch=obj_fields.Architecture.X86_64, kB_mem=4096,
                  cpus=2, cpu_mhz=800, cpu_nodes=1,
                  cpu_sockets=1, cpu_cores=2,
@@ -329,11 +329,35 @@ class HostInfo(object):
         self.numa_topology = numa_topology
         self.disabled_cpus_list = cpu_disabled or []
 
-    @classmethod
-    def _gen_numa_topology(cls, cpu_nodes, cpu_sockets, cpu_cores,
-                           cpu_threads, kb_mem, numa_mempages_list=None):
 
-        topology = vconfig.LibvirtConfigCapsNUMATopology()
+class NUMAHostInfo(HostInfo):
+    """A NUMA-by-default variant of HostInfo."""
+
+    def __init__(self, **kwargs):
+        super(NUMAHostInfo, self).__init__(**kwargs)
+
+        if not self.numa_topology:
+            topology = NUMATopology(self.cpu_nodes, self.cpu_sockets,
+                                    self.cpu_cores, self.cpu_threads,
+                                    self.kB_mem)
+            self.numa_topology = topology
+
+            # update number of active cpus
+            cpu_count = len(topology.cells) * len(topology.cells[0].cpus)
+            self.cpus = cpu_count - len(self.disabled_cpus_list)
+
+
+class NUMATopology(vconfig.LibvirtConfigCapsNUMATopology):
+    """A batteries-included variant of LibvirtConfigCapsNUMATopology.
+
+    Provides sane defaults for LibvirtConfigCapsNUMATopology that can be used
+    in tests as is, or overridden where necessary.
+    """
+
+    def __init__(self, cpu_nodes=4, cpu_sockets=1, cpu_cores=1, cpu_threads=2,
+                 kb_mem=1048576, mempages=None, **kwargs):
+
+        super(NUMATopology, self).__init__(**kwargs)
 
         cpu_count = 0
         for cell_count in range(cpu_nodes):
@@ -352,22 +376,32 @@ class HostInfo(object):
                     cell.cpus.append(cpu)
 
                     cpu_count += 1
-            # Set mempages per numa cell. if numa_mempages_list is empty
-            # we will set only the default 4K pages.
-            if numa_mempages_list:
-                mempages = numa_mempages_list[cell_count]
+
+            # If no mempages are provided, use only the default 4K pages
+            if mempages:
+                cell.mempages = mempages[cell_count]
             else:
-                mempages = vconfig.LibvirtConfigCapsNUMAPages()
-                mempages.size = 4
-                mempages.total = cell.memory // mempages.size
-                mempages = [mempages]
-            cell.mempages = mempages
-            topology.cells.append(cell)
+                cell.mempages = create_mempages([(4, cell.memory // 4)])
 
-        return topology
+            self.cells.append(cell)
 
-    def get_numa_topology(self):
-        return self.numa_topology
+
+def create_mempages(mappings):
+    """Generate a list of LibvirtConfigCapsNUMAPages objects.
+
+    :param mappings: (dict) A mapping of page size to quantity of
+        said pages.
+    :returns: [LibvirtConfigCapsNUMAPages, ...]
+    """
+    mempages = []
+
+    for page_size, page_qty in mappings:
+        mempage = vconfig.LibvirtConfigCapsNUMAPages()
+        mempage.size = page_size
+        mempage.total = page_qty
+        mempages.append(mempage)
+
+    return mempages
 
 
 VIR_DOMAIN_JOB_NONE = 0
@@ -972,7 +1006,8 @@ class Connection(object):
         self.fakeLibVersion = version
         self.fakeVersion = hv_version
         self.host_info = host_info or HostInfo()
-        self.pci_info = pci_info or HostPciSRIOVDevicesInfo()
+        self.pci_info = pci_info or HostPciSRIOVDevicesInfo(num_pfs=0,
+                                                            num_vfs=0)
 
     def _add_filter(self, nwfilter):
         self._nwfilters[nwfilter._name] = nwfilter
@@ -997,7 +1032,7 @@ class Connection(object):
 
         dom._id = -1
 
-        for (k, v) in six.iteritems(self._running_vms):
+        for (k, v) in self._running_vms.items():
             if v == dom:
                 del self._running_vms[k]
                 self._emit_lifecycle(dom, VIR_DOMAIN_EVENT_STOPPED, 0)
@@ -1090,7 +1125,7 @@ class Connection(object):
 
     def getCapabilities(self):
         """Return spoofed capabilities."""
-        numa_topology = self.host_info.get_numa_topology()
+        numa_topology = self.host_info.numa_topology
         if isinstance(numa_topology, vconfig.LibvirtConfigCapsNUMATopology):
             numa_topology = numa_topology.to_xml()
 

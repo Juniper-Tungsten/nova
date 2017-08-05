@@ -33,12 +33,14 @@ class UserData(extensions.V21APIExtensionBase):
     def get_resources(self):
         return []
 
-    # NOTE(gmann): This function is not supposed to use 'body_deprecated_param'
-    # parameter as this is placed to handle scheduler_hint extension for V2.1.
-    def server_create(self, server_dict, create_kwargs, body_deprecated_param):
-        create_kwargs['user_data'] = server_dict.get(ATTRIBUTE_NAME)
 
-    def get_server_create_schema(self, version):
-        if version == '2.0':
-            return schema_user_data.server_create_v20
-        return schema_user_data.server_create
+# NOTE(gmann): This function is not supposed to use 'body_deprecated_param'
+# parameter as this is placed to handle scheduler_hint extension for V2.1.
+def server_create(server_dict, create_kwargs, body_deprecated_param):
+    create_kwargs['user_data'] = server_dict.get(ATTRIBUTE_NAME)
+
+
+def get_server_create_schema(version):
+    if version == '2.0':
+        return schema_user_data.server_create_v20
+    return schema_user_data.server_create

@@ -13,10 +13,10 @@
 
 from oslo_serialization import jsonutils
 from oslo_utils import encodeutils
-import webob
 
 from nova.api.openstack.placement import microversion
 from nova.api.openstack.placement import util
+from nova.api.openstack.placement import wsgi_wrapper
 from nova import objects
 
 
@@ -42,7 +42,7 @@ def _serialize_aggregates(aggregate_uuids):
     return {'aggregates': aggregate_uuids}
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.check_accept('application/json')
 def get_aggregates(req):
     """GET a list of aggregates associated with a resource provider.
@@ -52,7 +52,7 @@ def get_aggregates(req):
     On success return a 200 with an application/json body containing a
     list of aggregate uuids.
     """
-    microversion.raise_404_if_not_version(req, (1, 1))
+    microversion.raise_http_status_code_if_not_version(req, 404, (1, 1))
     context = req.environ['placement.context']
     uuid = util.wsgi_path_item(req.environ, 'uuid')
     resource_provider = objects.ResourceProvider.get_by_uuid(
@@ -62,10 +62,10 @@ def get_aggregates(req):
     return _send_aggregates(req.response, aggregate_uuids)
 
 
-@webob.dec.wsgify
+@wsgi_wrapper.PlacementWsgify
 @util.require_content('application/json')
 def set_aggregates(req):
-    microversion.raise_404_if_not_version(req, (1, 1))
+    microversion.raise_http_status_code_if_not_version(req, 404, (1, 1))
     context = req.environ['placement.context']
     uuid = util.wsgi_path_item(req.environ, 'uuid')
     resource_provider = objects.ResourceProvider.get_by_uuid(

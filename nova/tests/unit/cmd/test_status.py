@@ -22,6 +22,7 @@ from six.moves import StringIO
 
 from keystoneauth1 import exceptions as ks_exc
 from keystoneauth1 import loading as keystone
+from keystoneauth1 import session
 from oslo_utils import uuidutils
 
 from nova.cmd import status
@@ -120,6 +121,36 @@ class TestPlacementCheck(test.NoDBTestCase):
         self.assertEqual(status.UpgradeCheckCode.FAILURE, res.code)
         self.assertIn('No credentials specified', res.details)
 
+    @mock.patch.object(keystone, "load_auth_from_conf_options")
+    @mock.patch.object(session.Session, 'get')
+    def _test_placement_get_interface(
+            self, expected_interface, mock_get, mock_auth):
+
+        def fake_get(path, *a, **kw):
+            self.assertEqual(mock.sentinel.path, path)
+            self.assertIn('endpoint_filter', kw)
+            self.assertEqual(expected_interface,
+                             kw['endpoint_filter']['interface'])
+            return mock.Mock(autospec='requests.models.Response')
+
+        mock_get.side_effect = fake_get
+        self.cmd._placement_get(mock.sentinel.path)
+        mock_auth.assert_called_once_with(status.CONF, 'placement')
+        self.assertTrue(mock_get.called)
+
+    @mock.patch.object(keystone, "load_auth_from_conf_options")
+    @mock.patch.object(session.Session, 'get')
+    def test_placement_get_interface_default(self, mock_get, mock_auth):
+        """Tests that None is specified for interface by default."""
+        self._test_placement_get_interface(None)
+
+    @mock.patch.object(keystone, "load_auth_from_conf_options")
+    @mock.patch.object(session.Session, 'get')
+    def test_placement_get_interface_internal(self, mock_get, mock_auth):
+        """Tests that "internal" is specified for interface when configured."""
+        self.flags(os_interface='internal', group='placement')
+        self._test_placement_get_interface('internal')
+
     @mock.patch.object(status.UpgradeCommands, "_placement_get")
     def test_invalid_auth(self, get):
         """Test failure when wrong credentials are specified or service user
@@ -179,7 +210,27 @@ class TestPlacementCheck(test.NoDBTestCase):
             "versions": [
                 {
                     "min_version": "1.0",
-                    "max_version": "1.0",
+                    "max_version": "1.4",
+                    "id": "v1.0"
+                }
+            ]
+        }
+        res = self.cmd._check_placement()
+        self.assertEqual(status.UpgradeCheckCode.SUCCESS, res.code)
+
+    @mock.patch.object(status.UpgradeCommands, "_placement_get")
+    def test_version_comparison_does_not_use_floats(self, get):
+        # NOTE(rpodolyaka): previously _check_placement() coerced the version
+        # numbers to floats prior to comparison, that would lead to failures
+        # in cases like float('1.10') < float('1.4'). As we require 1.4+ now,
+        # the _check_placement() call below will assert that version comparison
+        # continues to work correctly when Placement API versions 1.10
+        # (or newer) is released
+        get.return_value = {
+             "versions": [
+                {
+                    "min_version": "1.0",
+                    "max_version": "1.10",
                     "id": "v1.0"
                 }
             ]
@@ -200,7 +251,7 @@ class TestPlacementCheck(test.NoDBTestCase):
         }
         res = self.cmd._check_placement()
         self.assertEqual(status.UpgradeCheckCode.FAILURE, res.code)
-        self.assertIn('Placement API version 1.0 needed, you have 0.9',
+        self.assertIn('Placement API version 1.4 needed, you have 0.9',
                       res.details)
 
 

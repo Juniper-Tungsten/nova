@@ -127,6 +127,8 @@ community, while keeping users happy and keeping developers productive.
    process
    blueprints
    policies
+   code-review
+   releasenotes
 
 Architecture Concepts
 ----------------------
@@ -139,21 +141,24 @@ decisions, so its easier for people to engage in the debates about
 the future of Nova's architecture. This is all part of Open Design and
 Open Development.
 
+.. NOTE: keep this list sorted by title
+
 .. toctree::
    :maxdepth: 1
 
-   aggregates
-   threading
-   vmstates
-   i18n
-   filter_scheduler
+   addmethod.openstackapi
    rpc
    block_device_mapping
-   addmethod.openstackapi
    conductor
+   filter_scheduler
+   aggregates
+   i18n
    notifications
    placement
    placement_dev
+   quotas
+   threading
+   vmstates
 
 Architecture Evolution Plans
 -----------------------------
@@ -174,7 +179,6 @@ these are a great place to start reading up on the current plans.
    api_microversion_dev
    policy_enforcement
    stable_api
-   code-review
    scheduler_evolution
 
 Advanced testing and guides

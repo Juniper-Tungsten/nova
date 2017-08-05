@@ -11,6 +11,7 @@
 #    under the License.
 
 import mock
+from oslo_serialization import jsonutils
 import six
 import testscenarios
 import webob
@@ -24,7 +25,6 @@ from nova import test
 from nova.tests.unit.api.openstack import fakes
 from nova.tests.unit import matchers
 from nova.tests.unit import utils
-from oslo_serialization import jsonutils
 
 
 class MicroversionedTest(testscenarios.WithScenarios, test.NoDBTestCase):
@@ -591,6 +591,16 @@ class ResourceTest(MicroversionedTest):
         content_type, body = resource.get_body(request)
         self.assertEqual('application/json', content_type)
         self.assertEqual(b'', body)
+
+    def test_get_body_content_body_none(self):
+        resource = wsgi.Resource(None)
+        request = wsgi.Request.blank('/', method='PUT')
+        body = None
+
+        contents = resource._get_request_content(body, request)
+
+        self.assertIn('body', contents)
+        self.assertIsNone(contents['body'])
 
     def test_get_body(self):
         class Controller(object):

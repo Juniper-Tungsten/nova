@@ -21,8 +21,8 @@ tests:
       # required but superfluous, is present
       content-type: /application/json/
   response_json_paths:
-      $.resource_provider_generation: 2
-      $.usages.DISK_GB: 1024
+      $.resource_provider_generation: 4
+      $.usages.DISK_GB: 1000
       $.usages.VCPU: 6
 
 - name: fail to delete resource provider
@@ -30,3 +30,14 @@ tests:
   status: 409
   response_strings:
       - "Unable to delete resource provider $ENVIRON['RP_UUID']: Resource provider has allocations."
+
+- name: fail to delete all inventory
+  DELETE: /resource_providers/$ENVIRON['RP_UUID']/inventories
+  request_headers:
+      accept: application/json
+      openstack-api-version: placement 1.5
+  status: 409
+  response_headers:
+      content-type: /application/json/
+  response_strings:
+      - "Inventory for 'VCPU, DISK_GB' on resource provider '$ENVIRON['RP_UUID']' in use"

@@ -23,12 +23,13 @@ import sqlalchemy as sa
 from sqlalchemy import func
 from sqlalchemy.orm import contains_eager
 from sqlalchemy import sql
+from sqlalchemy.sql import null
 
 from nova.db.sqlalchemy import api as db_api
 from nova.db.sqlalchemy import api_models as models
 from nova.db.sqlalchemy import resource_class_cache as rc_cache
 from nova import exception
-from nova.i18n import _LW
+from nova.i18n import _, _LW
 from nova import objects
 from nova.objects import base
 from nova.objects import fields
@@ -318,7 +319,8 @@ class ResourceProvider(base.NovaObject):
     # Version 1.1: Add destroy()
     # Version 1.2: Add get_aggregates(), set_aggregates()
     # Version 1.3: Turn off remotable
-    VERSION = '1.3'
+    # Version 1.4: Add set/get_traits methods
+    VERSION = '1.4'
 
     fields = {
         'id': fields.IntegerField(read_only=True),
@@ -531,6 +533,55 @@ class ResourceProvider(base.NovaObject):
                                      select_agg_id)
             conn = context.session.connection()
             conn.execute(insert_aggregates)
+
+    @staticmethod
+    @db_api.api_context_manager.reader
+    def _get_traits_from_db(context, _id):
+        db_traits = context.session.query(models.Trait).join(
+            models.ResourceProviderTrait,
+            sa.and_(
+                models.Trait.id == models.ResourceProviderTrait.trait_id,
+                models.ResourceProviderTrait.resource_provider_id == _id
+            )).all()
+        return db_traits
+
+    @base.remotable
+    def get_traits(self):
+        db_traits = self._get_traits_from_db(self._context, self.id)
+        return base.obj_make_list(self._context, TraitList(self._context),
+            Trait, db_traits)
+
+    @staticmethod
+    @db_api.api_context_manager.writer
+    def _set_traits_to_db(context, rp, _id, traits):
+        existing_traits = ResourceProvider._get_traits_from_db(context, _id)
+        traits_dict = {trait.name: trait for trait in traits}
+        existing_traits_dict = {trait.name: trait for trait in existing_traits}
+
+        to_add_names = (set(traits_dict.keys()) -
+            set(existing_traits_dict.keys()))
+        to_delete_names = (set(existing_traits_dict.keys()) -
+            set(traits_dict.keys()))
+        to_delete_ids = [existing_traits_dict[name].id
+                            for name in to_delete_names]
+
+        conn = context.session.connection()
+        with conn.begin():
+            if to_delete_names:
+                context.session.query(models.ResourceProviderTrait).filter(
+                    models.ResourceProviderTrait.trait_id.in_(to_delete_ids)
+                ).delete(synchronize_session='fetch')
+            if to_add_names:
+                for name in to_add_names:
+                    rp_trait = models.ResourceProviderTrait()
+                    rp_trait.trait_id = traits_dict[name].id
+                    rp_trait.resource_provider_id = _id
+                    context.session.add(rp_trait)
+            rp.generation = _increment_provider_generation(conn, rp)
+
+    @base.remotable
+    def set_traits(self, traits):
+        self._set_traits_to_db(self._context, self, self.id, traits)
 
 
 @base.NovaObjectRegistry.register
@@ -900,15 +951,6 @@ class Allocation(_HasAResourceProvider):
         if not result:
             raise exception.NotFound()
 
-    def create(self):
-        if 'id' in self:
-            raise exception.ObjectActionError(action='create',
-                                              reason='already created')
-        _ensure_rc_cache(self._context)
-        updates = self._make_db(self.obj_get_changes())
-        db_allocation = self._create_in_db(self._context, updates)
-        self._from_db_object(self._context, self, db_allocation)
-
     def destroy(self):
         self._destroy(self._context, self.id)
 
@@ -975,7 +1017,6 @@ def _check_capacity_exceeded(conn, allocs):
     provider_uuids = set([a.resource_provider.uuid for a in allocs])
 
     usage = sa.select([_ALLOC_TBL.c.resource_provider_id,
-                       _ALLOC_TBL.c.consumer_id,
                        _ALLOC_TBL.c.resource_class_id,
                        sql.func.sum(_ALLOC_TBL.c.used).label('used')])
     usage = usage.where(_ALLOC_TBL.c.resource_class_id.in_(rc_ids))
@@ -1130,6 +1171,9 @@ class AllocationList(base.ObjectListBase, base.NovaObject):
         # resource class names that don't exist this will raise a
         # ResourceClassNotFound exception.
         for alloc in allocs:
+            if 'id' in alloc:
+                raise exception.ObjectActionError(action='create',
+                                                  reason='already created')
             _RC_CACHE.id_from_string(alloc.resource_class)
 
         # Before writing any allocation records, we check that the submitted
@@ -1154,7 +1198,8 @@ class AllocationList(base.ObjectListBase, base.NovaObject):
                         resource_class_id=rc_id,
                         consumer_id=alloc.consumer_id,
                         used=alloc.used)
-                conn.execute(ins_stmt)
+                result = conn.execute(ins_stmt)
+                alloc.id = result.lastrowid
 
             # Generation checking happens here. If the inventory for
             # this resource provider changed out from under us,
@@ -1366,7 +1411,8 @@ class ResourceClass(base.NovaObject):
             LOG.warning(_LW("Exceeded retry limit on ID generation while "
                             "creating ResourceClass %(name)s"),
                         {'name': self.name})
-            raise exception.ResourceClassExists(resource_class=self.name)
+            msg = _("creating resource class %s") % self.name
+            raise exception.MaxDBRetriesExceeded(action=msg)
 
     @staticmethod
     @db_api.api_context_manager.writer
@@ -1459,3 +1505,130 @@ class ResourceClassList(base.ObjectListBase, base.NovaObject):
     def __repr__(self):
         strings = [repr(x) for x in self.objects]
         return "ResourceClassList[" + ", ".join(strings) + "]"
+
+
+@base.NovaObjectRegistry.register
+class Trait(base.NovaObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    # All the user-defined traits must begin with this prefix.
+    CUSTOM_NAMESPACE = 'CUSTOM_'
+
+    fields = {
+        'id': fields.IntegerField(read_only=True),
+        'name': fields.StringField(nullable=False)
+    }
+
+    @staticmethod
+    def _from_db_object(context, trait, db_trait):
+        for key in trait.fields:
+            setattr(trait, key, db_trait[key])
+        trait.obj_reset_changes()
+        trait._context = context
+        return trait
+
+    @staticmethod
+    @db_api.api_context_manager.writer
+    def _create_in_db(context, updates):
+        trait = models.Trait()
+        trait.update(updates)
+        context.session.add(trait)
+        return trait
+
+    def create(self):
+        if 'id' in self:
+            raise exception.ObjectActionError(action='create',
+                                              reason='already created')
+        if 'name' not in self:
+            raise exception.ObjectActionError(action='create',
+                                              reason='name is required')
+
+        updates = self.obj_get_changes()
+
+        try:
+            db_trait = self._create_in_db(self._context, updates)
+        except db_exc.DBDuplicateEntry:
+            raise exception.TraitExists(name=self.name)
+
+        self._from_db_object(self._context, self, db_trait)
+
+    @staticmethod
+    @db_api.api_context_manager.reader
+    def _get_by_name_from_db(context, name):
+        result = context.session.query(models.Trait).filter_by(
+            name=name).first()
+        if not result:
+            raise exception.TraitNotFound(name=name)
+        return result
+
+    @classmethod
+    def get_by_name(cls, context, name):
+        db_trait = cls._get_by_name_from_db(context, name)
+        return cls._from_db_object(context, cls(), db_trait)
+
+    @staticmethod
+    @db_api.api_context_manager.writer
+    def _destroy_in_db(context, _id, name):
+        num = context.session.query(models.ResourceProviderTrait).filter(
+            models.ResourceProviderTrait.trait_id == _id).count()
+        if num:
+            raise exception.TraitInUse(name=name)
+
+        res = context.session.query(models.Trait).filter_by(
+            name=name).delete()
+        if not res:
+            raise exception.TraitNotFound(name=name)
+
+    def destroy(self):
+        if 'name' not in self:
+            raise exception.ObjectActionError(action='destroy',
+                                              reason='name is required')
+
+        if not self.name.startswith(self.CUSTOM_NAMESPACE):
+            raise exception.TraitCannotDeleteStandard(name=self.name)
+
+        if 'id' not in self:
+            raise exception.ObjectActionError(action='destroy',
+                                              reason='ID attribute not found')
+
+        self._destroy_in_db(self._context, self.id, self.name)
+
+
+@base.NovaObjectRegistry.register
+class TraitList(base.ObjectListBase, base.NovaObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    fields = {
+        'objects': fields.ListOfObjectsField('Trait')
+    }
+
+    @staticmethod
+    @db_api.api_context_manager.reader
+    def _get_all_from_db(context, filters):
+        if not filters:
+            filters = {}
+
+        query = context.session.query(models.Trait)
+        if 'name_in' in filters:
+            query = query.filter(models.Trait.name.in_(filters['name_in']))
+        if 'prefix' in filters:
+            query = query.filter(
+                models.Trait.name.like(filters['prefix'] + '%'))
+        if 'associated' in filters:
+            if filters['associated']:
+                query = query.join(models.ResourceProviderTrait,
+                    models.Trait.id == models.ResourceProviderTrait.trait_id
+                ).distinct()
+            else:
+                query = query.outerjoin(models.ResourceProviderTrait,
+                    models.Trait.id == models.ResourceProviderTrait.trait_id
+                ).filter(models.ResourceProviderTrait.trait_id == null())
+
+        return query.all()
+
+    @base.remotable_classmethod
+    def get_all(cls, context, filters=None):
+        db_traits = cls._get_all_from_db(context, filters)
+        return base.obj_make_list(context, cls(context), Trait, db_traits)

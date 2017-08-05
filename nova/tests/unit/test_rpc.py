@@ -12,17 +12,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 import copy
-import datetime
 
 import fixtures
 import mock
 import oslo_messaging as messaging
+from oslo_messaging.rpc import dispatcher
 from oslo_serialization import jsonutils
-from oslo_utils import fixture as utils_fixture
 import testtools
 
 from nova import context
-from nova import exception
 from nova import objects
 from nova import rpc
 from nova import test
@@ -37,6 +35,7 @@ class RPCResetFixture(fixtures.Fixture):
         self.noti = copy.copy(rpc.NOTIFIER)
         self.all_mods = copy.copy(rpc.ALLOWED_EXMODS)
         self.ext_mods = copy.copy(rpc.EXTRA_EXMODS)
+        self.conf = copy.copy(rpc.CONF)
         self.addCleanup(self._reset_everything)
 
     def _reset_everything(self):
@@ -45,6 +44,7 @@ class RPCResetFixture(fixtures.Fixture):
         rpc.NOTIFIER = self.noti
         rpc.ALLOWED_EXMODS = self.all_mods
         rpc.EXTRA_EXMODS = self.ext_mods
+        rpc.CONF = self.conf
 
 
 # We can't import nova.test.TestCase because that sets up an RPCFixture
@@ -86,6 +86,20 @@ class TestRPC(testtools.TestCase):
                     {'topics': ['versioned_notifications']}]
         self._test_init(mock_notif, mock_noti_trans, mock_ser,
                         mock_exmods, 'versioned', expected)
+
+    @mock.patch.object(rpc, 'get_allowed_exmods')
+    @mock.patch.object(rpc, 'RequestContextSerializer')
+    @mock.patch.object(messaging, 'get_notification_transport')
+    @mock.patch.object(messaging, 'Notifier')
+    def test_init_versioned_with_custom_topics(self, mock_notif,
+                                               mock_noti_trans, mock_ser,
+                                               mock_exmods):
+        expected = [{'driver': 'noop'},
+                    {'topics': ['custom_topic1', 'custom_topic2']}]
+        self._test_init(
+            mock_notif, mock_noti_trans, mock_ser, mock_exmods, 'versioned',
+            expected, versioned_notification_topics=['custom_topic1',
+                                                     'custom_topic2'])
 
     def test_cleanup_transport_null(self):
         rpc.NOTIFICATION_TRANSPORT = mock.Mock()
@@ -167,8 +181,7 @@ class TestRPC(testtools.TestCase):
         url = rpc.get_transport_url(url_str='bar')
 
         self.assertEqual('foo', url)
-        mock_url.parse.assert_called_once_with(conf, 'bar',
-                                               rpc.TRANSPORT_ALIASES)
+        mock_url.parse.assert_called_once_with(conf, 'bar')
 
     @mock.patch.object(messaging, 'TransportURL')
     def test_get_transport_url_null(self, mock_url):
@@ -179,8 +192,7 @@ class TestRPC(testtools.TestCase):
         url = rpc.get_transport_url()
 
         self.assertEqual('foo', url)
-        mock_url.parse.assert_called_once_with(conf, None,
-                                               rpc.TRANSPORT_ALIASES)
+        mock_url.parse.assert_called_once_with(conf, None)
 
     @mock.patch.object(rpc, 'profiler', None)
     @mock.patch.object(rpc, 'RequestContextSerializer')
@@ -214,8 +226,10 @@ class TestRPC(testtools.TestCase):
         server = rpc.get_server(tgt, ends, serializer='foo')
 
         mock_ser.assert_called_once_with('foo')
+        access_policy = dispatcher.DefaultRPCAccessPolicy
         mock_get.assert_called_once_with(rpc.TRANSPORT, tgt, ends,
-                                         executor='eventlet', serializer=ser)
+                                         executor='eventlet', serializer=ser,
+                                         access_policy=access_policy)
         self.assertEqual('server', server)
 
     @mock.patch.object(rpc, 'profiler', mock.Mock())
@@ -250,8 +264,10 @@ class TestRPC(testtools.TestCase):
         server = rpc.get_server(tgt, ends, serializer='foo')
 
         mock_ser.assert_called_once_with('foo')
+        access_policy = dispatcher.DefaultRPCAccessPolicy
         mock_get.assert_called_once_with(rpc.TRANSPORT, tgt, ends,
-                                         executor='eventlet', serializer=ser)
+                                         executor='eventlet', serializer=ser,
+                                         access_policy=access_policy)
         self.assertEqual('server', server)
 
     def test_get_notifier(self):
@@ -298,11 +314,11 @@ class TestRPC(testtools.TestCase):
         mock_exmods.assert_called_once_with()
         mock_transport.assert_called_once_with(rpc.CONF,
                                                url=mock.sentinel.url,
-                                               allowed_remote_exmods=exmods,
-                                               aliases=rpc.TRANSPORT_ALIASES)
+                                               allowed_remote_exmods=exmods)
 
     def _test_init(self, mock_notif, mock_noti_trans, mock_ser,
-                   mock_exmods, notif_format, expected_driver_topic_kwargs):
+                   mock_exmods, notif_format, expected_driver_topic_kwargs,
+                   versioned_notification_topics=['versioned_notifications']):
         legacy_notifier = mock.Mock()
         notifier = mock.Mock()
         notif_transport = mock.Mock()
@@ -312,6 +328,8 @@ class TestRPC(testtools.TestCase):
 
         conf.transport_url = None
         conf.notifications.notification_format = notif_format
+        conf.notifications.versioned_notifications_topics = (
+            versioned_notification_topics)
         mock_exmods.return_value = ['foo']
         mock_noti_trans.return_value = notif_transport
         mock_ser.return_value = serializer
@@ -440,179 +458,95 @@ class TestProfilerRequestContextSerializer(test.NoDBTestCase):
 
 
 class TestClientRouter(test.NoDBTestCase):
-    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
-    @mock.patch('nova.rpc.create_transport')
     @mock.patch('oslo_messaging.RPCClient')
-    def test_by_instance(self, mock_rpcclient, mock_create, mock_get):
+    def test_by_instance(self, mock_rpcclient):
         default_client = mock.Mock()
         cell_client = mock.Mock()
         mock_rpcclient.return_value = cell_client
         ctxt = mock.Mock()
-        cm = objects.CellMapping(uuid=uuids.cell_mapping,
-                                 transport_url='fake:///')
-        mock_get.return_value = objects.InstanceMapping(cell_mapping=cm)
+        ctxt.mq_connection = mock.sentinel.transport
         instance = objects.Instance(uuid=uuids.instance)
 
         router = rpc.ClientRouter(default_client)
         client = router.by_instance(ctxt, instance)
 
-        mock_get.assert_called_once_with(ctxt, instance.uuid)
         # verify a client was created by ClientRouter
         mock_rpcclient.assert_called_once_with(
-                mock_create.return_value, default_client.target,
+                mock.sentinel.transport, default_client.target,
                 version_cap=default_client.version_cap,
                 serializer=default_client.serializer)
         # verify cell client was returned
         self.assertEqual(cell_client, client)
 
-        # reset and check that cached client is returned the second time
-        mock_rpcclient.reset_mock()
-        mock_create.reset_mock()
-        mock_get.reset_mock()
-
-        client = router.by_instance(ctxt, instance)
-        mock_get.assert_called_once_with(ctxt, instance.uuid)
-        mock_rpcclient.assert_not_called()
-        mock_create.assert_not_called()
-        self.assertEqual(cell_client, client)
-
-    @mock.patch('nova.objects.HostMapping.get_by_host')
-    @mock.patch('nova.rpc.create_transport')
     @mock.patch('oslo_messaging.RPCClient')
-    def test_by_host(self, mock_rpcclient, mock_create, mock_get):
+    def test_by_instance_untargeted(self, mock_rpcclient):
         default_client = mock.Mock()
         cell_client = mock.Mock()
         mock_rpcclient.return_value = cell_client
         ctxt = mock.Mock()
-        cm = objects.CellMapping(uuid=uuids.cell_mapping,
-                                 transport_url='fake:///')
-        mock_get.return_value = objects.HostMapping(cell_mapping=cm)
-        host = 'fake-host'
-
-        router = rpc.ClientRouter(default_client)
-        client = router.by_host(ctxt, host)
-
-        mock_get.assert_called_once_with(ctxt, host)
-        # verify a client was created by ClientRouter
-        mock_rpcclient.assert_called_once_with(
-                mock_create.return_value, default_client.target,
-                version_cap=default_client.version_cap,
-                serializer=default_client.serializer)
-        # verify cell client was returned
-        self.assertEqual(cell_client, client)
-
-        # reset and check that cached client is returned the second time
-        mock_rpcclient.reset_mock()
-        mock_create.reset_mock()
-        mock_get.reset_mock()
-
-        client = router.by_host(ctxt, host)
-        mock_get.assert_called_once_with(ctxt, host)
-        mock_rpcclient.assert_not_called()
-        mock_create.assert_not_called()
-        self.assertEqual(cell_client, client)
-
-    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid',
-            side_effect=exception.InstanceMappingNotFound(uuid=uuids.instance))
-    @mock.patch('nova.rpc.create_transport')
-    @mock.patch('oslo_messaging.RPCClient')
-    def test_by_instance_not_found(self, mock_rpcclient, mock_create,
-                                   mock_get):
-        default_client = mock.Mock()
-        cell_client = mock.Mock()
-        mock_rpcclient.return_value = cell_client
-        ctxt = mock.Mock()
+        ctxt.mq_connection = None
         instance = objects.Instance(uuid=uuids.instance)
 
         router = rpc.ClientRouter(default_client)
         client = router.by_instance(ctxt, instance)
 
-        mock_get.assert_called_once_with(ctxt, instance.uuid)
-        mock_rpcclient.assert_not_called()
-        mock_create.assert_not_called()
-        # verify default client was returned
-        self.assertEqual(default_client, client)
+        self.assertEqual(router.default_client, client)
+        self.assertFalse(mock_rpcclient.called)
 
-    @mock.patch('nova.objects.HostMapping.get_by_host',
-            side_effect=exception.HostMappingNotFound(name='fake-host'))
-    @mock.patch('nova.rpc.create_transport')
     @mock.patch('oslo_messaging.RPCClient')
-    def test_by_host_not_found(self, mock_rpcclient, mock_create, mock_get):
+    def test_by_host(self, mock_rpcclient):
         default_client = mock.Mock()
         cell_client = mock.Mock()
         mock_rpcclient.return_value = cell_client
         ctxt = mock.Mock()
+        ctxt.mq_connection = mock.sentinel.transport
         host = 'fake-host'
 
         router = rpc.ClientRouter(default_client)
         client = router.by_host(ctxt, host)
 
-        mock_get.assert_called_once_with(ctxt, host)
-        mock_rpcclient.assert_not_called()
-        mock_create.assert_not_called()
-        # verify default client was returned
-        self.assertEqual(default_client, client)
+        # verify a client was created by ClientRouter
+        mock_rpcclient.assert_called_once_with(
+                mock.sentinel.transport, default_client.target,
+                version_cap=default_client.version_cap,
+                serializer=default_client.serializer)
+        # verify cell client was returned
+        self.assertEqual(cell_client, client)
 
-    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
-    @mock.patch('nova.rpc.create_transport')
     @mock.patch('oslo_messaging.RPCClient')
-    def test_remove_stale_clients(self, mock_rpcclient, mock_create, mock_get):
-        t0 = datetime.datetime(2016, 8, 9, 0, 0, 0)
-        time_fixture = self.useFixture(utils_fixture.TimeFixture(t0))
-
+    def test_by_host_untargeted(self, mock_rpcclient):
         default_client = mock.Mock()
+        cell_client = mock.Mock()
+        mock_rpcclient.return_value = cell_client
         ctxt = mock.Mock()
-
-        cm1 = objects.CellMapping(uuid=uuids.cell_mapping1,
-                                  transport_url='fake:///')
-        cm2 = objects.CellMapping(uuid=uuids.cell_mapping2,
-                                  transport_url='fake:///')
-        cm3 = objects.CellMapping(uuid=uuids.cell_mapping3,
-                                  transport_url='fake:///')
-        mock_get.side_effect = [objects.InstanceMapping(cell_mapping=cm1),
-                                objects.InstanceMapping(cell_mapping=cm2),
-                                objects.InstanceMapping(cell_mapping=cm3),
-                                objects.InstanceMapping(cell_mapping=cm3)]
-        instance1 = objects.Instance(uuid=uuids.instance1)
-        instance2 = objects.Instance(uuid=uuids.instance2)
-        instance3 = objects.Instance(uuid=uuids.instance3)
+        ctxt.mq_connection = None
+        host = 'fake-host'
 
         router = rpc.ClientRouter(default_client)
-        cell1_client = router.by_instance(ctxt, instance1)
-        cell2_client = router.by_instance(ctxt, instance2)
+        client = router.by_host(ctxt, host)
 
-        # default client, cell1 client, cell2 client
-        self.assertEqual(3, len(router.clients))
-        expected = {'default': default_client,
-                    uuids.cell_mapping1: cell1_client,
-                    uuids.cell_mapping2: cell2_client}
-        for client_id, client in expected.items():
-            self.assertEqual(client, router.clients[client_id].client)
+        self.assertEqual(router.default_client, client)
+        self.assertFalse(mock_rpcclient.called)
 
-        # expire cell1 client and cell2 client
-        time_fixture.advance_time_seconds(80)
 
-        # add cell3 client
-        cell3_client = router.by_instance(ctxt, instance3)
+class TestIsNotificationsEnabledDecorator(test.NoDBTestCase):
 
-        router._remove_stale_clients(ctxt)
+    def setUp(self):
+        super(TestIsNotificationsEnabledDecorator, self).setUp()
+        self.f = mock.Mock()
+        self.f.__name__ = 'f'
+        self.decorated = rpc.if_notifications_enabled(self.f)
 
-        # default client, cell3 client
-        expected = {'default': default_client,
-                    uuids.cell_mapping3: cell3_client}
-        self.assertEqual(2, len(router.clients))
-        for client_id, client in expected.items():
-            self.assertEqual(client, router.clients[client_id].client)
+    def test_call_func_if_needed(self):
+        self.decorated()
+        self.f.assert_called_once_with()
 
-        # expire cell3 client
-        time_fixture.advance_time_seconds(80)
+    @mock.patch('nova.rpc.NOTIFIER.is_enabled', return_value=False)
+    def test_not_call_func_if_notifier_disabled(self, mock_is_enabled):
+        self.decorated()
+        self.assertEqual(0, len(self.f.mock_calls))
 
-        # access cell3 client to refresh it
-        cell3_client = router.by_instance(ctxt, instance3)
-
-        router._remove_stale_clients(ctxt)
-
-        # default client and cell3 client should be there
-        self.assertEqual(2, len(router.clients))
-        for client_id, client in expected.items():
-            self.assertEqual(client, router.clients[client_id].client)
+    def test_not_call_func_if_only_unversioned_notifications_requested(self):
+        self.flags(notification_format='unversioned', group='notifications')
+        self.decorated()
+        self.assertEqual(0, len(self.f.mock_calls))

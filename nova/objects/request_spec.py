@@ -55,7 +55,13 @@ class RequestSpec(base.NovaObject):
         'flavor': fields.ObjectField('Flavor', nullable=False),
         'num_instances': fields.IntegerField(default=1),
         'ignore_hosts': fields.ListOfStringsField(nullable=True),
+        # NOTE(mriedem): In reality, you can only ever have one
+        # host in the force_hosts list. The fact this is a list
+        # is a mistake perpetuated over time.
         'force_hosts': fields.ListOfStringsField(nullable=True),
+        # NOTE(mriedem): In reality, you can only ever have one
+        # node in the force_nodes list. The fact this is a list
+        # is a mistake perpetuated over time.
         'force_nodes': fields.ListOfStringsField(nullable=True),
         'requested_destination': fields.ObjectField('Destination',
                                                     nullable=True,
@@ -612,7 +618,8 @@ def migrate_instances_add_request_spec(context, max_count):
 @base.NovaObjectRegistry.register
 class Destination(base.NovaObject):
     # Version 1.0: Initial version
-    VERSION = '1.0'
+    # Version 1.1: Add cell field
+    VERSION = '1.1'
 
     fields = {
         'host': fields.StringField(),
@@ -620,7 +627,15 @@ class Destination(base.NovaObject):
         # and also remove the possibility to have multiple nodes per service,
         # let's provide a possible nullable node here.
         'node': fields.StringField(nullable=True),
+        'cell': fields.ObjectField('CellMapping', nullable=True),
     }
+
+    def obj_make_compatible(self, primitive, target_version):
+        super(Destination, self).obj_make_compatible(primitive, target_version)
+        target_version = versionutils.convert_version_to_tuple(target_version)
+        if target_version < (1, 1):
+            if 'cell' in primitive:
+                del primitive['cell']
 
 
 @base.NovaObjectRegistry.register

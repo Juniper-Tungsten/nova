@@ -15,18 +15,16 @@
 
 """Render vendordata as stored fetched from REST microservices."""
 
-import requests
-import six
 import sys
 
 from keystoneauth1 import exceptions as ks_exceptions
 from keystoneauth1 import loading as ks_loading
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
+import six
 
 from nova.api.metadata import vendordata
 import nova.conf
-from nova.i18n import _LW
 
 CONF = nova.conf.CONF
 LOG = logging.getLogger(__name__)
@@ -49,9 +47,9 @@ def _load_ks_session(conf):
             conf, nova.conf.vendordata.vendordata_group.name)
 
     if not _ADMIN_AUTH:
-        LOG.warning(_LW('Passing insecure dynamic vendordata requests '
-                        'because of missing or incorrect service account '
-                        'configuration.'))
+        LOG.warning('Passing insecure dynamic vendordata requests '
+                    'because of missing or incorrect service account '
+                    'configuration.')
 
     if not _SESSION:
         _SESSION = ks_loading.load_session_from_conf_options(
@@ -69,9 +67,12 @@ class DynamicVendorData(vendordata.VendorDataDriver):
         # JSON plugin.
         self.context = context
         self.instance = instance
-        self.session = _load_ks_session(CONF)
+        # We only create the session if we make a request.
+        self.session = None
 
     def _do_request(self, service_name, url):
+        if self.session is None:
+            self.session = _load_ks_session(CONF)
         try:
             body = {'project-id': self.instance.project_id,
                     'instance-id': self.instance.uuid,
@@ -97,9 +98,7 @@ class DynamicVendorData(vendordata.VendorDataDriver):
             res = self.session.request(url, 'POST', data=jsonutils.dumps(body),
                                        verify=verify, headers=headers,
                                        timeout=timeout)
-            if res.status_code in (requests.codes.OK,
-                                   requests.codes.CREATED,
-                                   requests.codes.ACCEPTED):
+            if res and res.text:
                 # TODO(mikal): Use the Cache-Control response header to do some
                 # sensible form of caching here.
                 return jsonutils.loads(res.text)
@@ -109,8 +108,8 @@ class DynamicVendorData(vendordata.VendorDataDriver):
         except (TypeError, ValueError,
                 ks_exceptions.connection.ConnectionError,
                 ks_exceptions.http.HttpError) as e:
-            LOG.warning(_LW('Error from dynamic vendordata service '
-                            '%(service_name)s at %(url)s: %(error)s'),
+            LOG.warning('Error from dynamic vendordata service '
+                        '%(service_name)s at %(url)s: %(error)s',
                         {'service_name': service_name,
                          'url': url,
                          'error': e},
@@ -129,8 +128,8 @@ class DynamicVendorData(vendordata.VendorDataDriver):
             # where name is the name to use in the metadata handed to
             # instances, and url is the URL to fetch it from
             if target.find('@') == -1:
-                LOG.warning(_LW('Vendordata target %(target)s lacks a name. '
-                                'Skipping'),
+                LOG.warning('Vendordata target %(target)s lacks a name. '
+                            'Skipping',
                             {'target': target}, instance=self.instance)
                 continue
 
@@ -139,8 +138,8 @@ class DynamicVendorData(vendordata.VendorDataDriver):
             url = '@'.join(tokens[1:])
 
             if name in j:
-                LOG.warning(_LW('Vendordata already contains an entry named '
-                                '%(target)s. Skipping'),
+                LOG.warning('Vendordata already contains an entry named '
+                            '%(target)s. Skipping',
                             {'target': target}, instance=self.instance)
                 continue
 

@@ -60,7 +60,6 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
                              "NWFilterFirewall will not work correctly."))
         self._host = host
         self.static_filters_configured = False
-        self.handle_security_groups = False
 
     def apply_instance_filter(self, instance, network_info):
         """No-op. Everything is done in prepare_instance_filter."""
@@ -114,11 +113,6 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
         LOG.info(_LI('Called setup_basic_filtering in nwfilter'),
                  instance=instance)
 
-        if self.handle_security_groups:
-            # No point in setting up a filter set that we'll be overriding
-            # anyway.
-            return
-
         LOG.info(_LI('Ensuring static filters'), instance=instance)
         self._ensure_static_filters()
 
@@ -155,26 +149,22 @@ class NWFilterFirewall(base_firewall.FirewallDriver):
             dhcp_server = subnet.get_meta('dhcp_server')
             if dhcp_server:
                 parameters.append(format_parameter('DHCPSERVER', dhcp_server))
-        if CONF.use_ipv6:
-            for subnet in v6_subnets:
-                gateway = subnet.get('gateway')
-                if gateway:
-                    ra_server = gateway['address'] + "/128"
-                    parameters.append(format_parameter('RASERVER', ra_server))
 
-        if CONF.allow_same_net_traffic:
-            for subnet in v4_subnets:
-                ipv4_cidr = subnet['cidr']
-                net, mask = netutils.get_net_and_mask(ipv4_cidr)
-                parameters.append(format_parameter('PROJNET', net))
-                parameters.append(format_parameter('PROJMASK', mask))
+            ipv4_cidr = subnet['cidr']
+            net, mask = netutils.get_net_and_mask(ipv4_cidr)
+            parameters.append(format_parameter('PROJNET', net))
+            parameters.append(format_parameter('PROJMASK', mask))
 
-            if CONF.use_ipv6:
-                for subnet in v6_subnets:
-                    ipv6_cidr = subnet['cidr']
-                    net, prefix = netutils.get_net_and_prefixlen(ipv6_cidr)
-                    parameters.append(format_parameter('PROJNET6', net))
-                    parameters.append(format_parameter('PROJMASK6', prefix))
+        for subnet in v6_subnets:
+            gateway = subnet.get('gateway')
+            if gateway:
+                ra_server = gateway['address'] + "/128"
+                parameters.append(format_parameter('RASERVER', ra_server))
+
+            ipv6_cidr = subnet['cidr']
+            net, prefix = netutils.get_net_and_prefixlen(ipv6_cidr)
+            parameters.append(format_parameter('PROJNET6', net))
+            parameters.append(format_parameter('PROJMASK6', prefix))
 
         return parameters
 

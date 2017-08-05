@@ -1484,6 +1484,12 @@ class CellV2CommandsTestCase(test.NoDBTestCase):
         self.assertEqual('Cell with uuid %s was not found.' % cell_uuid,
                          output)
 
+    def test_delete_cell_cell0(self):
+        cell_uuid = objects.CellMapping.CELL0_UUID
+        self.assertEqual(5, self.commands.delete_cell(cell_uuid))
+        output = self.output.getvalue().strip()
+        self.assertEqual('Cell 0 can not be deleted.', output)
+
     def test_delete_cell_host_mappings_exist(self):
         """Tests trying to delete a cell which has host mappings."""
         cell_uuid = uuidutils.generate_uuid()
@@ -1532,6 +1538,54 @@ class CellV2CommandsTestCase(test.NoDBTestCase):
         output = self.output.getvalue().strip()
         self.assertEqual('', output)
 
+    def test_update_cell_not_found(self):
+        self.assertEqual(1, self.commands.update_cell(
+            uuidsentinel.cell1, 'foo', 'fake://new', 'fake:///new'))
+        self.assertIn('not found', self.output.getvalue())
+
+    def test_update_cell_failed(self):
+        ctxt = context.get_admin_context()
+        objects.CellMapping(context=ctxt, uuid=uuidsentinel.cell1,
+                            name='cell1',
+                            transport_url='fake://mq',
+                            database_connection='fake:///db').create()
+        with mock.patch('nova.objects.CellMapping.save') as mock_save:
+            mock_save.side_effect = Exception
+            self.assertEqual(2, self.commands.update_cell(
+                uuidsentinel.cell1, 'foo', 'fake://new', 'fake:///new'))
+        self.assertIn('Unable to update', self.output.getvalue())
+
+    def test_update_cell_success(self):
+        ctxt = context.get_admin_context()
+        objects.CellMapping(context=ctxt, uuid=uuidsentinel.cell1,
+                            name='cell1',
+                            transport_url='fake://mq',
+                            database_connection='fake:///db').create()
+        self.assertEqual(0, self.commands.update_cell(
+            uuidsentinel.cell1, 'foo', 'fake://new', 'fake:///new'))
+        cm = objects.CellMapping.get_by_uuid(ctxt, uuidsentinel.cell1)
+        self.assertEqual('foo', cm.name)
+        self.assertEqual('fake://new', cm.transport_url)
+        self.assertEqual('fake:///new', cm.database_connection)
+        output = self.output.getvalue().strip()
+        self.assertEqual('', output)
+
+    def test_update_cell_success_defaults(self):
+        ctxt = context.get_admin_context()
+        objects.CellMapping(context=ctxt, uuid=uuidsentinel.cell1,
+                            name='cell1',
+                            transport_url='fake://mq',
+                            database_connection='fake:///db').create()
+        self.assertEqual(0, self.commands.update_cell(uuidsentinel.cell1))
+        cm = objects.CellMapping.get_by_uuid(ctxt, uuidsentinel.cell1)
+        self.assertEqual('cell1', cm.name)
+        expected_transport_url = CONF.transport_url or 'fake://mq'
+        self.assertEqual(expected_transport_url, cm.transport_url)
+        expected_db_connection = CONF.database.connection or 'fake:///db'
+        self.assertEqual(expected_db_connection, cm.database_connection)
+        output = self.output.getvalue().strip()
+        self.assertEqual('', output)
+
 
 class TestNovaManageMain(test.NoDBTestCase):
     """Tests the nova-manage:main() setup code."""
@@ -1546,9 +1600,20 @@ class TestNovaManageMain(test.NoDBTestCase):
     def test_error_traceback(self, mock_conf, mock_parse_args):
         with mock.patch.object(manage.cmd_common, 'get_action_fn',
                                side_effect=test.TestingException('oops')):
+            mock_conf.post_mortem = False
             self.assertEqual(1, manage.main())
             # assert the traceback is dumped to stdout
             output = self.output.getvalue()
             self.assertIn('An error has occurred', output)
             self.assertIn('Traceback', output)
             self.assertIn('oops', output)
+
+    @mock.patch('pdb.post_mortem')
+    @mock.patch.object(manage.config, 'parse_args')
+    @mock.patch.object(manage, 'CONF')
+    def test_error_post_mortem(self, mock_conf, mock_parse_args, mock_pm):
+        with mock.patch.object(manage.cmd_common, 'get_action_fn',
+                               side_effect=test.TestingException('oops')):
+            mock_conf.post_mortem = True
+            self.assertEqual(1, manage.main())
+            self.assertTrue(mock_pm.called)

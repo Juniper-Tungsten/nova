@@ -17,6 +17,7 @@
 """Fixtures for Nova tests."""
 from __future__ import absolute_import
 
+import collections
 from contextlib import contextmanager
 import logging as std_logging
 import os
@@ -27,10 +28,8 @@ from keystoneauth1 import session as ks
 import mock
 from oslo_concurrency import lockutils
 from oslo_config import cfg
-from oslo_db.sqlalchemy import enginefacade
 import oslo_messaging as messaging
 from oslo_messaging import conffixture as messaging_conffixture
-import six
 
 from nova.api.openstack.placement import deploy as placement_deploy
 from nova.compute import rpcapi as compute_rpcapi
@@ -292,6 +291,9 @@ class SingleCellSimple(fixtures.Fixture):
         self.useFixture(fixtures.MonkeyPatch(
             'nova.context.target_cell',
             self._fake_target_cell))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.context.set_target_cell',
+            lambda c, m: None))
 
     def _fake_hostmapping_get(self, *args):
         return {'id': 1,
@@ -329,6 +331,32 @@ class SingleCellSimple(fixtures.Fixture):
         # NOTE(danms): Just pass through the context without actually
         # targeting anything.
         yield context
+
+
+class CheatingSerializer(rpc.RequestContextSerializer):
+    """A messaging.RequestContextSerializer that helps with cells.
+
+    Our normal serializer does not pass in the context like db_connection
+    and mq_connection, for good reason. We don't really want/need to
+    force a remote RPC server to use our values for this. However,
+    during unit and functional tests, since we're all in the same
+    process, we want cell-targeted RPC calls to preserve these values.
+    Unless we had per-service config and database layer state for
+    the fake services we start, this is a reasonable cheat.
+    """
+    def serialize_context(self, context):
+        """Serialize context with the db_connection inside."""
+        values = super(CheatingSerializer, self).serialize_context(context)
+        values['db_connection'] = context.db_connection
+        values['mq_connection'] = context.mq_connection
+        return values
+
+    def deserialize_context(self, values):
+        """Deserialize context and honor db_connection if present."""
+        ctxt = super(CheatingSerializer, self).deserialize_context(values)
+        ctxt.db_connection = values.pop('db_connection', None)
+        ctxt.mq_connection = values.pop('mq_connection', None)
+        return ctxt
 
 
 class CellDatabases(fixtures.Fixture):
@@ -372,6 +400,16 @@ class CellDatabases(fixtures.Fixture):
     @contextmanager
     def _wrap_target_cell(self, context, cell_mapping):
         with self._cell_lock.write_lock():
+            if cell_mapping is None:
+                # NOTE(danms): The real target_cell untargets with a
+                # cell_mapping of None. Since we're controlling our
+                # own targeting in this fixture, we need to call this out
+                # specifically and avoid switching global database state
+                try:
+                    with self._real_target_cell(context, cell_mapping) as c:
+                        yield c
+                finally:
+                    return
             ctxt_mgr = self._ctxt_mgrs[cell_mapping.database_connection]
             # This assumes the next local DB access is the same cell that
             # was targeted last time.
@@ -390,10 +428,35 @@ class CellDatabases(fixtures.Fixture):
         return ctxt_mgr
 
     def _wrap_get_context_manager(self, context):
+        try:
+            # If already targeted, we can proceed without a lock
+            if context.db_connection:
+                return context.db_connection
+        except AttributeError:
+            # Unit tests with None, FakeContext, etc
+            pass
+
         # NOTE(melwitt): This is a hack to try to deal with
         # local accesses i.e. non target_cell accesses.
         with self._cell_lock.read_lock():
             return self._last_ctxt_mgr
+
+    def _wrap_get_server(self, target, endpoints, serializer=None):
+        """Mirror rpc.get_server() but with our special sauce."""
+        serializer = CheatingSerializer(serializer)
+        return messaging.get_rpc_server(rpc.TRANSPORT,
+                                        target,
+                                        endpoints,
+                                        executor='eventlet',
+                                        serializer=serializer)
+
+    def _wrap_get_client(self, target, version_cap=None, serializer=None):
+        """Mirror rpc.get_client() but with our special sauce."""
+        serializer = CheatingSerializer(serializer)
+        return messaging.RPCClient(rpc.TRANSPORT,
+                                   target,
+                                   version_cap=version_cap,
+                                   serializer=serializer)
 
     def add_cell_database(self, connection_str, default=False):
         """Add a cell database to the fixture.
@@ -454,6 +517,13 @@ class CellDatabases(fixtures.Fixture):
         self.useFixture(fixtures.MonkeyPatch(
             'nova.context.target_cell',
             self._wrap_target_cell))
+
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.rpc.get_server',
+            self._wrap_get_server))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.rpc.get_client',
+            self._wrap_get_client))
 
     def cleanup(self):
         for ctxt_mgr in self._ctxt_mgrs.values():
@@ -595,8 +665,7 @@ class RPCFixture(fixtures.Fixture):
             self._buses[url] = messaging.get_transport(
                 CONF,
                 url=url,
-                allowed_remote_exmods=exmods,
-                aliases=rpc.TRANSPORT_ALIASES)
+                allowed_remote_exmods=exmods)
         return self._buses[url]
 
     def setUp(self):
@@ -657,7 +726,7 @@ class ConfPatcher(fixtures.Fixture):
 
     def setUp(self):
         super(ConfPatcher, self).setUp()
-        for k, v in six.iteritems(self.args):
+        for k, v in self.args.items():
             self.addCleanup(CONF.clear_override, k, self.group)
             CONF.set_override(k, v, self.group)
 
@@ -709,7 +778,6 @@ class OSAPIFixture(fixtures.Fixture):
         conf_overrides = {
             'osapi_compute_listen': '127.0.0.1',
             'osapi_compute_listen_port': 0,
-            'verbose': True,
             'debug': True,
         }
         self.useFixture(ConfPatcher(**conf_overrides))
@@ -745,7 +813,6 @@ class OSMetadataServer(fixtures.Fixture):
         conf_overrides = {
             'metadata_listen': '127.0.0.1',
             'metadata_listen_port': 0,
-            'verbose': True,
             'debug': True
         }
         self.useFixture(ConfPatcher(**conf_overrides))
@@ -878,42 +945,6 @@ class BannedDBSchemaOperations(fixtures.Fixture):
                 lambda *a, **k: self._explode(thing, 'alter')))
 
 
-class EngineFacadeFixture(fixtures.Fixture):
-    """Fixture to isolation EngineFacade during tests.
-
-    Because many elements of EngineFacade are based on globals, once
-    an engine facade has been initialized, all future code goes
-    through it. This means that the initialization of sqlite in
-    databases in our Database fixture will drive all connections to
-    sqlite. While that's fine in a production environment, during
-    testing this means we can't test against multiple backends in the
-    same test run.
-
-    oslo.db does not yet support a reset mechanism here. This builds a
-    custom in tree engine facade fixture to handle this. Eventually
-    this will be added to oslo.db and this can be removed. Tracked by
-    https://bugs.launchpad.net/oslo.db/+bug/1548960
-
-    """
-    def __init__(self, ctx_manager, engine, sessionmaker):
-        super(EngineFacadeFixture, self).__init__()
-        self._ctx_manager = ctx_manager
-        self._engine = engine
-        self._sessionmaker = sessionmaker
-
-    def setUp(self):
-        super(EngineFacadeFixture, self).setUp()
-
-        self._existing_factory = self._ctx_manager._root_factory
-        self._ctx_manager._root_factory = enginefacade._TestTransactionFactory(
-            self._engine, self._sessionmaker, apply_global=False,
-            synchronous_reader=True)
-        self.addCleanup(self.cleanup)
-
-    def cleanup(self):
-        self._ctx_manager._root_factory = self._existing_factory
-
-
 class ForbidNewLegacyNotificationFixture(fixtures.Fixture):
     """Make sure the test fails if new legacy notification is added"""
     def __init__(self):
@@ -990,6 +1021,8 @@ class NeutronFixture(fixtures.Fixture):
         'mac_address': 'fa:16:3e:4c:2c:30',
         'fixed_ips': [
             {
+                # The IP on this port must be a prefix of the IP on port_2 to
+                # test listing servers with an ip filter regex.
                 'ip_address': '192.168.1.3',
                 'subnet_id': subnet_1['id']
             }
@@ -997,9 +1030,26 @@ class NeutronFixture(fixtures.Fixture):
         'tenant_id': tenant_id
     }
 
-    def __init__(self, test):
+    # This port is only used if the fixture is created with multiple_ports=True
+    port_2 = {
+        'id': '88dae9fa-0dc6-49e3-8c29-3abc41e99ac9',
+        'network_id': network_1['id'],
+        'admin_state_up': True,
+        'status': 'ACTIVE',
+        'mac_address': '00:0c:29:0d:11:74',
+        'fixed_ips': [
+            {
+                'ip_address': '192.168.1.30',
+                'subnet_id': subnet_1['id']
+            }
+        ],
+        'tenant_id': tenant_id
+    }
+
+    def __init__(self, test, multiple_ports=False):
         super(NeutronFixture, self).__init__()
         self.test = test
+        self.multiple_ports = multiple_ports
 
     def setUp(self):
         super(NeutronFixture, self).setUp()
@@ -1028,17 +1078,29 @@ class NeutronFixture(fixtures.Fixture):
 
         mock_neutron_client = mock.Mock()
         mock_neutron_client.list_extensions.return_value = {'extensions': []}
-        mock_neutron_client.show_port.return_value = {
-            'port': NeutronFixture.port_1}
+
+        def stub_show_port(port_id, *args, **kwargs):
+            if port_id == NeutronFixture.port_1['id']:
+                return {'port': NeutronFixture.port_1}
+            if port_id == NeutronFixture.port_2['id']:
+                return {'port': NeutronFixture.port_2}
+            raise exception.PortNotFound(port_id=port_id)
+
+        mock_neutron_client.show_port.side_effect = stub_show_port
         mock_neutron_client.list_networks.return_value = {
             'networks': [NeutronFixture.network_1]}
-        mock_neutron_client.list_ports.return_value = {
-            'ports': [NeutronFixture.port_1]}
+
+        def stub_list_ports(*args, **kwargs):
+            ports = {'ports': [NeutronFixture.port_1]}
+            if self.multiple_ports:
+                ports['ports'].append(NeutronFixture.port_2)
+            return ports
+
+        mock_neutron_client.list_ports.side_effect = stub_list_ports
         mock_neutron_client.list_subnets.return_value = {
             'subnets': [NeutronFixture.subnet_1]}
         mock_neutron_client.list_floatingips.return_value = {'floatingips': []}
-        mock_neutron_client.update_port.return_value = {
-            'port': NeutronFixture.port_1}
+        mock_neutron_client.update_port.side_effect = stub_show_port
 
         self.test.stub_out(
             'nova.network.neutronv2.api.get_client',
@@ -1089,11 +1151,15 @@ class CinderFixture(fixtures.Fixture):
         self.swap_error = False
         self.swap_volume_instance_uuid = None
         self.swap_volume_instance_error_uuid = None
+        # This is a map of instance UUIDs mapped to a list of volume IDs.
+        # This map gets updated on attach/detach operations.
+        self.attachments = collections.defaultdict(list)
 
     def setUp(self):
         super(CinderFixture, self).setUp()
 
         def fake_get(self_api, context, volume_id):
+            # Check for the special swap volumes.
             if volume_id in (CinderFixture.SWAP_OLD_VOL,
                              CinderFixture.SWAP_ERR_OLD_VOL):
                 volume = {
@@ -1122,14 +1188,33 @@ class CinderFixture(fixtures.Fixture):
                         'attach_status': 'attached'
                     })
                 return volume
-            else:
-                return {
-                           'status': 'available',
-                           'display_name': 'TEST2',
-                           'attach_status': 'detached',
-                           'id': volume_id,
-                           'size': 1
-                       }
+
+            # Check to see if the volume is attached.
+            for instance_uuid, volumes in self.attachments.items():
+                if volume_id in volumes:
+                    # The volume is attached.
+                    return {
+                        'status': 'in-use',
+                        'display_name': volume_id,
+                        'attach_status': 'attached',
+                        'id': volume_id,
+                        'size': 1,
+                        'attachments': {
+                            instance_uuid: {
+                                'attachment_id': volume_id,
+                                'mountpoint': '/dev/vdb'
+                            }
+                        }
+                    }
+
+            # This is a test that does not care about the actual details.
+            return {
+                       'status': 'available',
+                       'display_name': 'TEST2',
+                       'attach_status': 'detached',
+                       'id': volume_id,
+                       'size': 1
+                   }
 
         def fake_initialize_connection(self, context, volume_id, connector):
             if volume_id == CinderFixture.SWAP_ERR_NEW_VOL:
@@ -1147,8 +1232,35 @@ class CinderFixture(fixtures.Fixture):
             # the reservation on SWAP_ERR_NEW_VOL.
             self.swap_error = True
 
+        def fake_attach(_self, context, volume_id, instance_uuid,
+                        mountpoint, mode='rw'):
+            # Check to see if the volume is already attached to any server.
+            for instance, volumes in self.attachments.items():
+                if volume_id in volumes:
+                    raise exception.InvalidInput(
+                        reason='Volume %s is already attached to '
+                               'instance %s' % (volume_id, instance))
+            # It's not attached so let's "attach" it.
+            self.attachments[instance_uuid].append(volume_id)
+
         self.test.stub_out('nova.volume.cinder.API.attach',
-                           lambda *args, **kwargs: None)
+                           fake_attach)
+
+        def fake_detach(_self, context, volume_id, instance_uuid=None,
+                        attachment_id=None):
+            if instance_uuid is not None:
+                # If the volume isn't attached to this instance it will
+                # result in a ValueError which indicates a broken test or
+                # code, so we just let that raise up.
+                self.attachments[instance_uuid].remove(volume_id)
+            else:
+                for instance, volumes in self.attachments.items():
+                    if volume_id in volumes:
+                        volumes.remove(volume_id)
+                        break
+
+        self.test.stub_out('nova.volume.cinder.API.detach', fake_detach)
+
         self.test.stub_out('nova.volume.cinder.API.begin_detaching',
                            lambda *args, **kwargs: None)
         self.test.stub_out('nova.volume.cinder.API.check_attach',

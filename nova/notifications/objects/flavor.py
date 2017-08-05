@@ -35,7 +35,9 @@ class FlavorPayload(base.NotificationPayloadBase):
     # Version 1.0: Initial version
     # Version 1.1: Add other fields for Flavor
     # Version 1.2: Add extra_specs and projects fields
-    VERSION = '1.2'
+    # Version 1.3: Make projects and extra_specs field nullable as they are
+    # not always available when a notification is emitted.
+    VERSION = '1.3'
 
     # NOTE: if we'd want to rename some fields(memory_mb->ram, root_gb->disk,
     # ephemeral_gb: ephemeral), bumping to payload version 2.0 will be needed.
@@ -67,12 +69,19 @@ class FlavorPayload(base.NotificationPayloadBase):
         'vcpu_weight': fields.IntegerField(nullable=True),
         'disabled': fields.BooleanField(),
         'is_public': fields.BooleanField(),
-        'extra_specs': fields.DictOfStringsField(),
-        'projects': fields.ListOfStringsField(),
+        'extra_specs': fields.DictOfStringsField(nullable=True),
+        'projects': fields.ListOfStringsField(nullable=True),
     }
 
     def __init__(self, flavor, **kwargs):
         super(FlavorPayload, self).__init__(**kwargs)
+        if 'projects' not in flavor:
+            # NOTE(danms): If projects is not loaded in the flavor,
+            # don't attempt to load it. If we're in a child cell then
+            # we can't load the real flavor, and if we're a flavor on
+            # an instance then we don't want to anyway.
+            flavor = flavor.obj_clone()
+            flavor._context = None
         self.populate_schema(flavor=flavor)
 
     def obj_make_compatible(self, primitive, target_version):
@@ -89,3 +98,9 @@ class FlavorPayload(base.NotificationPayloadBase):
         if target_version < (1, 2):
             primitive.pop('extra_specs', None)
             primitive.pop('projects', None)
+        if target_version < (1, 3):
+            if 'projects' not in primitive or primitive['projects'] is None:
+                primitive['projects'] = []
+            if ('extra_specs' not in primitive or
+                    primitive['extra_specs'] is None):
+                primitive['extra_specs'] = {}

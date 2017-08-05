@@ -42,7 +42,6 @@ cfg_re = re.compile(r".*\scfg\.")
 cfg_opt_re = re.compile(r".*[\s\[]cfg\.[a-zA-Z]*Opt\(")
 rule_default_re = re.compile(r".*RuleDefault\(")
 policy_enforce_re = re.compile(r".*_ENFORCER\.enforce\(")
-vi_header_re = re.compile(r"^#\s+vim?:.+")
 virt_file_re = re.compile(r"\./nova/(?:tests/)?virt/(\w+)/")
 virt_import_re = re.compile(
     r"^\s*(?:import|from) nova\.(?:tests\.)?virt\.(\w+)")
@@ -105,9 +104,7 @@ doubled_words_re = re.compile(
     r"\b(then?|[iao]n|i[fst]|but|f?or|at|and|[dt]o)\s+\1\b")
 log_remove_context = re.compile(
     r"(.)*LOG\.(.*)\(.*(context=[_a-zA-Z0-9].*)+.*\)")
-log_string_interpolation = re.compile(r".*LOG\.(error|warning|info"
-                                      r"|critical|exception|debug)"
-                                      r"\([^,]*%[^,]*[,)]")
+return_not_followed_by_space = re.compile(r"^\s*return(?:\(|{|\"|'|#).*$")
 
 
 class BaseASTChecker(ast.NodeVisitor):
@@ -247,20 +244,6 @@ def capital_cfg_help(logical_line, tokens):
                     yield(0, msg)
 
 
-def no_vi_headers(physical_line, line_number, lines):
-    """Check for vi editor configuration in source files.
-
-    By default vi modelines can only appear in the first or
-    last 5 lines of a source file.
-
-    N314
-    """
-    # NOTE(gilliard): line_number is 1-indexed
-    if line_number <= 5 or line_number > len(lines) - 5:
-        if vi_header_re.match(physical_line):
-            return 0, "N314: Don't put vi configuration in source files"
-
-
 def assert_true_instance(logical_line):
     """Check for assertTrue(isinstance(a, b)) sentences
 
@@ -277,27 +260,6 @@ def assert_equal_type(logical_line):
     """
     if asse_equal_type_re.match(logical_line):
         yield (0, "N317: assertEqual(type(A), B) sentences not allowed")
-
-
-def assert_equal_none(logical_line):
-    """Check for assertEqual(A, None) or assertEqual(None, A) sentences
-
-    N318
-    """
-    _start_re = re.compile(r"assertEqual\(.*?,\s+None\)$")
-    _end_re = re.compile(r"assertEqual\(None,")
-
-    if _start_re.search(logical_line) or _end_re.search(logical_line):
-        yield (0, "N318: assertEqual(A, None) or assertEqual(None, A) "
-               "sentences not allowed. Use assertIsNone(A) instead.")
-
-    _start_re = re.compile(r"assertIs(Not)?\(None,")
-    _end_re = re.compile(r"assertIs(Not)?\(.*,\s+None\)$")
-
-    if _start_re.search(logical_line) or _end_re.search(logical_line):
-        yield (0, "N318: assertIsNot(A, None) or assertIsNot(None, A) must "
-               "not be used. Use assertIsNone(A) or assertIsNotNone(A) "
-               "instead.")
 
 
 def check_python3_xrange(logical_line):
@@ -347,28 +309,6 @@ def no_setting_conf_directly_in_tests(logical_line, filename):
         if res:
             yield (0, "N320: Setting CONF.* attributes directly in tests is "
                       "forbidden. Use self.flags(option=value) instead")
-
-
-def validate_log_translations(logical_line, physical_line, filename):
-    # Translations are not required in the test directory
-    # and the Xen utilities
-    if ("nova/tests" in filename or
-                "plugins/xenserver/xenapi/etc/xapi.d" in filename):
-        return
-    if pep8.noqa(physical_line):
-        return
-    msg = "N328: LOG.info messages require translations `_LI()`!"
-    if log_translation_info.match(logical_line):
-        yield (0, msg)
-    msg = "N329: LOG.exception messages require translations `_LE()`!"
-    if log_translation_exception.match(logical_line):
-        yield (0, msg)
-    msg = "N330: LOG.warning, LOG.warn messages require translations `_LW()`!"
-    if log_translation_LW.match(logical_line):
-        yield (0, msg)
-    msg = "N321: Log messages require translations!"
-    if log_translation.match(logical_line):
-        yield (0, msg)
 
 
 def no_mutable_default_args(logical_line):
@@ -802,28 +742,6 @@ def check_context_log(logical_line, physical_line, filename):
               "kwarg.")
 
 
-def check_delayed_string_interpolation(logical_line, physical_line, filename):
-    """Check whether string interpolation is delayed at logging calls
-
-    Not correct: LOG.debug('Example: %s' % 'bad')
-    Correct:     LOG.debug('Example: %s', 'good')
-
-    N354
-    """
-    if "nova/tests" in filename:
-        return
-
-    if pep8.noqa(physical_line):
-        return
-
-    if log_string_interpolation.match(logical_line):
-        yield(logical_line.index('%'),
-              "N354: String interpolation should be delayed to be "
-              "handled by the logging code, rather than being done "
-              "at the point of the logging call. "
-              "Use ',' instead of '%'.")
-
-
 def no_assert_equal_true_false(logical_line):
     """Enforce use of assertTrue/assertFalse.
 
@@ -876,6 +794,23 @@ def check_uuid4(logical_line):
         yield (0, msg)
 
 
+def return_followed_by_space(logical_line):
+    """Return should be followed by a space.
+
+    Return should be followed by a space to clarify that return is
+    not a function. Adding a space may force the developer to rethink
+    if there are unnecessary parentheses in the written code.
+
+    Not correct: return(42), return(a, b)
+    Correct: return 42, return (a, b), return a, b
+
+    N358
+    """
+    if return_not_followed_by_space.match(logical_line):
+        yield (0,
+               "N357: Return keyword should be followed by a space.")
+
+
 def factory(register):
     register(import_no_db_in_virt)
     register(no_db_session_in_public_api)
@@ -883,15 +818,12 @@ def factory(register):
     register(import_no_virt_driver_import_deps)
     register(import_no_virt_driver_config_deps)
     register(capital_cfg_help)
-    register(no_vi_headers)
     register(no_import_translation_in_tests)
     register(assert_true_instance)
     register(assert_equal_type)
-    register(assert_equal_none)
     register(assert_raises_regexp)
     register(no_translate_debug_logs)
     register(no_setting_conf_directly_in_tests)
-    register(validate_log_translations)
     register(no_mutable_default_args)
     register(check_explicit_underscore_import)
     register(use_jsonutils)
@@ -916,7 +848,7 @@ def factory(register):
     register(no_log_warn)
     register(CheckForUncalledTestClosure)
     register(check_context_log)
-    register(check_delayed_string_interpolation)
     register(no_assert_equal_true_false)
     register(no_assert_true_false_is_not)
     register(check_uuid4)
+    register(return_followed_by_space)

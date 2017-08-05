@@ -20,6 +20,7 @@ import nova.conf
 from nova.notifications.objects import base
 from nova.notifications.objects import exception
 from nova.objects import fields
+from nova import rpc
 from nova import safe_utils
 
 CONF = nova.conf.CONF
@@ -32,6 +33,7 @@ def _emit_exception_notification(notifier, context, ex, function_name, args,
     _emit_versioned_exception_notification(context, ex, binary)
 
 
+@rpc.if_notifications_enabled
 def _emit_versioned_exception_notification(context, ex, binary):
     versioned_exception_payload = exception.ExceptionPayload.from_exception(ex)
     publisher = base.NotificationPublisher(context=context, host=CONF.host,
@@ -86,6 +88,9 @@ def _get_call_dict(function, self, context, *args, **kw):
     # self can't be serialized and shouldn't be in the
     # payload
     call_dict.pop('self', None)
+    # NOTE(gibi) remove context as well as it contains sensitive information
+    # and it can also contain circular references
+    call_dict.pop('context', None)
     return _cleanse_dict(call_dict)
 
 

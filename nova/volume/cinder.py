@@ -88,6 +88,15 @@ def cinderclient(context):
     if version == '1':
         raise exception.UnsupportedCinderAPIVersion(version=version)
 
+    if version == '2':
+        LOG.warning("The support for the Cinder API v2 is deprecated, please "
+                    "upgrade to Cinder API v3.")
+
+    if version == '3':
+        # TODO(ildikov): Add microversion support for picking up the new
+        # attach/detach API that was added in 3.27.
+        version = '3.0'
+
     return cinder_client.Client(version,
                                 session=_SESSION,
                                 auth=auth,
@@ -254,19 +263,6 @@ class API(object):
                                               "status": volume['status']}
             raise exception.InvalidVolume(reason=msg)
 
-    def check_attach(self, context, volume, instance=None):
-        # TODO(vish): abstract status checking?
-        if volume['status'] != "available":
-            msg = _("volume '%(vol)s' status must be 'available'. Currently "
-                    "in '%(status)s'") % {'vol': volume['id'],
-                                          'status': volume['status']}
-            raise exception.InvalidVolume(reason=msg)
-        if volume['attach_status'] == "attached":
-            msg = _("volume %s already attached") % volume['id']
-            raise exception.InvalidVolume(reason=msg)
-
-        self.check_availability_zone(context, volume, instance)
-
     def check_availability_zone(self, context, volume, instance=None):
         """Ensure that the availability zone is the same."""
 
@@ -327,10 +323,6 @@ class API(object):
     def detach(self, context, volume_id, instance_uuid=None,
                attachment_id=None):
         client = cinderclient(context)
-        if client.version == '1':
-            client.volumes.detach(volume_id)
-            return
-
         if attachment_id is None:
             volume = self.get(context, volume_id)
             if volume['multiattach']:

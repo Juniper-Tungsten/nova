@@ -14,7 +14,6 @@
 
 import mock
 from oslo_serialization import jsonutils
-import six
 
 from nova import block_device
 from nova import context
@@ -232,7 +231,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self.assertThat(test_bdm, matchers.DictMatches(
             getattr(self, "%s_driver_bdm" % name)))
 
-        for k, v in six.iteritems(db_bdm):
+        for k, v in db_bdm.items():
             field_val = getattr(test_bdm._bdm_obj, k)
             if isinstance(field_val, bool):
                 v = bool(v)
@@ -248,7 +247,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
                              getattr(test_bdm._bdm_obj, passthru))
 
         # Make sure that all others raise _invalidType
-        for other_name, cls in six.iteritems(self.driver_classes):
+        for other_name, cls in self.driver_classes.items():
             if other_name == name:
                 continue
             self.assertRaises(driver_block_device._InvalidType,
@@ -257,14 +256,14 @@ class TestDriverBlockDevice(test.NoDBTestCase):
 
         # Test the save method
         with mock.patch.object(test_bdm._bdm_obj, 'save') as save_mock:
-            for fld, alias in six.iteritems(test_bdm._update_on_save):
+            for fld, alias in test_bdm._update_on_save.items():
                 # We can't set fake values on enums, like device_type,
                 # so skip those.
                 if not isinstance(test_bdm._bdm_obj.fields[fld],
                                   fields.BaseEnumField):
                     test_bdm[alias or fld] = 'fake_changed_value'
             test_bdm.save()
-            for fld, alias in six.iteritems(test_bdm._update_on_save):
+            for fld, alias in test_bdm._update_on_save.items():
                 self.assertEqual(test_bdm[alias or fld],
                                  getattr(test_bdm._bdm_obj, fld))
 
@@ -385,11 +384,10 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self._test_call_wait_func(False)
 
     def _test_volume_attach(self, driver_bdm, bdm_dict,
-                            fake_volume, check_attach=True,
-                            fail_check_attach=False, driver_attach=False,
-                            fail_driver_attach=False, volume_attach=True,
-                            fail_volume_attach=False, access_mode='rw',
-                            availability_zone=None):
+                            fake_volume, fail_check_av_zone=False,
+                            driver_attach=False, fail_driver_attach=False,
+                            volume_attach=True, fail_volume_attach=False,
+                            access_mode='rw', availability_zone=None):
         elevated_context = self.context.elevated()
         self.stubs.Set(self.context, 'elevated',
                        lambda: elevated_context)
@@ -407,16 +405,17 @@ class TestDriverBlockDevice(test.NoDBTestCase):
 
         self.volume_api.get(self.context,
                             fake_volume['id']).AndReturn(fake_volume)
-        if check_attach:
-            if not fail_check_attach:
-                self.volume_api.check_attach(self.context, fake_volume,
-                                    instance=instance).AndReturn(None)
-            else:
-                self.volume_api.check_attach(self.context, fake_volume,
-                                    instance=instance).AndRaise(
-                                            test.TestingException)
-                driver_bdm._bdm_obj.save().AndReturn(None)
-                return instance, expected_conn_info
+        if not fail_check_av_zone:
+            self.volume_api.check_availability_zone(self.context,
+                                fake_volume,
+                                instance=instance).AndReturn(None)
+        else:
+            self.volume_api.check_availability_zone(self.context,
+                                fake_volume,
+                                instance=instance).AndRaise(
+                                        test.TestingException)
+            driver_bdm._bdm_obj.save().AndReturn(None)
+            return instance, expected_conn_info
 
         self.virt_driver.get_volume_connector(instance).AndReturn(connector)
         self.volume_api.initialize_connection(
@@ -519,13 +518,13 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self.assertEqual(expected_conn_info, test_bdm['connection_info'])
         self.assertEqual(42, test_bdm.volume_size)
 
-    def test_volume_attach_check_attach_fails(self):
+    def test_volume_attach_check_av_zone_fails(self):
         test_bdm = self.driver_classes['volume'](
             self.volume_bdm)
         volume = {'id': 'fake-volume-id-1'}
 
         instance, _ = self._test_volume_attach(
-                test_bdm, self.volume_bdm, volume, fail_check_attach=True)
+                test_bdm, self.volume_bdm, volume, fail_check_av_zone=True)
         self.mox.ReplayAll()
 
         self.assertRaises(test.TestingException, test_bdm.attach, self.context,
@@ -538,14 +537,13 @@ class TestDriverBlockDevice(test.NoDBTestCase):
                   'attach_status': 'detached'}
 
         instance, expected_conn_info = self._test_volume_attach(
-                test_bdm, self.volume_bdm, volume, check_attach=False,
-                driver_attach=False)
+                test_bdm, self.volume_bdm, volume, driver_attach=False)
 
         self.mox.ReplayAll()
 
         test_bdm.attach(self.context, instance,
                         self.volume_api, self.virt_driver,
-                        do_check_attach=False, do_driver_attach=False)
+                        do_driver_attach=False)
         self.assertThat(test_bdm['connection_info'],
                         matchers.DictMatches(expected_conn_info))
 
@@ -556,14 +554,13 @@ class TestDriverBlockDevice(test.NoDBTestCase):
                   'attach_status': 'detached'}
 
         instance, expected_conn_info = self._test_volume_attach(
-                test_bdm, self.volume_bdm, volume, check_attach=False,
-                driver_attach=True)
+                test_bdm, self.volume_bdm, volume, driver_attach=True)
 
         self.mox.ReplayAll()
 
         test_bdm.attach(self.context, instance,
                         self.volume_api, self.virt_driver,
-                        do_check_attach=False, do_driver_attach=True)
+                        do_driver_attach=True)
         self.assertThat(test_bdm['connection_info'],
                         matchers.DictMatches(expected_conn_info))
 
@@ -746,8 +743,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self.mox.StubOutWithMock(self.volume_api, 'create')
 
         volume_class.attach(self.context, instance, self.volume_api,
-                            self.virt_driver, do_check_attach=True
-                            ).AndReturn(None)
+                            self.virt_driver).AndReturn(None)
         self.mox.ReplayAll()
 
         test_bdm.attach(self.context, instance, self.volume_api,
@@ -855,8 +851,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
         self.mox.StubOutWithMock(self.volume_api, 'create')
 
         volume_class.attach(self.context, instance, self.volume_api,
-                            self.virt_driver, do_check_attach=True
-                            ).AndReturn(None)
+                            self.virt_driver).AndReturn(None)
         self.mox.ReplayAll()
 
         test_bdm.attach(self.context, instance, self.volume_api,
@@ -923,8 +918,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
                 '', availability_zone=None)
             vol_attach.assert_called_once_with(self.context, instance,
                                                self.volume_api,
-                                               self.virt_driver,
-                                               do_check_attach=True)
+                                               self.virt_driver)
             self.assertEqual('fake-volume-id-2', test_bdm.volume_id)
 
     def test_blank_attach_volume_cinder_cross_az_attach_false(self):
@@ -955,8 +949,7 @@ class TestDriverBlockDevice(test.NoDBTestCase):
                     '', availability_zone='test-az')
                 vol_attach.assert_called_once_with(self.context, instance,
                                                    self.volume_api,
-                                                   self.virt_driver,
-                                                   do_check_attach=True)
+                                                   self.virt_driver)
                 self.assertEqual('fake-volume-id-2', test_bdm.volume_id)
 
     def test_convert_block_devices(self):

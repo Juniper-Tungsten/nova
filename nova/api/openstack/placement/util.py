@@ -12,6 +12,7 @@
 """Utility methods for placement API."""
 
 import functools
+
 import jsonschema
 from oslo_middleware import request_id
 from oslo_serialization import jsonutils
@@ -122,11 +123,15 @@ def require_content(content_type):
             if req.content_type != content_type:
                 # webob's unset content_type is the empty string so
                 # set it the error message content to 'None' to make
-                # a useful message in that case.
+                # a useful message in that case. This also avoids a
+                # KeyError raised when webob.exc eagerly fills in a
+                # Template for output we will never use.
+                if not req.content_type:
+                    req.content_type = 'None'
                 raise webob.exc.HTTPUnsupportedMediaType(
                     _('The media type %(bad_type)s is not supported, '
                       'use %(good_type)s') %
-                    {'bad_type': req.content_type or 'None',
+                    {'bad_type': req.content_type,
                      'good_type': content_type},
                     json_formatter=json_error_formatter)
             else:
@@ -153,6 +158,16 @@ def resource_provider_url(environ, resource_provider):
     """
     prefix = environ.get('SCRIPT_NAME', '')
     return '%s/resource_providers/%s' % (prefix, resource_provider.uuid)
+
+
+def trait_url(environ, trait):
+    """Produce the URL for a trait.
+
+    If SCRIPT_NAME is present, it is the mount point of the placement
+    WSGI app.
+    """
+    prefix = environ.get('SCRIPT_NAME', '')
+    return '%s/traits/%s' % (prefix, trait.name)
 
 
 def wsgi_path_item(environ, name):

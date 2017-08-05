@@ -649,12 +649,15 @@ def _numa_cell_supports_pagesize_request(host_cell, inst_cell):
 def _pack_instance_onto_cores(available_siblings,
                               instance_cell,
                               host_cell_id,
-                              threads_per_core=1):
+                              threads_per_core=1,
+                              num_cpu_reserved=0):
     """Pack an instance onto a set of siblings.
 
     Calculate the pinning for the given instance and its topology,
-    making sure that hyperthreads of the instance match up with those of
-    the host when the pinning takes effect.
+    making sure that hyperthreads of the instance match up with those
+    of the host when the pinning takes effect. Also ensure that the
+    physical cores reserved for hypervisor on this host NUMA node do
+    not break any thread policies.
 
     Currently the strategy for packing is to prefer siblings and try use
     cores evenly by using emptier cores first. This is achieved by the
@@ -672,12 +675,25 @@ def _pack_instance_onto_cores(available_siblings,
                           describing the pinning requirements of the
                           instance
     :param threads_per_core: number of threads per core in host's cell
+    :param num_cpu_reserved: number of pCPUs reserved for hypervisor
 
     :returns: An instance of objects.InstanceNUMACell containing the
-              pinning information, and potentially a new topology to be
-              exposed to the instance. None if there is no valid way to
-              satisfy the sibling requirements for the instance.
+              pinning information, the physical cores reserved and
+              potentially a new topology to be exposed to the
+              instance. None if there is no valid way to satisfy the
+              sibling requirements for the instance.
+
     """
+    LOG.debug('Packing an instance onto a set of siblings: '
+             '    available_siblings: %(siblings)s'
+             '    instance_cell: %(cells)s'
+             '    host_cell_id: %(host_cell_id)s'
+             '    threads_per_core: %(threads_per_core)s',
+                {'siblings': available_siblings,
+                 'cells': instance_cell,
+                 'host_cell_id': host_cell_id,
+                 'threads_per_core': threads_per_core})
+
     # We build up a data structure that answers the question: 'Given the
     # number of threads I want to pack, give me a list of all the available
     # sibling sets (or groups thereof) that can accommodate it'
@@ -685,6 +701,7 @@ def _pack_instance_onto_cores(available_siblings,
     for sib in available_siblings:
         for threads_no in range(1, len(sib) + 1):
             sibling_sets[threads_no].append(sib)
+    LOG.debug('Built sibling_sets: %(siblings)s', {'siblings': sibling_sets})
 
     pinning = None
     threads_no = 1
@@ -726,15 +743,80 @@ def _pack_instance_onto_cores(available_siblings,
         return fractions.gcd(threads_per_core, _orphans(instance_cell,
                                                         threads_per_core))
 
-    def _get_pinning(threads_no, sibling_set, instance_cores):
-        """Generate a CPU-vCPU pin mapping."""
-        if threads_no * len(sibling_set) < len(instance_cores):
-            return
+    def _get_pinning(threads_no, sibling_set, instance_cores,
+                     num_cpu_reserved=0):
+        """Determines pCPUs/vCPUs mapping
 
-        usable_cores = map(lambda s: list(s)[:threads_no], sibling_set)
+        Determines the pCPUs/vCPUs mapping regarding the number of
+        threads which can be used per cores and pCPUs reserved.
 
-        return list(zip(sorted(instance_cores),
-                        itertools.chain(*usable_cores)))
+        :param threads_no: Number of host threads per cores which can
+                           be used to pin vCPUs according to the
+                           policies :param sibling_set: List of
+                           available threads per host cores on a
+                           specific host NUMA node.
+        :param instance_cores: Set of vCPUs requested.
+        :param num_cpu_reserved: Number of additional host CPUs which
+                                 needs to be reserved.
+
+        NOTE: Depending on how host is configured (HT/non-HT) a thread can
+              be considered as an entire core.
+        """
+        if threads_no * len(sibling_set) < (
+                len(instance_cores) + num_cpu_reserved):
+            return None, None
+
+        # Determines usable cores according the "threads number"
+        # constraint.
+        #
+        # For a sibling_set=[(0, 1, 2, 3), (4, 5, 6, 7)] and thread_no 1:
+        # usable_cores=[(0), (4),]
+        #
+        # For a sibling_set=[(0, 1, 2, 3), (4, 5, 6, 7)] and thread_no 2:
+        # usable_cores=[(0, 1), (4, 5)]
+        usable_cores = list(map(lambda s: list(s)[:threads_no], sibling_set))
+
+        # Determines the mapping vCPUs/pCPUs based on the sets of
+        # usable cores.
+        #
+        # For an instance_cores=[2, 3], usable_cores=[(0), (4)]
+        # vcpus_pinning=[(2, 0), (3, 4)]
+        vcpus_pinning = list(zip(sorted(instance_cores),
+                                 itertools.chain(*usable_cores)))
+        msg = _LI("Computed NUMA topology CPU pinning: usable pCPUs: "
+                  "%(usable_cores)s, vCPUs mapping: %(vcpus_pinning)s")
+        msg_args = {
+            'usable_cores': usable_cores,
+            'vcpus_pinning': vcpus_pinning,
+        }
+        LOG.info(msg, msg_args)
+
+        cpuset_reserved = None
+        if num_cpu_reserved:
+            # Updates the pCPUs used based on vCPUs pinned to
+            #
+            # For vcpus_pinning=[(0, 2), (1, 3)], usable_cores=[(2, 3), (4, 5)]
+            # usable_cores=[(), (4, 5)]
+            for vcpu, pcpu in vcpus_pinning:
+                for sib in usable_cores:
+                    if pcpu in sib:
+                        sib.remove(pcpu)
+
+            # Determines the pCPUs reserved for hypervisor
+            #
+            # For usable_cores=[(), (4, 5)], num_cpu_reserved=1
+            # cpuset_reserved=[4]
+            cpuset_reserved = set(list(
+                itertools.chain(*usable_cores))[:num_cpu_reserved])
+            msg = _LI("Computed NUMA topology reserved pCPUs: usable pCPUs: "
+                      "%(usable_cores)s, reserved pCPUs: %(cpuset_reserved)s")
+            msg_args = {
+                'usable_cores': usable_cores,
+                'cpuset_reserved': cpuset_reserved,
+            }
+            LOG.info(msg, msg_args)
+
+        return vcpus_pinning, cpuset_reserved
 
     if (instance_cell.cpu_thread_policy ==
             fields.CPUThreadAllocationPolicy.REQUIRE):
@@ -761,9 +843,11 @@ def _pack_instance_onto_cores(available_siblings,
                       'for the isolate policy without this.')
             return
 
-        pinning = _get_pinning(1,  # we only want to "use" one thread per core
-                               sibling_sets[threads_per_core],
-                               instance_cell.cpuset)
+        pinning, cpuset_reserved = _get_pinning(
+            1,  # we only want to "use" one thread per core
+            sibling_sets[threads_per_core],
+            instance_cell.cpuset,
+            num_cpu_reserved=num_cpu_reserved)
     else:  # REQUIRE, PREFER (explicit, implicit)
         # NOTE(ndipanov): We iterate over the sibling sets in descending order
         # of cores that can be packed. This is an attempt to evenly distribute
@@ -778,10 +862,14 @@ def _pack_instance_onto_cores(available_siblings,
             if (instance_cell.cpu_thread_policy ==
                     fields.CPUThreadAllocationPolicy.REQUIRE):
                 if threads_no <= 1:
+                    LOG.debug('Skipping threads_no: %s, as it does not satisfy'
+                              ' the require policy', threads_no)
                     continue
 
-            pinning = _get_pinning(threads_no, sibling_set,
-                                   instance_cell.cpuset)
+            pinning, cpuset_reserved = _get_pinning(
+                threads_no, sibling_set,
+                instance_cell.cpuset,
+                num_cpu_reserved=num_cpu_reserved)
             if pinning:
                 break
 
@@ -798,6 +886,8 @@ def _pack_instance_onto_cores(available_siblings,
 
     if not pinning:
         return
+    LOG.debug('Selected cores for pinning: %s, in cell %s', pinning,
+                                                            host_cell_id)
 
     topology = objects.VirtCPUTopology(sockets=1,
                                        cores=len(pinning) // threads_no,
@@ -805,26 +895,33 @@ def _pack_instance_onto_cores(available_siblings,
     instance_cell.pin_vcpus(*pinning)
     instance_cell.cpu_topology = topology
     instance_cell.id = host_cell_id
+    instance_cell.cpuset_reserved = cpuset_reserved
     return instance_cell
 
 
-def _numa_fit_instance_cell_with_pinning(host_cell, instance_cell):
+def _numa_fit_instance_cell_with_pinning(host_cell, instance_cell,
+                                         num_cpu_reserved=0):
     """Determine if cells can be pinned to a host cell.
 
     :param host_cell: objects.NUMACell instance - the host cell that
                       the instance should be pinned to
     :param instance_cell: objects.InstanceNUMACell instance without any
                           pinning information
+    :param num_cpu_reserved: int - number of pCPUs reserved for hypervisor
 
     :returns: objects.InstanceNUMACell instance with pinning information,
               or None if instance cannot be pinned to the given host
     """
-    if host_cell.avail_cpus < len(instance_cell.cpuset):
+    required_cpus = len(instance_cell.cpuset) + num_cpu_reserved
+    if host_cell.avail_cpus < required_cpus:
         LOG.debug('Not enough available CPUs to schedule instance. '
                   'Oversubscription is not possible with pinned instances. '
-                  'Required: %(required)s, actual: %(actual)s',
-                  {'required': len(instance_cell.cpuset),
-                   'actual': host_cell.avail_cpus})
+                  'Required: %(required)d (%(vcpus)d + %(num_cpu_reserved)d), '
+                  'actual: %(actual)d',
+                  {'required': required_cpus,
+                   'vcpus': len(instance_cell.cpuset),
+                   'actual': host_cell.avail_cpus,
+                   'num_cpu_reserved': num_cpu_reserved})
         return
 
     if host_cell.avail_memory < instance_cell.memory:
@@ -836,10 +933,12 @@ def _numa_fit_instance_cell_with_pinning(host_cell, instance_cell):
         return
 
     if host_cell.siblings:
+        LOG.debug('Using thread siblings for packing')
         # Try to pack the instance cell onto cores
         numa_cell = _pack_instance_onto_cores(
             host_cell.free_siblings, instance_cell, host_cell.id,
-            max(map(len, host_cell.siblings)))
+            max(map(len, host_cell.siblings)),
+            num_cpu_reserved=num_cpu_reserved)
     else:
         if (instance_cell.cpu_thread_policy ==
                 fields.CPUThreadAllocationPolicy.REQUIRE):
@@ -852,7 +951,8 @@ def _numa_fit_instance_cell_with_pinning(host_cell, instance_cell):
         # hyperthreading on the host
         free_cpus = [set([cpu]) for cpu in host_cell.free_cpus]
         numa_cell = _pack_instance_onto_cores(
-            free_cpus, instance_cell, host_cell.id)
+            free_cpus, instance_cell, host_cell.id,
+            num_cpu_reserved=num_cpu_reserved)
 
     if not numa_cell:
         LOG.debug('Failed to map instance cell CPUs to host cell CPUs')
@@ -860,7 +960,8 @@ def _numa_fit_instance_cell_with_pinning(host_cell, instance_cell):
     return numa_cell
 
 
-def _numa_fit_instance_cell(host_cell, instance_cell, limit_cell=None):
+def _numa_fit_instance_cell(host_cell, instance_cell, limit_cell=None,
+                            cpuset_reserved=0):
     """Ensure an instance cell can fit onto a host cell
 
     Ensure an instance cell can fit onto a host cell and, if so, return
@@ -870,10 +971,13 @@ def _numa_fit_instance_cell(host_cell, instance_cell, limit_cell=None):
     :param host_cell: host cell to fit the instance cell onto
     :param instance_cell: instance cell we want to fit
     :param limit_cell: an objects.NUMATopologyLimit or None
+    :param cpuset_reserved: An int to indicate the number of CPUs overhead
 
     :returns: objects.InstanceNUMACell with the id set to that of the
               host, or None
     """
+    LOG.debug('Attempting to fit instance cell %(cell)s on host_cell '
+              '%(host_cell)s', {'cell': instance_cell, 'host_cell': host_cell})
     # NOTE (ndipanov): do not allow an instance to overcommit against
     # itself on any NUMA cell
     if instance_cell.memory > host_cell.memory:
@@ -883,22 +987,27 @@ def _numa_fit_instance_cell(host_cell, instance_cell, limit_cell=None):
                    'actual': host_cell.memory})
         return
 
-    if len(instance_cell.cpuset) > len(host_cell.cpuset):
+    if len(instance_cell.cpuset) + cpuset_reserved > len(host_cell.cpuset):
         LOG.debug('Not enough host cell CPUs to fit instance cell. Required: '
-                  '%(required)d, actual: %(actual)d',
+                  '%(required)d + %(cpuset_reserved)d as overhead, '
+                  'actual: %(actual)d',
                   {'required': len(instance_cell.cpuset),
-                   'actual': len(host_cell.cpuset)})
+                   'actual': len(host_cell.cpuset),
+                   'cpuset_reserved': cpuset_reserved})
         return
 
     if instance_cell.cpu_pinning_requested:
+        LOG.debug('Pinning has been requested')
         new_instance_cell = _numa_fit_instance_cell_with_pinning(
-            host_cell, instance_cell)
+            host_cell, instance_cell, cpuset_reserved)
         if not new_instance_cell:
             return
         new_instance_cell.pagesize = instance_cell.pagesize
         instance_cell = new_instance_cell
 
     elif limit_cell:
+        LOG.debug('No pinning requested, considering limitations on usable cpu'
+                  ' and memory')
         memory_usage = host_cell.memory_usage + instance_cell.memory
         cpu_usage = host_cell.cpu_usage + len(instance_cell.cpuset)
         cpu_limit = len(host_cell.cpuset) * limit_cell.cpu_allocation_ratio
@@ -1170,6 +1279,30 @@ def _numa_get_constraints_auto(nodes, flavor):
     return objects.InstanceNUMATopology(cells=cells)
 
 
+def get_emulator_threads_constraint(flavor, image_meta):
+    """Determines the emulator threads policy"""
+    emu_threads_policy = flavor.get('extra_specs', {}).get(
+        'hw:emulator_threads_policy')
+    LOG.debug("emulator threads policy constraint: %s", emu_threads_policy)
+
+    if not emu_threads_policy:
+        return
+
+    if emu_threads_policy not in fields.CPUEmulatorThreadsPolicy.ALL:
+        raise exception.InvalidEmulatorThreadsPolicy(
+            requested=emu_threads_policy,
+            available=str(fields.CPUEmulatorThreadsPolicy.ALL))
+
+    if emu_threads_policy == fields.CPUEmulatorThreadsPolicy.ISOLATE:
+        # In order to make available emulator threads policy, a dedicated
+        # CPU policy is necessary.
+        cpu_policy = _get_cpu_policy_constraints(flavor, image_meta)
+        if cpu_policy != fields.CPUAllocationPolicy.DEDICATED:
+            raise exception.BadRequirementEmulatorThreadsPolicy()
+
+    return emu_threads_policy
+
+
 def _validate_numa_nodes(nodes):
     """Validate NUMA nodes number
 
@@ -1266,11 +1399,13 @@ def numa_get_constraints(flavor, image_meta):
                 nodes, flavor, cpu_list, mem_list)
 
         # We currently support same pagesize for all cells.
-        [setattr(c, 'pagesize', pagesize) for c in numa_topology.cells]
+        for c in numa_topology.cells:
+            setattr(c, 'pagesize', pagesize)
 
     cpu_policy = _get_cpu_policy_constraints(flavor, image_meta)
     cpu_thread_policy = _get_cpu_thread_policy_constraints(flavor, image_meta)
     rt_mask = _get_realtime_mask(flavor, image_meta)
+    emu_thread_policy = get_emulator_threads_constraint(flavor, image_meta)
 
     # sanity checks
 
@@ -1293,12 +1428,15 @@ def numa_get_constraints(flavor, image_meta):
             cell.cpu_thread_policy = cpu_thread_policy
     else:
         single_cell = objects.InstanceNUMACell(
-                id=0,
-                cpuset=set(range(flavor.vcpus)),
-                memory=flavor.memory_mb,
-                cpu_policy=cpu_policy,
-                cpu_thread_policy=cpu_thread_policy)
+            id=0,
+            cpuset=set(range(flavor.vcpus)),
+            memory=flavor.memory_mb,
+            cpu_policy=cpu_policy,
+            cpu_thread_policy=cpu_thread_policy)
         numa_topology = objects.InstanceNUMATopology(cells=[single_cell])
+
+    if emu_thread_policy:
+        numa_topology.emulator_threads_policy = emu_thread_policy
 
     return numa_topology
 
@@ -1336,6 +1474,10 @@ def numa_fit_instance_to_host(
                    'actual': len(host_topology)})
         return
 
+    emulator_threads_policy = None
+    if 'emulator_threads_policy' in instance_topology:
+        emulator_threads_policy = instance_topology.emulator_threads_policy
+
     # TODO(ndipanov): We may want to sort permutations differently
     # depending on whether we want packing/spreading over NUMA nodes
     for host_cell_perm in itertools.permutations(
@@ -1344,8 +1486,17 @@ def numa_fit_instance_to_host(
         for host_cell, instance_cell in zip(
                 host_cell_perm, instance_topology.cells):
             try:
+                cpuset_reserved = 0
+                if (instance_topology.emulator_threads_isolated
+                    and len(cells) == 0):
+                    # For the case of isolate emulator threads, to
+                    # make predictable where that CPU overhead is
+                    # located we always configure it to be on host
+                    # NUMA node associated to the guest NUMA node
+                    # 0.
+                    cpuset_reserved = 1
                 got_cell = _numa_fit_instance_cell(
-                    host_cell, instance_cell, limits)
+                    host_cell, instance_cell, limits, cpuset_reserved)
             except exception.MemoryPageSizeNotSupported:
                 # This exception will been raised if instance cell's
                 # custom pagesize is not supported with host cell in
@@ -1360,7 +1511,9 @@ def numa_fit_instance_to_host(
 
         if not pci_requests or ((pci_stats is not None) and
                 pci_stats.support_requests(pci_requests, cells)):
-            return objects.InstanceNUMATopology(cells=cells)
+            return objects.InstanceNUMATopology(
+                cells=cells,
+                emulator_threads_policy=emulator_threads_policy)
 
 
 def numa_get_reserved_huge_pages():
@@ -1436,7 +1589,7 @@ def numa_usage_from_instances(host, instances, free=False):
             pinned_cpus=hostcell.pinned_cpus, siblings=hostcell.siblings)
 
         for instance in instances:
-            for instancecell in instance.cells:
+            for cellid, instancecell in enumerate(instance.cells):
                 if instancecell.id == hostcell.id:
                     memory_usage = (
                             memory_usage + sign * instancecell.memory)
@@ -1447,11 +1600,22 @@ def numa_usage_from_instances(host, instances, free=False):
                         cpu_usage_diff *= max(map(len, hostcell.siblings))
                     cpu_usage += sign * cpu_usage_diff
 
+                    if (cellid == 0
+                        and instance.emulator_threads_isolated):
+                        # The emulator threads policy when defined
+                        # with 'isolate' makes the instance to consume
+                        # an additional pCPU as overhead. That pCPU is
+                        # mapped on the host NUMA node related to the
+                        # guest NUMA node 0.
+                        cpu_usage += sign * len(instancecell.cpuset_reserved)
+
                     if instancecell.pagesize and instancecell.pagesize > 0:
                         newcell.mempages = _numa_pagesize_usage_from_cell(
                             hostcell, instancecell, sign)
                     if instance.cpu_pinning_requested:
                         pinned_cpus = set(instancecell.cpu_pinning.values())
+                        if instancecell.cpuset_reserved:
+                            pinned_cpus |= instancecell.cpuset_reserved
                         if free:
                             if (instancecell.cpu_thread_policy ==
                                     fields.CPUThreadAllocationPolicy.ISOLATE):
@@ -1534,8 +1698,11 @@ def instance_topology_from_instance(instance):
                     cpu_thread_policy=cell.get('cpu_thread_policy'),
                     cpuset_reserved=cell.get('cpuset_reserved'))
                          for cell in dict_cells]
+                emulator_threads_policy = instance_numa_topology.get(
+                    'emulator_threads_policy')
                 instance_numa_topology = objects.InstanceNUMATopology(
-                    cells=cells)
+                    cells=cells,
+                    emulator_threads_policy=emulator_threads_policy)
 
     return instance_numa_topology
 

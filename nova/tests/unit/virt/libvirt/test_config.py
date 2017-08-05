@@ -1201,6 +1201,48 @@ class LibvirtConfigGuestFilesysTest(LibvirtConfigBaseTest):
               <target dir="/mnt"/>
             </filesystem>""")
 
+    def test_parse_mount(self):
+        xmldoc = """
+          <filesystem type="mount">
+            <source dir="/tmp/hello"/>
+            <target dir="/mnt"/>
+          </filesystem>
+        """
+        obj = config.LibvirtConfigGuestFilesys()
+        obj.parse_str(xmldoc)
+        self.assertEqual('mount', obj.source_type)
+        self.assertEqual('/tmp/hello', obj.source_dir)
+        self.assertEqual('/mnt', obj.target_dir)
+
+    def test_parse_block(self):
+        xmldoc = """
+          <filesystem type="block">
+            <source dev="/dev/sdb"/>
+            <target dir="/mnt"/>
+          </filesystem>
+        """
+        obj = config.LibvirtConfigGuestFilesys()
+        obj.parse_str(xmldoc)
+        self.assertEqual('block', obj.source_type)
+        self.assertEqual('/dev/sdb', obj.source_dev)
+        self.assertEqual('/mnt', obj.target_dir)
+
+    def test_parse_file(self):
+        xmldoc = """
+          <filesystem type="file">
+            <driver format="qcow2" type="nbd"/>
+            <source file="/data/myimage.qcow2"/>
+            <target dir="/mnt"/>
+          </filesystem>
+        """
+        obj = config.LibvirtConfigGuestFilesys()
+        obj.parse_str(xmldoc)
+        self.assertEqual('file', obj.source_type)
+        self.assertEqual('qcow2', obj.driver_format)
+        self.assertEqual('nbd', obj.driver_type)
+        self.assertEqual('/data/myimage.qcow2', obj.source_file)
+        self.assertEqual('/mnt', obj.target_dir)
+
 
 class LibvirtConfigGuestInputTest(LibvirtConfigBaseTest):
 
@@ -2230,16 +2272,22 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
                       <devices>
                         <hostdev mode="subsystem" type="pci" managed="no">
                         </hostdev>
+                        <filesystem type="mount">
+                        </filesystem>
                       </devices>
                      </domain>
                  """
         obj = config.LibvirtConfigGuest()
         obj.parse_str(xmldoc)
-        self.assertEqual(len(obj.devices), 1)
+        self.assertEqual('kvm', obj.virt_type)
+        self.assertEqual(len(obj.devices), 2)
         self.assertIsInstance(obj.devices[0],
                               config.LibvirtConfigGuestHostdevPCI)
         self.assertEqual(obj.devices[0].mode, 'subsystem')
         self.assertEqual(obj.devices[0].managed, 'no')
+        self.assertIsInstance(obj.devices[1],
+                              config.LibvirtConfigGuestFilesys)
+        self.assertEqual('mount', obj.devices[1].source_type)
 
     def test_ConfigGuest_parse_devices_wrong_type(self):
         xmldoc = """ <domain type="kvm">
@@ -2279,6 +2327,99 @@ class LibvirtConfigGuestTest(LibvirtConfigBaseTest):
         obj.parse_str(xmldoc)
 
         self.assertEqual(['cmt'], obj.perf_events)
+
+    def test_ConfigGuest_parse_os(self):
+        xmldoc = """
+          <domain type="kvm">
+            <os>
+              <type machine="fake_machine_type">hvm</type>
+              <kernel>/tmp/vmlinuz</kernel>
+              <loader>/usr/lib/xen/boot/hvmloader</loader>
+              <initrd>/tmp/ramdisk</initrd>
+              <cmdline>console=xvc0</cmdline>
+              <root>root=xvda</root>
+              <init>/sbin/init</init>
+              <boot dev="hd"/>
+              <boot dev="cdrom"/>
+              <boot dev="fd"/>
+              <bootmenu enable="yes"/>
+              <smbios mode="sysinfo"/>
+            </os>
+          </domain>
+        """
+        obj = config.LibvirtConfigGuest()
+        obj.parse_str(xmldoc)
+
+        self.assertEqual('kvm', obj.virt_type)
+        self.assertEqual('hvm', obj.os_type)
+        self.assertEqual('fake_machine_type', obj.os_mach_type)
+        self.assertEqual('/tmp/vmlinuz', obj.os_kernel)
+        self.assertEqual('/usr/lib/xen/boot/hvmloader', obj.os_loader)
+        self.assertIsNone(obj.os_loader_type)
+        self.assertEqual('/tmp/ramdisk', obj.os_initrd)
+        self.assertEqual('console=xvc0', obj.os_cmdline)
+        self.assertEqual('root=xvda', obj.os_root)
+        self.assertEqual('/sbin/init', obj.os_init_path)
+        self.assertEqual(['hd', 'cdrom', 'fd'], obj.os_boot_dev)
+        self.assertTrue(obj.os_bootmenu)
+        self.assertIsNone(obj.os_smbios)
+
+        xmldoc = """
+          <domain>
+            <os>
+              <type>x86_64</type>
+              <loader readonly='yes' type='pflash'>/tmp/OVMF_CODE.fd</loader>
+            </os>
+          </domain>
+        """
+        obj = config.LibvirtConfigGuest()
+        obj.parse_str(xmldoc)
+
+        self.assertIsNone(obj.virt_type)
+        self.assertEqual('x86_64', obj.os_type)
+        self.assertIsNone(obj.os_mach_type)
+        self.assertIsNone(obj.os_kernel)
+        self.assertEqual('/tmp/OVMF_CODE.fd', obj.os_loader)
+        self.assertEqual('pflash', obj.os_loader_type)
+        self.assertIsNone(obj.os_initrd)
+        self.assertIsNone(obj.os_cmdline)
+        self.assertIsNone(obj.os_root)
+        self.assertIsNone(obj.os_init_path)
+        self.assertEqual([], obj.os_boot_dev)
+        self.assertFalse(obj.os_bootmenu)
+        self.assertIsNone(obj.os_smbios)
+
+    def test_ConfigGuest_parse_basic_props(self):
+        xmldoc = """
+          <domain>
+            <uuid>b38a3f43-4be2-4046-897f-b67c2f5e0147</uuid>
+            <name>demo</name>
+            <memory>104857600</memory>
+            <vcpu cpuset="0-1,3-5">2</vcpu>
+          </domain>
+        """
+        obj = config.LibvirtConfigGuest()
+        obj.parse_str(xmldoc)
+
+        self.assertEqual('b38a3f43-4be2-4046-897f-b67c2f5e0147', obj.uuid)
+        self.assertEqual('demo', obj.name)
+        self.assertEqual(100 * units.Mi, obj.memory)
+        self.assertEqual(2, obj.vcpus)
+        self.assertEqual(set([0, 1, 3, 4, 5]), obj.cpuset)
+
+        xmldoc = """
+          <domain>
+            <vcpu>3</vcpu>
+          </domain>
+        """
+        obj = config.LibvirtConfigGuest()
+        obj.parse_str(xmldoc)
+
+        self.assertIsNone(obj.uuid)
+        self.assertIsNone(obj.name)
+        self.assertEqual(500 * units.Mi, obj.memory)  # default value
+        self.assertEqual(3, obj.vcpus)
+        self.assertIsNone(obj.cpuset)
 
 
 class LibvirtConfigGuestSnapshotTest(LibvirtConfigBaseTest):
@@ -2546,6 +2687,40 @@ class LibvirtConfigNodeDeviceTest(LibvirtConfigBaseTest):
                           "phys_function")
         self.assertEqual(obj.pci_capability.fun_capability[1].type,
                           "virt_functions")
+
+    def test_config_net_device(self):
+        xmlin = """
+        <device>
+          <name>net_enp2s2_02_9a_a1_37_be_54</name>
+          <path>/sys/devices/pci0000:00/0000:00:02.0/net/enp2s2</path>
+          <parent>pci_0000_00_02_0</parent>
+          <capability type='net'>
+            <interface>enp2s2</interface>
+            <address>02:9a:a1:37:be:54</address>
+            <link state='down'/>
+            <feature name='rx'/>
+            <feature name='tx'/>
+            <feature name='sg'/>
+            <feature name='tso'/>
+            <feature name='gso'/>
+            <feature name='gro'/>
+            <feature name='rxvlan'/>
+            <feature name='txvlan'/>
+            <capability type='80203'/>
+          </capability>
+        </device>"""
+
+        obj = config.LibvirtConfigNodeDevice()
+        obj.parse_str(xmlin)
+
+        self.assertIsInstance(obj.pci_capability,
+                              config.LibvirtConfigNodeDevicePciCap)
+        self.assertEqual(obj.pci_capability.interface, "enp2s2")
+        self.assertEqual(obj.pci_capability.address, "02:9a:a1:37:be:54")
+        self.assertEqual(obj.pci_capability.link_state, "down")
+        self.assertEqual(obj.pci_capability.features,
+                         ['rx', 'tx', 'sg', 'tso', 'gso', 'gro', 'rxvlan',
+                          'txvlan'])
 
 
 class LibvirtConfigNodeDevicePciCapTest(LibvirtConfigBaseTest):

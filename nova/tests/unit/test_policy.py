@@ -25,6 +25,7 @@ import requests_mock
 import nova.conf
 from nova import context
 from nova import exception
+from nova.policies import base
 from nova import policy
 from nova import test
 from nova.tests.unit import fake_policy
@@ -235,6 +236,22 @@ class AdminRolePolicyTestCase(test.NoDBTestCase):
                           self.context, action, self.target)
 
 
+class PolicyDocsTestCase(test.NoDBTestCase):
+    def test_create_rule_default(self):
+        rule_default = base.create_rule_default(
+            "name", "check_str", "description goes in here",
+            [{'method': 'GET', 'path': '/test_url'},
+             {'method': 'POST', 'path': '/test_url'}])
+
+        expected = """description goes in here
+GET /test_url
+POST /test_url
+"""
+        self.assertEqual(expected, rule_default.description)
+        self.assertEqual("name", rule_default.name)
+        self.assertEqual("check_str", rule_default.check_str)
+
+
 class RealRolePolicyTestCase(test.NoDBTestCase):
     def setUp(self):
         super(RealRolePolicyTestCase, self).setUp()
@@ -256,7 +273,6 @@ class RealRolePolicyTestCase(test.NoDBTestCase):
 "os_compute_api:servers:show:host_status",
 "os_compute_api:servers:migrations:force_complete",
 "os_compute_api:servers:migrations:delete",
-"os_compute_api:os-admin-actions",
 "os_compute_api:os-admin-actions:reset_network",
 "os_compute_api:os-admin-actions:inject_network_info",
 "os_compute_api:os-admin-actions:reset_state",
@@ -402,6 +418,12 @@ class RealRolePolicyTestCase(test.NoDBTestCase):
 "os_compute_api:os-server-password",
 "os_compute_api:os-server-usage",
 "os_compute_api:os-server-groups",
+"os_compute_api:os-server-tags:delete",
+"os_compute_api:os-server-tags:delete_all",
+"os_compute_api:os-server-tags:index",
+"os_compute_api:os-server-tags:show",
+"os_compute_api:os-server-tags:update",
+"os_compute_api:os-server-tags:update_all",
 "os_compute_api:os-server-groups:index",
 "os_compute_api:os-server-groups:show",
 "os_compute_api:os-server-groups:create",
@@ -486,13 +508,7 @@ class RealRolePolicyTestCase(test.NoDBTestCase):
 "os_compute_api:os-server-password:discoverable",
 "os_compute_api:os-server-usage:discoverable",
 "os_compute_api:os-server-groups:discoverable",
-"os_compute_api:os-server-tags:delete",
-"os_compute_api:os-server-tags:delete_all",
 "os_compute_api:os-server-tags:discoverable",
-"os_compute_api:os-server-tags:index",
-"os_compute_api:os-server-tags:show",
-"os_compute_api:os-server-tags:update",
-"os_compute_api:os-server-tags:update_all",
 "os_compute_api:os-services:discoverable",
 "os_compute_api:server-metadata:discoverable",
 "os_compute_api:server-migrations:discoverable",

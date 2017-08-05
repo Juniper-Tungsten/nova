@@ -15,12 +15,14 @@
 import os
 import re
 
+from cursive import signature_utils
 from oslo_versionedobjects import fields
 import six
 
 from nova import exception
 from nova.i18n import _
 from nova.network import model as network_model
+from nova import objects
 
 
 # Import field errors from oslo.versionedobjects
@@ -63,6 +65,7 @@ IPV6NetworkField = fields.IPV6NetworkField
 AutoTypedField = fields.AutoTypedField
 BaseEnumField = fields.BaseEnumField
 MACAddressField = fields.MACAddressField
+ListOfIntegersField = fields.ListOfIntegersField
 
 
 # NOTE(danms): These are things we need to import for some of our
@@ -418,14 +421,15 @@ class HVType(BaseNovaEnum):
 
 class ImageSignatureHashType(BaseNovaEnum):
     # Represents the possible hash methods used for image signing
-    ALL = ('SHA-224', 'SHA-256', 'SHA-384', 'SHA-512')
+    ALL = tuple(sorted(signature_utils.HASH_METHODS.keys()))
 
 
 class ImageSignatureKeyType(BaseNovaEnum):
     # Represents the possible keypair types used for image signing
-    ALL = ('DSA', 'ECC_SECT571K1', 'ECC_SECT409K1', 'ECC_SECT571R1',
-           'ECC_SECT409R1', 'ECC_SECP521R1', 'ECC_SECP384R1', 'RSA-PSS'
-           )
+    ALL = (
+        'DSA', 'ECC_SECP384R1', 'ECC_SECP521R1', 'ECC_SECT409K1',
+        'ECC_SECT409R1', 'ECC_SECT571K1', 'ECC_SECT571R1', 'RSA-PSS'
+    )
 
 
 class OSType(BaseNovaEnum):
@@ -467,6 +471,17 @@ class ResourceClass(StringField):
     # objects in nova/objects/resource_provider.py
     V1_0 = (VCPU, MEMORY_MB, DISK_GB, PCI_DEVICE, SRIOV_NET_VF, NUMA_SOCKET,
             NUMA_CORE, NUMA_THREAD, NUMA_MEMORY_MB, IPV4_ADDRESS)
+
+    @staticmethod
+    def normalize_name(rc_name):
+        if rc_name is None:
+            return None
+        norm_name = rc_name.upper()
+        cust_prefix = objects.ResourceClass.CUSTOM_NAMESPACE
+        norm_name = cust_prefix + norm_name
+        # Replace some punctuation characters with underscores
+        norm_name = re.sub('[^0-9A-Z]+', '_', norm_name)
+        return norm_name
 
 
 class RNGModel(BaseNovaEnum):
@@ -538,9 +553,6 @@ class VIFModel(BaseNovaEnum):
                     }
 
     ALL = network_model.VIF_MODEL_ALL
-
-    def _get_legacy(self, value):
-        return value
 
     def coerce(self, obj, attr, value):
         # Some compat for strings we'd see in the legacy
@@ -1156,7 +1168,3 @@ class InstanceTaskStateField(BaseEnumField):
 
 class InstancePowerStateField(BaseEnumField):
     AUTO_TYPE = InstancePowerState()
-
-
-class ListOfIntegersField(AutoTypedField):
-    AUTO_TYPE = List(fields.Integer())

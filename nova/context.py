@@ -358,20 +358,50 @@ def authorize_quota_class_context(context, class_name):
             raise exception.Forbidden()
 
 
-@contextmanager
-def target_cell(context, cell_mapping):
+def set_target_cell(context, cell_mapping):
     """Adds database connection information to the context
-    for communicating with the given target cell.
+    for communicating with the given target_cell.
+
+    This is used for permanently targeting a cell in a context.
+    Use this when you want all subsequent code to target a cell.
+
+    Passing None for cell_mapping will untarget the context.
 
     :param context: The RequestContext to add connection information
-    :param cell_mapping: A objects.CellMapping object
+    :param cell_mapping: An objects.CellMapping object or None
+    """
+    if cell_mapping is not None:
+        # avoid circular import
+        from nova import db
+        from nova import rpc
+        db_connection_string = cell_mapping.database_connection
+        context.db_connection = db.create_context_manager(db_connection_string)
+        if not cell_mapping.transport_url.startswith('none'):
+            context.mq_connection = rpc.create_transport(
+                cell_mapping.transport_url)
+    else:
+        context.db_connection = None
+        context.mq_connection = None
+
+
+@contextmanager
+def target_cell(context, cell_mapping):
+    """Temporarily adds database connection information to the context
+    for communicating with the given target cell.
+
+    This context manager makes a temporary change to the context
+    and restores it when complete.
+
+    Passing None for cell_mapping will untarget the context temporarily.
+
+    :param context: The RequestContext to add connection information
+    :param cell_mapping: An objects.CellMapping object or None
     """
     original_db_connection = context.db_connection
-    # avoid circular import
-    from nova import db
-    db_connection_string = cell_mapping.database_connection
-    context.db_connection = db.create_context_manager(db_connection_string)
+    original_mq_connection = context.mq_connection
+    set_target_cell(context, cell_mapping)
     try:
         yield context
     finally:
         context.db_connection = original_db_connection
+        context.mq_connection = original_mq_connection

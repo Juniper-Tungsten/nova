@@ -13,10 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import socket
 
 from oslo_config import cfg
 from oslo_utils import units
-import socket
 
 xenserver_group = cfg.OptGroup('xenserver',
                                title='Xenserver Options',
@@ -345,7 +345,7 @@ Possible values:
 
 * `all`: will download all images.
 * `some`: will only download images that have the image_property
-          `bittorrent=true'.
+          `bittorrent=true`.
 * `none`: will turnoff downloading images via Bit Torrent.
 """),
     cfg.StrOpt('ipxe_network_name',
@@ -463,7 +463,7 @@ Related opitons:
     cfg.StrOpt('sr_base_path',
         default='/var/run/sr-mount',
         help='Base path to the storage repository on the XenServer host.'),
-    cfg.StrOpt('target_host',
+    cfg.HostAddressOpt('target_host',
         help="""
 The iSCSI Target Host.
 
@@ -547,12 +547,21 @@ time, the launch expires and the instance(s) are set to 'error'
 state.
 """),
     cfg.StrOpt('vif_driver',
-        default='nova.virt.xenapi.vif.XenAPIBridgeDriver',
+        default='nova.virt.xenapi.vif.XenAPIOpenVswitchDriver',
+        deprecated_for_removal=True,
+        deprecated_since='15.0.0',
+        deprecated_reason="""
+There are only two in-tree vif drivers for XenServer. XenAPIBridgeDriver is for
+nova-network which is deprecated and XenAPIOpenVswitchDriver is for Neutron
+which is the default configuration for Nova since the 15.0.0 Ocata release. In
+the future the "use_neutron" configuration option will be used to determine
+which vif driver to use.
+""",
         help="""
 The XenAPI VIF driver using XenServer Network APIs.
 
-Provide a string value representing the VIF XenAPI bridge driver to
-use for bridging.
+Provide a string value representing the VIF XenAPI vif driver to use for
+plugging virtual network interfaces.
 
 Xen configuration uses bridging within the backend domain to allow
 all VMs to appear on the network as individual hosts. Bridge
@@ -561,9 +570,15 @@ the VIFs for the VM instances are plugged. If no VIF bridge driver
 is plugged, the bridge is not made available. This configuration
 option takes in a value for the VIF driver.
 
-NOTE:
-The XenAPIBridgeDriver should be used for running OVS or Bridge in
-XenServer.
+Possible values:
+
+* nova.virt.xenapi.vif.XenAPIOpenVswitchDriver (default)
+* nova.virt.xenapi.vif.XenAPIBridgeDriver (deprecated)
+
+Related options:
+
+* ``vlan_interface``
+* ``ovs_integration_bridge``
 """),
     # TODO(dharinic): Make this, a stevedore plugin
     cfg.StrOpt('image_upload_handler',
@@ -633,13 +648,14 @@ that adding new host will fail, thus option to force join was introduced.
 xenapi_console_opts = [
     cfg.StrOpt('console_public_hostname',
         default=socket.gethostname(),
+        sample_default='<current_hostname>',
         deprecated_group='DEFAULT',
         help="""
 Publicly visible name for this console host.
 
 Possible values:
 
-* A string representing a valid hostname
+* Current hostname (default) or any string representing hostname.
 """),
 ]
 

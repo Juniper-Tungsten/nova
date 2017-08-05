@@ -25,12 +25,6 @@ from oslo_config import cfg
 
 from nova.conf import paths
 
-# Downtime period in milliseconds
-LIVE_MIGRATION_DOWNTIME_MIN = 100
-# Step count
-LIVE_MIGRATION_DOWNTIME_STEPS_MIN = 3
-# Delay in seconds
-LIVE_MIGRATION_DOWNTIME_DELAY_MIN = 10
 
 libvirt_group = cfg.OptGroup("libvirt",
                              title="Libvirt Options",
@@ -256,8 +250,6 @@ Possible values:
 
 * A valid IP address or hostname, else None.
 """),
-    # TODO(hieulq): change to URIOpt for validating schemas with next release
-    # of oslo_config.
     cfg.StrOpt('live_migration_uri',
                deprecated_for_removal=True,
                deprecated_since="15.0.0",
@@ -291,7 +283,7 @@ Related options:
                help="""
 Schema used for live migration.
 
-Override the default libvirt live migration scheme (which is dependant on
+Override the default libvirt live migration scheme (which is dependent on
 virt_type). If this option is set to None, nova will automatically choose a
 sensible default based on the hypervisor. It is not recommended that you change
 this unless you are very sure that hypervisor supports a particular scheme.
@@ -332,37 +324,40 @@ If set to 0, the hypervisor will choose a suitable default. Some hypervisors
 do not support this feature and will return an error if bandwidth is not 0.
 Please refer to the libvirt documentation for further details.
 """),
-    # TODO(hieulq): Need to add min argument by moving from
-    # LIVE_MIGRATION_DOWNTIME_MIN constant.
     cfg.IntOpt('live_migration_downtime',
                default=500,
+               min=100,
                help="""
 Maximum permitted downtime, in milliseconds, for live migration
 switchover.
 
-Will be rounded up to a minimum of %dms. Use a large value if guest liveness
-is unimportant.
-""" % LIVE_MIGRATION_DOWNTIME_MIN),
-    # TODO(hieulq): Need to add min argument by moving from
-    # LIVE_MIGRATION_DOWNTIME_STEPS_MIN constant.
+Will be rounded up to a minimum of 100ms. You can increase this value
+if you want to allow live-migrations to complete faster, or avoid
+live-migration timeout errors by allowing the guest to be paused for
+longer during the live-migration switch over.
+
+Related options:
+
+* live_migration_completion_timeout
+"""),
     cfg.IntOpt('live_migration_downtime_steps',
                default=10,
+               min=3,
                help="""
 Number of incremental steps to reach max downtime value.
 
-Will be rounded up to a minimum of %d steps.
-""" % LIVE_MIGRATION_DOWNTIME_STEPS_MIN),
-    # TODO(hieulq): Need to add min argument by moving from
-    # LIVE_MIGRATION_DOWNTIME_DELAY_MIN constant.
+Will be rounded up to a minimum of 3 steps.
+"""),
     cfg.IntOpt('live_migration_downtime_delay',
                default=75,
+               min=3,
                help="""
 Time to wait, in seconds, between each step increase of the migration
 downtime.
 
-Minimum delay is %d seconds. Value is per GiB of guest RAM + disk to be
+Minimum delay is 3 seconds. Value is per GiB of guest RAM + disk to be
 transferred, with lower bound of a minimum of 2 GiB per device.
-""" % LIVE_MIGRATION_DOWNTIME_DELAY_MIN),
+"""),
     cfg.IntOpt('live_migration_completion_timeout',
                default=800,
                mutable=True,
@@ -373,16 +368,27 @@ data before aborting the operation.
 Value is per GiB of guest RAM + disk to be transferred, with lower bound of
 a minimum of 2 GiB. Should usually be larger than downtime delay * downtime
 steps. Set to 0 to disable timeouts.
-Default is 800.
+
+Related options:
+
+* live_migration_downtime
+* live_migration_downtime_steps
+* live_migration_downtime_delay
 """),
     cfg.IntOpt('live_migration_progress_timeout',
-               default=150,
+               default=0,
+               deprecated_for_removal=True,
+               deprecated_reason="Serious bugs found in this feature.",
                mutable=True,
                help="""
 Time to wait, in seconds, for migration to make forward progress in
 transferring data before aborting the operation.
 
 Set to 0 to disable timeouts.
+
+This is deprecated, and now disabled by default because we have found serious
+bugs in this feature that caused false live-migration timeout failures. This
+feature will be removed or replaced in a future release.
 """),
     cfg.BoolOpt('live_migration_permit_post_copy',
                 default=False,
@@ -416,8 +422,7 @@ This option allows nova to start live migration with auto converge on.
 Auto converge throttles down CPU if a progress of on-going live migration
 is slow. Auto converge will only be used if this flag is set to True and
 post copy is not permitted or post copy is unavailable due to the version
-of libvirt and QEMU in use. Auto converge requires libvirt>=1.2.3 and
-QEMU>=1.6.0.
+of libvirt and QEMU in use.
 
 Related options:
 
@@ -732,7 +737,13 @@ Use multipath connection of the iSCSI or FC volume
 
 Volumes can be connected in the LibVirt as multipath devices. This will
 provide high availability and fault tolerance.
-""")
+"""),
+    cfg.IntOpt('num_volume_scan_tries',
+               deprecated_name='num_iscsi_scan_tries',
+               default=5,
+               help="""
+Number of times to scan given storage protocol to find volume.
+"""),
 ]
 
 libvirt_volume_aoe_opts = [
@@ -756,15 +767,7 @@ compute node.
 """)
 ]
 
-# TODO(sneti): This config option is also used for other protocols like
-# fibrechannel, scaleio, disco. So this should be renamed to
-# num_volume_scan_tries
 libvirt_volume_iscsi_opts = [
-    cfg.IntOpt('num_iscsi_scan_tries',
-               default=5,
-               help="""
-Number of times to scan iSCSI target to find volume.
-"""),
     cfg.StrOpt('iscsi_iface',
                deprecated_name='iscsi_transport',
                help="""

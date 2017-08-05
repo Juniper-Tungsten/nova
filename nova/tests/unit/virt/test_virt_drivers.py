@@ -60,7 +60,7 @@ def catch_notimplementederror(f):
         except NotImplementedError:
             frame = traceback.extract_tb(sys.exc_info()[2])[-1]
             LOG.error("%(driver)s does not implement %(method)s "
-                      "required for test %(test)s" %
+                      "required for test %(test)s",
                       {'driver': type(self.connection),
                        'method': frame[2], 'test': f.__name__})
 
@@ -125,9 +125,9 @@ class _FakeDriverBackendTestCase(object):
         def fake_make_drive(_self, _path):
             pass
 
-        def fake_get_instance_disk_info(_self, instance, xml=None,
-                                        block_device_info=None):
-            return '[]'
+        def fake_get_instance_disk_info_from_xml(_self, instance, xml,
+                                                 block_device_info):
+            return []
 
         def fake_delete_instance_files(_self, _instance):
             pass
@@ -151,8 +151,8 @@ class _FakeDriverBackendTestCase(object):
         import nova.virt.libvirt.driver
 
         self.stubs.Set(nova.virt.libvirt.driver.LibvirtDriver,
-                       '_get_instance_disk_info',
-                       fake_get_instance_disk_info)
+                       '_get_instance_disk_info_from_xml',
+                       fake_get_instance_disk_info_from_xml)
 
         self.stubs.Set(nova.virt.libvirt.driver.disk_api,
                        'extend', fake_extend)
@@ -205,7 +205,7 @@ class VirtDriverLoaderTestCase(_FakeDriverBackendTestCase, test.TestCase):
         }
 
     def test_load_new_drivers(self):
-        for cls, driver in six.iteritems(self.new_drivers):
+        for cls, driver in self.new_drivers.items():
             self.flags(compute_driver=cls)
             # NOTE(sdague) the try block is to make it easier to debug a
             # failure by knowing which driver broke

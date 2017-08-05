@@ -32,7 +32,6 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import importutils
 from oslo_utils import uuidutils
-import six
 import testtools
 
 from nova.compute import api as compute_api
@@ -50,6 +49,7 @@ from nova import objects
 from nova.objects import base
 from nova.objects import fields as obj_fields
 from nova import test
+from nova.tests import fixtures
 from nova.tests.unit.api.openstack import fakes
 from nova.tests.unit.db import fakes as db_fakes
 from nova.tests.unit import fake_flavor
@@ -596,8 +596,8 @@ class XenAPIVMTestCase(stubs.XenAPITestBase):
         # Get Nova record for VM
         vm_info = conn.get_info({'name': name})
         # Get XenAPI record for VM
-        vms = [rec for ref, rec
-               in six.iteritems(xenapi_fake.get_all_records('VM'))
+        vms = [rec for rec
+               in xenapi_fake.get_all_records('VM').values()
                if not rec['is_control_domain']]
         vm = vms[0]
         self.vm_info = vm_info
@@ -2083,6 +2083,7 @@ class XenAPIHostTestCase(stubs.XenAPITestBase):
         self.context = context.get_admin_context()
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
         self.instance = fake_instance.fake_db_instance(name='foo')
+        self.useFixture(fixtures.SingleCellSimple())
 
     def test_host_state(self):
         stats = self.conn.host_state.get_host_stats(False)
@@ -2533,7 +2534,7 @@ class XenAPIBWCountersTestCase(stubs.XenAPITestBaseNoDB):
 
     @classmethod
     def _fake_list_vms(cls, session):
-        return six.iteritems(cls.FAKE_VMS)
+        return cls.FAKE_VMS.items()
 
     @staticmethod
     def _fake_fetch_bandwidth_mt(session):
@@ -2923,7 +2924,7 @@ class XenAPISRSelectionTestCase(stubs.XenAPITestBaseNoDB):
 def _create_service_entries(context, values={'avail_zone1': ['fake_host1',
                                                          'fake_host2'],
                                          'avail_zone2': ['fake_host3'], }):
-    for avail_zone, hosts in six.iteritems(values):
+    for hosts in values.values():
         for service_host in hosts:
             db.service_create(context,
                               {'host': service_host,
@@ -2965,6 +2966,7 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
                               pool_states.KEY: pool_states.ACTIVE,
                               'host': xenapi_fake.get_record('host',
                                                              host_ref)['uuid']}
+        self.useFixture(fixtures.SingleCellSimple())
 
     def test_pool_add_to_aggregate_called_by_driver(self):
 
@@ -3445,26 +3447,35 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
                           True, False)
 
     def _add_default_live_migrate_stubs(self, conn):
-        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+        @classmethod
+        def fake_generate_vdi_map(cls, destination_sr_ref, _vm_ref):
             pass
 
-        def fake_get_iscsi_srs(destination_sr_ref, _vm_ref):
+        @classmethod
+        def fake_get_iscsi_srs(cls, destination_sr_ref, _vm_ref):
             return []
 
-        def fake_get_vm_opaque_ref(instance):
+        @classmethod
+        def fake_get_vm_opaque_ref(cls, instance):
             return "fake_vm"
 
         def fake_lookup_kernel_ramdisk(session, vm):
             return ("fake_PV_kernel", "fake_PV_ramdisk")
 
-        self.stubs.Set(conn._vmops, "_generate_vdi_map",
-                       fake_generate_vdi_map)
-        self.stubs.Set(conn._vmops, "_get_iscsi_srs",
-                       fake_get_iscsi_srs)
-        self.stubs.Set(conn._vmops, "_get_vm_opaque_ref",
-                       fake_get_vm_opaque_ref)
-        self.stubs.Set(vm_utils, "lookup_kernel_ramdisk",
-                       fake_lookup_kernel_ramdisk)
+        @classmethod
+        def fake_generate_vif_map(cls, vif_uuid_map):
+            return {'vif_ref1': 'dest_net_ref'}
+
+        self.stub_out('nova.virt.xenapi.vmops.VMOps._generate_vdi_map',
+                      fake_generate_vdi_map)
+        self.stub_out('nova.virt.xenapi.vmops.VMOps._get_iscsi_srs',
+                      fake_get_iscsi_srs)
+        self.stub_out('nova.virt.xenapi.vmops.VMOps._get_vm_opaque_ref',
+                      fake_get_vm_opaque_ref)
+        self.stub_out('nova.virt.xenapi.vm_utils.lookup_kernel_ramdisk',
+                      fake_lookup_kernel_ramdisk)
+        self.stub_out('nova.virt.xenapi.vmops.VMOps._generate_vif_network_map',
+                      fake_generate_vif_map)
 
     def test_check_can_live_migrate_source_with_block_migrate(self):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
@@ -3800,14 +3811,16 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
         self.assertEqual({"vdi0": "dest_sr_ref",
                           "vdi1": "dest_sr_ref"}, result)
 
-    def test_rollback_live_migration_at_destination(self):
+    @mock.patch.object(vmops.VMOps, "_delete_networks_and_bridges")
+    def test_rollback_live_migration_at_destination(self, mock_delete_network):
         stubs.stubout_session(self.stubs, xenapi_fake.SessionBase)
         conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
-
+        network_info = ["fake_vif1"]
         with mock.patch.object(conn, "destroy") as mock_destroy:
             conn.rollback_live_migration_at_destination("context",
-                    "instance", [], {'block_device_mapping': []})
+                    "instance", network_info, {'block_device_mapping': []})
             self.assertFalse(mock_destroy.called)
+            self.assertTrue(mock_delete_network.called)
 
 
 class XenAPIInjectMetadataTestCase(stubs.XenAPITestBaseNoDB):

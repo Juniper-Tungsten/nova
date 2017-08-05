@@ -61,16 +61,25 @@ Upgrade
   service catalog.
 
   **Return Codes**
-    ::
 
-    0) All upgrade readiness checks passed successfully and there is nothing
-       to do.
-    1) At least one check encountered an issue and requires further
-       investigation. This is considered a warning but the upgrade may be OK.
-    2) There was an upgrade status check failure that needs to be
-       investigated. This should be considered something that stops an
-       upgrade.
-    255) An unexpected error occurred.
+  .. list-table::
+     :widths: 20 80
+     :header-rows: 1
+
+     * - Return code
+       - Description
+     * - 0
+       - All upgrade readiness checks passed successfully and there is nothing
+         to do.
+     * - 1
+       - At least one check encountered an issue and requires further
+         investigation. This is considered a warning but the upgrade may be OK.
+     * - 2
+       - There was an upgrade status check failure that needs to be
+         investigated. This should be considered something that stops an
+         upgrade.
+     * - 255
+       - An unexpected error occurred.
 
   **History of Checks**
 
@@ -85,6 +94,11 @@ Upgrade
     see that there are compute node resource providers checking in with the
     Placement service. More information on the Placement service can be found
     at: `<http://docs.openstack.org/developer/nova/placement.html>`_
+
+  **16.0.0 (Pike)**
+
+  * Checks for the Placement API are modified to require version 1.4, that
+    is needed in Pike and further for nova-scheduler to work correctly.
 
 
 SEE ALSO

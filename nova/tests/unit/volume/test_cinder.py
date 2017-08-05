@@ -16,6 +16,7 @@
 from cinderclient import exceptions as cinder_exception
 from keystoneclient import exceptions as keystone_exception
 import mock
+from oslo_utils import timeutils
 
 import nova.conf
 from nova import context
@@ -24,8 +25,6 @@ from nova import test
 from nova.tests.unit.fake_instance import fake_instance_obj
 from nova.tests import uuidsentinel as uuids
 from nova.volume import cinder
-
-from oslo_utils import timeutils
 
 CONF = nova.conf.CONF
 
@@ -181,17 +180,6 @@ class CinderApiTestCase(test.NoDBTestCase):
         mock_volumes.list.assert_called_once_with(detailed=True,
                                                   search_opts={'id': 'id1'})
 
-    def test_check_attach_volume_status_error(self):
-        volume = {'id': 'fake', 'status': 'error'}
-        self.assertRaises(exception.InvalidVolume,
-                          self.api.check_attach, self.ctx, volume)
-
-    def test_check_attach_volume_already_attached(self):
-        volume = {'id': 'fake', 'status': 'available'}
-        volume['attach_status'] = "attached"
-        self.assertRaises(exception.InvalidVolume,
-                          self.api.check_attach, self.ctx, volume)
-
     @mock.patch.object(cinder.az, 'get_instance_availability_zone',
                        return_value='zone1')
     def test_check_availability_zone_differs(self, mock_get_instance_az):
@@ -206,21 +194,6 @@ class CinderApiTestCase(test.NoDBTestCase):
                           self.api.check_availability_zone,
                           self.ctx, volume, instance)
         mock_get_instance_az.assert_called_once_with(self.ctx, instance)
-
-    def test_check_attach(self):
-        volume = {'status': 'available'}
-        volume['attach_status'] = "detached"
-        volume['availability_zone'] = 'zone1'
-        volume['multiattach'] = False
-        instance = {'availability_zone': 'zone1', 'host': 'fakehost'}
-        CONF.set_override('cross_az_attach', False, group='cinder')
-
-        with mock.patch.object(cinder.az, 'get_instance_availability_zone',
-                               side_effect=lambda context, instance: 'zone1'):
-            self.assertIsNone(self.api.check_attach(
-                self.ctx, volume, instance))
-
-        CONF.reset()
 
     def test_check_detach(self):
         volume = {'id': 'fake', 'status': 'in-use',
@@ -306,17 +279,6 @@ class CinderApiTestCase(test.NoDBTestCase):
         mock_cinderclient.assert_called_once_with(self.ctx)
         mock_volumes.attach.assert_called_once_with('id1', 'uuid', 'point',
                                                     mode='ro')
-
-    @mock.patch('nova.volume.cinder.cinderclient')
-    def test_detach_v1(self, mock_cinderclient):
-        mock_volumes = mock.MagicMock()
-        mock_cinderclient.return_value = mock.MagicMock(version='1',
-                                                        volumes=mock_volumes)
-
-        self.api.detach(self.ctx, 'id1', instance_uuid='fake_uuid')
-
-        mock_cinderclient.assert_called_with(self.ctx)
-        mock_volumes.detach.assert_called_once_with('id1')
 
     @mock.patch('nova.volume.cinder.cinderclient')
     def test_detach(self, mock_cinderclient):

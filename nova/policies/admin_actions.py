@@ -26,18 +26,36 @@ admin_actions_policies = [
     policy.RuleDefault(
         name=POLICY_ROOT % 'discoverable',
         check_str=base.RULE_ANY),
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'reset_state',
-        check_str=base.RULE_ADMIN_API),
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'inject_network_info',
-        check_str=base.RULE_ADMIN_API),
-    policy.RuleDefault(
-        name=BASE_POLICY_NAME,
-        check_str=base.RULE_ADMIN_API),
-    policy.RuleDefault(
-        name=POLICY_ROOT % 'reset_network',
-        check_str=base.RULE_ADMIN_API),
+    base.create_rule_default(
+        POLICY_ROOT % 'reset_state',
+        base.RULE_ADMIN_API,
+        "Reset the state of a given server",
+        [
+            {
+                'method': 'POST',
+                'path': '/servers/{server_id}/action (os-resetState)'
+            }
+        ]),
+    base.create_rule_default(
+        POLICY_ROOT % 'inject_network_info',
+        base.RULE_ADMIN_API,
+        "Inject network information into the server",
+        [
+            {
+                'method': 'POST',
+                'path': '/servers/{server_id}/action (injectNetworkInfo)'
+            }
+        ]),
+    base.create_rule_default(
+        POLICY_ROOT % 'reset_network',
+        base.RULE_ADMIN_API,
+        "Reset networking on a server",
+        [
+            {
+                'method': 'POST',
+                'path': '/servers/{server_id}/action (resetNetwork)'
+            }
+        ])
 ]
 
 

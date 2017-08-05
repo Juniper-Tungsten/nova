@@ -102,7 +102,7 @@ class ClientWrapper(clientv20.Client):
                     # Token is expired so Neutron is raising a
                     # unauthorized exception, we should convert it to
                     # raise a 401 to make client to handle a retry by
-                    # renegerating a valid token and trying a new
+                    # regenerating a valid token and trying a new
                     # attempt.
                     raise exception.Unauthorized()
                 # In admin context if token is invalid Neutron client
@@ -369,7 +369,9 @@ class API(base_api.NetworkAPI):
             IpAddressGenerationFailure error.
         :raises: PortBindingFailed: If port binding failed.
         """
-        port_req_body = {'port': {}}
+        # Set the device_id so it's clear who this port was created for,
+        # and to stop other instances trying to use it
+        port_req_body = {'port': {'device_id': instance.uuid}}
         try:
             if fixed_ip:
                 port_req_body['port']['fixed_ips'] = [

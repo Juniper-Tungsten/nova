@@ -19,6 +19,7 @@ Tests For IronicHostManager
 
 import mock
 
+from nova import context
 from nova import exception
 from nova import objects
 from nova.objects import base as obj_base
@@ -61,9 +62,11 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
     def test_state_public_api_signatures(self):
         self.assertPublicAPISignatures(
             host_manager.HostState("dummy",
-                                   "dummy"),
+                                   "dummy",
+                                   uuids.cell),
             ironic_host_manager.IronicNodeState("dummy",
-                                                "dummy")
+                                                "dummy",
+                                                uuids.cell)
         )
 
     @mock.patch('nova.objects.ServiceList.get_by_binary')
@@ -136,11 +139,14 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
         cn1 = objects.ComputeNode(**{'hypervisor_type': 'ironic'})
         cn2 = objects.ComputeNode(**{'hypervisor_type': 'qemu'})
         cn3 = objects.ComputeNode(**{'hypervisor_type': 'qemu'})
+        cell = objects.CellMappingList.get_all(context.get_admin_context())[0]
+        self.host_manager.cells = [cell]
         mock_get_all.return_value.objects = [cn1, cn2, cn3]
 
         self.host_manager._init_instance_info()
         # ensure we filter out ironic nodes before calling the base class impl
-        mock_base_init_instance_info.assert_called_once_with([cn2, cn3])
+        mock_base_init_instance_info.assert_called_once_with(
+            {cell: [cn2, cn3]})
 
     @mock.patch.object(host_manager.HostManager, '_init_instance_info')
     @mock.patch.object(objects.ComputeNodeList, 'get_all')
@@ -148,13 +154,15 @@ class IronicHostManagerTestCase(test.NoDBTestCase):
                                               mock_base_init_instance_info):
         cn1 = objects.ComputeNode(**{'hypervisor_type': 'ironic'})
         cn2 = objects.ComputeNode(**{'hypervisor_type': 'qemu'})
+        cell = objects.CellMapping()
 
-        self.host_manager._init_instance_info(compute_nodes=[cn1, cn2])
+        self.host_manager._init_instance_info(computes_by_cell={
+            cell: [cn1, cn2]})
 
         # check we don't try to get nodes list if it was passed explicitly
         self.assertFalse(mock_get_all.called)
         # ensure we filter out ironic nodes before calling the base class impl
-        mock_base_init_instance_info.assert_called_once_with([cn2])
+        mock_base_init_instance_info.assert_called_once_with({cell: [cn2]})
 
 
 class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
@@ -190,6 +198,7 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         init_mock.return_value = None
         compute = objects.ComputeNode(**{'hypervisor_type': 'ironic'})
         host_state = self.host_manager.host_state_cls('fake-host', 'fake-node',
+                                                      uuids.cell,
                                                       compute=compute)
         self.assertIs(ironic_host_manager.IronicNodeState, type(host_state))
 
@@ -198,13 +207,15 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         init_mock.return_value = None
         compute = objects.ComputeNode(**{'cpu_info': 'other cpu'})
         host_state = self.host_manager.host_state_cls('fake-host', 'fake-node',
+                                                      uuids.cell,
                                                       compute=compute)
         self.assertIs(host_manager.HostState, type(host_state))
 
     @mock.patch.object(host_manager.HostState, '__init__')
     def test_create_host_state_null_compute(self, init_mock):
         init_mock.return_value = None
-        host_state = self.host_manager.host_state_cls('fake-host', 'fake-node')
+        host_state = self.host_manager.host_state_cls('fake-host', 'fake-node',
+                                                      uuids.cell)
         self.assertIs(host_manager.HostState, type(host_state))
 
     @mock.patch('nova.objects.ServiceList.get_by_binary')
@@ -253,7 +264,8 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         self.assertEqual(len(host_states_map), 0)
 
     def test_update_from_compute_node(self):
-        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")
+        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode",
+                                                   uuids.cell)
         host.update(compute=self.compute_node)
 
         self.assertEqual(1024, host.free_ram_mb)
@@ -270,13 +282,15 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         """Tests that we ignore a compute node that does not have its
         free_disk_gb field set yet from the compute resource tracker.
         """
-        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")
+        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode",
+                                                   uuids.cell)
         self.compute_node.free_disk_gb = None
         host.update(compute=self.compute_node)
         self.assertEqual(0, host.free_disk_mb)
 
     def test_consume_identical_instance_from_compute(self):
-        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")
+        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode",
+                                                   uuids.cell)
         host.update(compute=self.compute_node)
 
         self.assertIsNone(host.updated)
@@ -292,7 +306,8 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         self.assertIsNotNone(host.updated)
 
     def test_consume_larger_instance_from_compute(self):
-        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")
+        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode",
+                                                   uuids.cell)
         host.update(compute=self.compute_node)
 
         self.assertIsNone(host.updated)
@@ -307,7 +322,8 @@ class IronicHostManagerChangedNodesTestCase(test.NoDBTestCase):
         self.assertIsNotNone(host.updated)
 
     def test_consume_smaller_instance_from_compute(self):
-        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode")
+        host = ironic_host_manager.IronicNodeState("fakehost", "fakenode",
+                                                   uuids.cell)
         host.update(compute=self.compute_node)
 
         self.assertIsNone(host.updated)
@@ -338,10 +354,12 @@ class IronicHostManagerTestFilters(test.NoDBTestCase):
         self.flags(baremetal_enabled_filters=['FakeFilterClass2'],
                    group='filter_scheduler')
         self.host_manager = ironic_host_manager.IronicHostManager()
+        cell = uuids.cell
         self.fake_hosts = [ironic_host_manager.IronicNodeState(
-                'fake_host%s' % x, 'fake-node') for x in range(1, 5)]
+                'fake_host%s' % x, 'fake-node', cell) for x in range(1, 5)]
         self.fake_hosts += [ironic_host_manager.IronicNodeState(
-                'fake_multihost', 'fake-node%s' % x) for x in range(1, 5)]
+                'fake_multihost', 'fake-node%s' % x, cell)
+                for x in range(1, 5)]
 
     def test_enabled_filters(self):
         enabled_filters = self.host_manager.enabled_filters

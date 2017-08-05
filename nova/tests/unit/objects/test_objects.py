@@ -1011,7 +1011,7 @@ class TestArgsSerializer(test.NoDBTestCase):
 
         expected_kwargs = {'a': 'untouched', 'b': self.str_now,
                            'c': self.str_now, 'exc_val': self.unicode_str}
-        for key, val in six.iteritems(kwargs):
+        for key, val in kwargs.items():
             self.assertEqual(expected_kwargs[key], val)
 
     def test_serialize_args(self):
@@ -1066,7 +1066,7 @@ object_data = {
     'AllocationList': '1.2-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'BandwidthUsage': '1.2-c6e4c779c7f40f2407e3d70022e3cd1c',
     'BandwidthUsageList': '1.2-5fe7475ada6fe62413cbfcc06ec70746',
-    'BlockDeviceMapping': '1.17-5e094927f1251770dcada6ab05adfcdb',
+    'BlockDeviceMapping': '1.18-ad87cece6f84c65f5ec21615755bc6d3',
     'BlockDeviceMappingList': '1.17-1e568eecb91d06d4112db9fd656de235',
     'BuildRequest': '1.2-532d95a88c5fd33e85878e408e5d6e8d',
     'BuildRequestList': '1.0-cd95608eccb89fbc702c8b52f38ec738',
@@ -1076,7 +1076,7 @@ object_data = {
     'ComputeNodeList': '1.16-40258d802a6ed045690a127a2088544b',
     'DNSDomain': '1.0-7b0b2dab778454b6a7b6c66afe163a1a',
     'DNSDomainList': '1.0-4ee0d9efdfd681fed822da88376e04d2',
-    'Destination': '1.0-4c59dd1288b2e7adbda6051a2de59183',
+    'Destination': '1.1-fff0853f3acec6b04ddc03158ded11ba',
     'DeviceBus': '1.0-77509ea1ea0dd750d5864b9bd87d3f9d',
     'DeviceMetadata': '1.0-04eb8fd218a49cbc3b1e54b774d179f7',
     'DiskMetadata': '1.0-e7a0f1ccccf10d26a76b28e7492f3788',
@@ -1096,7 +1096,7 @@ object_data = {
     'HVSpec': '1.2-de06bcec472a2f04966b855a49c46b41',
     'IDEDeviceBus': '1.0-29d4c9f27ac44197f01b6ac1b7e16502',
     'ImageMeta': '1.8-642d1b2eb3e880a367f37d72dd76162d',
-    'ImageMetaProps': '1.16-3e5ad8e86f2ea36e565702162acc3e65',
+    'ImageMetaProps': '1.18-3e5975251f5843e817de68ac83274c27',
     'Instance': '2.3-4f98ab23f4b0a25fabb1040c8f5edecc',
     'InstanceAction': '1.1-f9f293e526b66fca0d05c3b3a2d13914',
     'InstanceActionEvent': '1.1-e56a64fa4710e43ef7af2ad9d6028b33',
@@ -1111,7 +1111,7 @@ object_data = {
     'InstanceInfoCache': '1.5-cd8b96fefe0fc8d4d337243ba0bf0e1e',
     'InstanceList': '2.2-ff71772c7bf6d72f6ef6eee0199fb1c9',
     'InstanceMapping': '1.0-65de80c491f54d19374703c0753c4d47',
-    'InstanceMappingList': '1.1-14d4a4296c3cbf51e660b657dc37b19e',
+    'InstanceMappingList': '1.2-ee638619aa3d8a82a59c0c83bfa64d78',
     'InstanceNUMACell': '1.4-7c1eb9a198dee076b4de0840e45f4f55',
     'InstanceNUMATopology': '1.3-ec0030cb0402a49c96da7051c037082a',
     'InstancePCIRequest': '1.1-b1d75ebc716cb12906d9d513890092bf',
@@ -1147,7 +1147,7 @@ object_data = {
     'RequestSpec': '1.8-35033ecef47a880f9a5e46e2269e2b97',
     'ResourceClass': '1.0-e6b367e2cf1733c5f3526f20a3286fe9',
     'ResourceClassList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'ResourceProvider': '1.3-3539494ee3fa84930418fa6cc8eec0a9',
+    'ResourceProvider': '1.4-35e8a41d2ece17a862fac5b07ca966af',
     'ResourceProviderList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'S3ImageMapping': '1.0-7dd7366a890d82660ed121de9092276e',
     'SchedulerLimits': '1.0-249c4bd8e62a9b327b7026b7f19cc641',
@@ -1157,12 +1157,14 @@ object_data = {
     'SecurityGroupList': '1.0-dc8bbea01ba09a2edb6e5233eae85cbc',
     'SecurityGroupRule': '1.1-ae1da17b79970012e8536f88cb3c6b29',
     'SecurityGroupRuleList': '1.2-0005c47fcd0fb78dd6d7fd32a1409f5b',
-    'Service': '1.20-0f9c0bf701e68640b78638fd09e2cddc',
+    'Service': '1.21-4ff88e4cd40f3b3ce923805f29d84ee0',
     'ServiceList': '1.19-5325bce13eebcbf22edc9678285270cc',
     'TaskLog': '1.0-78b0534366f29aa3eebb01860fbe18fe',
     'TaskLogList': '1.0-cc8cce1af8a283b9d28b55fcd682e777',
     'Tag': '1.1-8b8d7d5b48887651a0e01241672e2963',
     'TagList': '1.1-55231bdb671ecf7641d6a2e9109b5d8e',
+    'Trait': '1.0-2b58dd7c5037153cb4bfc94c0ae5dd3a',
+    'TraitList': '1.0-ff48fc1575f20800796b48266114c608',
     'Usage': '1.1-b738dbebeb20e3199fc0ebca6e292a47',
     'UsageList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
     'USBDeviceBus': '1.0-e4c7dd6032e46cd74b027df5eb2d4750',
@@ -1172,7 +1174,7 @@ object_data = {
     'VirtualInterface': '1.3-efd3ca8ebcc5ce65fff5a25f31754c54',
     'VirtualInterfaceList': '1.0-9750e2074437b3077e46359102779fc6',
     'VolumeUsage': '1.0-6c8190c46ce1469bb3286a1f21c2e475',
-    'XenapiLiveMigrateData': '1.0-5f982bec68f066e194cd9ce53a24ac4c',
+    'XenapiLiveMigrateData': '1.1-79e69f5ac9abfbcfcbaec18e8280bec6',
 }
 
 

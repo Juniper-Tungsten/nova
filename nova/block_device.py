@@ -48,7 +48,7 @@ bdm_new_fields = set(['source_type', 'destination_type',
                      'connection_info', 'tag'])
 
 
-bdm_db_only_fields = set(['id', 'instance_uuid'])
+bdm_db_only_fields = set(['id', 'instance_uuid', 'attachment_id'])
 
 
 bdm_db_inherited_fields = set(['created_at', 'updated_at',
@@ -184,10 +184,7 @@ class BlockDeviceDict(dict):
             device_uuid = api_dict.get('uuid')
             destination_type = api_dict.get('destination_type')
 
-            if source_type not in ('volume', 'image', 'snapshot', 'blank'):
-                raise exception.InvalidBDMFormat(
-                    details=_("Invalid source_type field."))
-            elif source_type == 'blank' and device_uuid:
+            if source_type == 'blank' and device_uuid:
                 raise exception.InvalidBDMFormat(
                     details=_("Invalid device UUID."))
             elif source_type != 'blank':
@@ -196,11 +193,14 @@ class BlockDeviceDict(dict):
                         details=_("Missing device UUID."))
                 api_dict[source_type + '_id'] = device_uuid
             if source_type == 'image' and destination_type == 'local':
-                try:
-                    boot_index = int(api_dict.get('boot_index', -1))
-                except ValueError:
-                    raise exception.InvalidBDMFormat(
-                        details=_("Boot index is invalid."))
+                # NOTE(mriedem): boot_index can be None so we need to
+                # account for that to avoid a TypeError.
+                boot_index = api_dict.get('boot_index', -1)
+                if boot_index is None:
+                    # boot_index=None is equivalent to -1.
+                    boot_index = -1
+                boot_index = int(boot_index)
+
                 # if this bdm is generated from --image ,then
                 # source_type = image and destination_type = local is allowed
                 if not (image_uuid_specified and boot_index == 0):
@@ -369,7 +369,7 @@ def from_legacy_mapping(legacy_block_device_mapping, image_uuid='',
 
 
 def properties_root_device_name(properties):
-    """get root device name from image meta data.
+    """Get root device name from image meta data.
     If it isn't specified, return None.
     """
     root_device_name = None
@@ -391,7 +391,7 @@ def validate_device_name(value):
     try:
         # NOTE (ndipanov): Do not allow empty device names
         #                  until assigning default values
-        #                  is supported by nova.compute
+        #                  are supported by nova.compute
         utils.check_string_length(value, 'Device name',
                                   min_length=1, max_length=255)
     except exception.InvalidInput:
@@ -410,7 +410,7 @@ def validate_and_default_volume_size(bdm):
                 bdm['volume_size'], 'volume_size', min_value=0)
         except exception.InvalidInput:
             # NOTE: We can remove this validation code after removing
-            # Nova v2.0 API code because v2.1 API validates this case
+            # Nova v2.0 API code, because v2.1 API validates this case
             # already at its REST API layer.
             raise exception.InvalidBDMFormat(
                 details=_("Invalid volume_size."))

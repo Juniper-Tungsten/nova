@@ -82,7 +82,7 @@ class FakeLibvirtTests(test.NoDBTestCase):
     def test_openAuth_accepts_None_uri_by_default(self):
         conn_method = self.get_openAuth_curry_func()
         conn = conn_method(None)
-        self.assertNotEqual(conn, None, "Connecting to fake libvirt failed")
+        self.assertIsNotNone(conn, "Connecting to fake libvirt failed")
 
     def test_openAuth_can_refuse_None_uri(self):
         conn_method = self.get_openAuth_curry_func()
@@ -392,10 +392,9 @@ class FakeLibvirtTests(test.NoDBTestCase):
   </cells>
 </topology>
 """
-        host_topology = libvirt.HostInfo._gen_numa_topology(
-                                               cpu_nodes=2, cpu_sockets=1,
-                                               cpu_cores=2, cpu_threads=2,
-                                               kb_mem=15740000)
+        host_topology = libvirt.NUMATopology(
+            cpu_nodes=2, cpu_sockets=1, cpu_cores=2, cpu_threads=2,
+            kb_mem=15740000)
         self.assertEqual(host_topology.to_xml(),
                          topology)
 
@@ -467,8 +466,7 @@ class FakeLibvirtTests(test.NoDBTestCase):
 </device>"""
 
         # create fake pci devices
-        pci_info = libvirt.HostPciSRIOVDevicesInfo()
-        pci_info.create_pci_devices(num_pfs=1, num_vfs=1)
+        pci_info = libvirt.HostPciSRIOVDevicesInfo(num_pfs=1, num_vfs=1)
 
         # generate xml for the created pci devices
         gen_pf = pci_info.get_device_by_name('pci_0000_81_00_0')

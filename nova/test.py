@@ -20,18 +20,19 @@ Allows overriding of flags for use of fakes, and some black magic for
 inline callbacks.
 
 """
-import contextlib
 
-import datetime
-import eventlet
+import eventlet  # noqa
 eventlet.monkey_patch(os=False)
 
+import contextlib
 import copy
+import datetime
 import inspect
-import mock
 import os
+import pprint
 
 import fixtures
+import mock
 from oslo_cache import core as cache
 from oslo_concurrency import lockutils
 from oslo_config import cfg
@@ -222,6 +223,12 @@ class TestCase(testtools.TestCase):
         self.useFixture(conf_fixture.ConfFixture(CONF))
         self.useFixture(nova_fixtures.RPCFixture('nova.test'))
 
+        # we cannot set this in the ConfFixture as oslo only registers the
+        # notification opts at the first instantiation of a Notifier that
+        # happens only in the RPCFixture
+        CONF.set_default('driver', ['test'],
+                         group='oslo_messaging_notifications')
+
         # NOTE(danms): Make sure to reset us back to non-remote objects
         # for each test to avoid interactions. Also, backup the object
         # registry.
@@ -344,21 +351,24 @@ class TestCase(testtools.TestCase):
             CONF.set_override(k, v, group, enforce_type=True)
 
     def start_service(self, name, host=None, **kwargs):
-        svc = self.useFixture(
-            nova_fixtures.ServiceFixture(name, host, **kwargs))
-
         if name == 'compute' and self.USES_DB:
+            # NOTE(danms): We need to create the HostMapping first, because
+            # otherwise we'll fail to update the scheduler while running
+            # the compute node startup routines below.
             ctxt = context.get_context()
             cell = self.cell_mappings[kwargs.pop('cell', CELL1_NAME)]
             hm = objects.HostMapping(context=ctxt,
-                                     host=svc.service.host,
+                                     host=host or name,
                                      cell_mapping=cell)
             hm.create()
             self.host_mappings[hm.host] = hm
 
+        svc = self.useFixture(
+            nova_fixtures.ServiceFixture(name, host, **kwargs))
+
         return svc.service
 
-    def assertJsonEqual(self, expected, observed):
+    def assertJsonEqual(self, expected, observed, message=''):
         """Asserts that 2 complex data structures are json equivalent.
 
         We use data structures which serialize down to json throughout
@@ -388,37 +398,49 @@ class TestCase(testtools.TestCase):
                 return sorted(items)
             return x
 
-        def inner(expected, observed):
+        def inner(expected, observed, path='root'):
             if isinstance(expected, dict) and isinstance(observed, dict):
-                self.assertEqual(len(expected), len(observed))
+                self.assertEqual(
+                    len(expected), len(observed),
+                    'path: %s. Dict lengths are not equal' % path)
                 expected_keys = sorted(expected)
                 observed_keys = sorted(observed)
-                self.assertEqual(expected_keys, observed_keys)
-
+                self.assertEqual(
+                    expected_keys, observed_keys,
+                    'path: %s. Dict keys are not equal' % path)
                 for key in list(six.iterkeys(expected)):
-                    inner(expected[key], observed[key])
+                    inner(expected[key], observed[key], path + '.%s' % key)
             elif (isinstance(expected, (list, tuple, set)) and
                       isinstance(observed, (list, tuple, set))):
-                self.assertEqual(len(expected), len(observed))
+                self.assertEqual(
+                    len(expected), len(observed),
+                    'path: %s. List lengths are not equal' % path)
 
                 expected_values_iter = iter(sorted(expected, key=sort_key))
                 observed_values_iter = iter(sorted(observed, key=sort_key))
 
                 for i in range(len(expected)):
                     inner(next(expected_values_iter),
-                          next(observed_values_iter))
+                          next(observed_values_iter), path + '[%s]' % i)
             else:
-                self.assertEqual(expected, observed)
+                self.assertEqual(expected, observed, 'path: %s' % path)
 
         try:
             inner(expected, observed)
         except testtools.matchers.MismatchError as e:
-            inner_mismatch = e.mismatch
-            # inverting the observed / expected because testtools
-            # error messages assume expected is second. Possibly makes
-            # reading the error messages less confusing.
-            raise testtools.matchers.MismatchError(observed, expected,
-                                          inner_mismatch, verbose=True)
+            difference = e.mismatch.describe()
+            if message:
+                message = 'message: %s\n' % message
+            msg = "\nexpected:\n%s\nactual:\n%s\ndifference:\n%s\n%s" % (
+                pprint.pformat(expected),
+                pprint.pformat(observed),
+                difference,
+                message)
+            error = AssertionError(msg)
+            error.expected = expected
+            error.observed = observed
+            error.difference = difference
+            raise error
 
     def assertPublicAPISignatures(self, baseinst, inst):
         def get_public_apis(inst):

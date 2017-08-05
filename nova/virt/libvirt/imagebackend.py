@@ -1100,10 +1100,10 @@ class Ploop(Image):
                 elif format == "raw":
                     self.pcs_format = "raw"
                 else:
-                    reason = _("Virtuozzo doesn't support images in %s format."
-                                " You should either set force_raw_images=True"
-                                " in config or upload an image in ploop"
-                                " or raw format.") % format
+                    reason = _("Ploop image backend doesn't support images in"
+                               " %s format. You should either set"
+                               " force_raw_images=True in config or upload an"
+                               " image in ploop or raw format.") % format
                     raise exception.ImageUnacceptable(
                                         image_id=kwargs["image_id"],
                                         reason=reason)
@@ -1121,6 +1121,9 @@ class Ploop(Image):
                                        'parallels',
                                        target,
                                        out_format)
+
+    def get_model(self, connection):
+        return imgmodel.LocalFileImage(self.path, imgmodel.FORMAT_PLOOP)
 
 
 class Backend(object):

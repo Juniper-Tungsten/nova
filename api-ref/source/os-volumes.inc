@@ -26,6 +26,14 @@ Normal response codes: 200
 
 Error response codes: unauthorized(401), forbidden(403)
 
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - limit: limit_simple
+  - offset: offset_simple
+
 Response
 --------
 
@@ -42,7 +50,7 @@ Response
   - displayDescription: display_description
   - displayName: display_name
   - id: volume_id_resp
-  - metadata: metadata_set_required
+  - metadata: metadata_object 
   - size: size
   - snapshotId: snapshot_id
   - status: volume_status
@@ -102,7 +110,7 @@ Response
   - displayName: display_name
   - displayDescription: display_description
   - id: volume_id_resp
-  - metadata: metadata_set_required
+  - metadata: metadata_object 
   - size: size
   - snapshotId: snapshot_id
   - status: volume_status
@@ -126,6 +134,14 @@ Normal response codes: 200
 
 Error response codes: unauthorized(401), forbidden(403)
 
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - limit: limit_simple
+  - offset: offset_simple
+
 Response
 --------
 
@@ -142,7 +158,7 @@ Response
   - displayName: display_name
   - displayDescription: display_description
   - id: volume_id_resp
-  - metadata: metadata_set_required
+  - metadata: metadata_object 
   - size: size
   - snapshotId: snapshot_id
   - status: volume_status
@@ -189,7 +205,7 @@ Response
   - displayName: display_name
   - displayDescription: display_description
   - id: volume_id_resp
-  - metadata: metadata_set_required
+  - metadata: metadata_object 
   - size: size
   - snapshotId: snapshot_id
   - status: volume_status
@@ -236,6 +252,14 @@ Lists snapshots.
 Normal response codes: 200
 
 Error response codes: unauthorized(401), forbidden(403)
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - limit: limit_simple
+  - offset: offset_simple
 
 Response
 --------
@@ -314,6 +338,14 @@ Lists all snapshots with details.
 Normal response codes: 200
 
 Error response codes: unauthorized(401), forbidden(403)
+
+Request
+-------
+
+.. rest_parameters:: parameters.yaml
+
+  - limit: limit_simple
+  - offset: offset_simple
 
 Response
 --------

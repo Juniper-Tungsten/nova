@@ -27,6 +27,8 @@ higher level APIs around the raw libvirt API. These APIs are
 then used by all the other libvirt related classes
 """
 
+import time
+
 from lxml import etree
 from oslo_log import log as logging
 from oslo_service import loopingcall
@@ -34,7 +36,6 @@ from oslo_utils import encodeutils
 from oslo_utils import excutils
 from oslo_utils import importutils
 import six
-import time
 
 from nova.compute import power_state
 from nova import exception
@@ -308,6 +309,15 @@ class Guest(object):
         LOG.debug("attach device xml: %s", device_xml)
         self._domain.attachDeviceFlags(device_xml, flags=flags)
 
+    def get_config(self):
+        """Returns the config instance for a guest
+
+        :returns: LibvirtConfigGuest instance
+        """
+        config = vconfig.LibvirtConfigGuest()
+        config.parse_str(self._domain.XMLDesc(0))
+        return config
+
     def get_disk(self, device):
         """Returns the disk mounted at device
 
@@ -390,6 +400,9 @@ class Guest(object):
             # Raise DeviceNotFound if the device isn't found during detach
             try:
                 self.detach_device(conf, persistent=persistent, live=live)
+                LOG.debug('Successfully detached device %s from guest. '
+                          'Persistent? %s. Live? %s',
+                          device, persistent, live)
             except libvirt.libvirtError as ex:
                 with excutils.save_and_reraise_exception():
                     errcode = ex.get_error_code()
@@ -410,7 +423,9 @@ class Guest(object):
         if conf is None:
             raise exception.DeviceNotFound(device=device)
 
+        LOG.debug('Attempting initial detach for device %s', device)
         _try_detach_device(conf, persistent, live)
+        LOG.debug('Start retrying detach until device %s is gone.', device)
 
         @loopingcall.RetryDecorator(max_retry_count=max_retry_count,
                                     inc_sleep_time=inc_sleep_time,

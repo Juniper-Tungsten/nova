@@ -14,6 +14,7 @@
 
 """Compute-related Utilities and helpers."""
 
+import contextlib
 import functools
 import inspect
 import itertools
@@ -35,7 +36,6 @@ from nova import notifications
 from nova.notifications.objects import aggregate as aggregate_notification
 from nova.notifications.objects import base as notification_base
 from nova.notifications.objects import exception as notification_exception
-from nova.notifications.objects import flavor as flavor_notification
 from nova.notifications.objects import instance as instance_notification
 from nova import objects
 from nova.objects import fields
@@ -251,8 +251,8 @@ def get_value_from_system_metadata(instance, key, type, default):
 def notify_usage_exists(notifier, context, instance_ref, current_period=False,
                         ignore_missing_network_data=True,
                         system_metadata=None, extra_usage_info=None):
-    """Generates 'exists' notification for an instance for usage auditing
-    purposes.
+    """Generates 'exists' unversioned legacy notification for an instance for
+    usage auditing purposes.
 
     :param notifier: a messaging.Notifier
 
@@ -294,7 +294,10 @@ def notify_usage_exists(notifier, context, instance_ref, current_period=False,
 def notify_about_instance_usage(notifier, context, instance, event_suffix,
                                 network_info=None, system_metadata=None,
                                 extra_usage_info=None, fault=None):
-    """Send a notification about an instance.
+    """Send an unversioned legacy notification about an instance.
+
+    All new notifications should use notify_about_instance_action which sends
+    a versioned notification.
 
     :param notifier: a messaging.Notifier
     :param event_suffix: Event type like "delete.start" or "exists"
@@ -324,23 +327,6 @@ def notify_about_instance_usage(notifier, context, instance, event_suffix,
     method(context, 'compute.instance.%s' % event_suffix, usage_info)
 
 
-def _get_instance_ips(instance):
-    network_info = get_nw_info_for_instance(instance)
-    ips = []
-    if network_info is not None:
-        for vif in network_info:
-            for ip in vif.fixed_ips():
-                ips.append(instance_notification.IpPayload(
-                    label=vif["network"]["label"],
-                    mac=vif["address"],
-                    meta=vif["meta"],
-                    port_uuid=vif["id"],
-                    version=ip["version"],
-                    address=ip["address"],
-                    device_name=vif["devname"]))
-    return ips
-
-
 def _get_fault_and_priority_from_exc(exception):
     fault = None
     priority = fields.NotificationPriority.INFO
@@ -363,15 +349,10 @@ def notify_about_instance_action(context, instance, host, action, phase=None,
     :param binary: the binary emitting the notification
     :param exception: the thrown exception (used in error notifications)
     """
-    ips = _get_instance_ips(instance)
-
-    flavor = flavor_notification.FlavorPayload(instance.flavor)
     fault, priority = _get_fault_and_priority_from_exc(exception)
     payload = instance_notification.InstanceActionPayload(
             instance=instance,
-            fault=fault,
-            ip_addresses=ips,
-            flavor=flavor)
+            fault=fault)
     notification = instance_notification.InstanceActionNotification(
             context=context,
             priority=priority,
@@ -399,16 +380,10 @@ def notify_about_volume_swap(context, instance, host, action, phase,
     :param new_volume_id: the ID of the volume that is copied to and attached
     :param exception: an exception
     """
-    ips = _get_instance_ips(instance)
-
-    flavor = flavor_notification.FlavorPayload(instance.flavor)
-
     fault, priority = _get_fault_and_priority_from_exc(exception)
     payload = instance_notification.InstanceActionVolumeSwapPayload(
         instance=instance,
         fault=fault,
-        ip_addresses=ips,
-        flavor=flavor,
         old_volume_id=old_volume_id,
         new_volume_id=new_volume_id)
 
@@ -697,3 +672,18 @@ class UnlimitedSemaphore(object):
     @property
     def balance(self):
         return 0
+
+
+@contextlib.contextmanager
+def notify_about_instance_delete(notifier, context, instance):
+    # Pre-load system_metadata because if this context is around an
+    # instance.destroy(), lazy-loading it later would result in an
+    # InstanceNotFound error.
+    system_metadata = instance.system_metadata
+    try:
+        notify_about_instance_usage(notifier, context, instance,
+                                    "delete.start")
+        yield
+    finally:
+        notify_about_instance_usage(notifier, context, instance, "delete.end",
+                                    system_metadata=system_metadata)
