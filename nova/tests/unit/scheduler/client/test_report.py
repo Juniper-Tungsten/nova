@@ -132,23 +132,25 @@ class SafeConnectedTestCase(test.NoDBTestCase):
 
 
 class TestConstructor(test.NoDBTestCase):
-    @mock.patch('keystoneauth1.session.Session')
+    @mock.patch('keystoneauth1.loading.load_session_from_conf_options')
     @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
-    def test_constructor(self, load_auth_mock, ks_sess_mock):
+    def test_constructor(self, load_auth_mock, load_sess_mock):
         client = report.SchedulerReportClient()
 
         load_auth_mock.assert_called_once_with(CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
+        load_sess_mock.assert_called_once_with(CONF, 'placement',
+                                              auth=load_auth_mock.return_value)
         self.assertIsNone(client.ks_filter['interface'])
 
-    @mock.patch('keystoneauth1.session.Session')
+    @mock.patch('keystoneauth1.loading.load_session_from_conf_options')
     @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
-    def test_constructor_admin_interface(self, load_auth_mock, ks_sess_mock):
+    def test_constructor_admin_interface(self, load_auth_mock, load_sess_mock):
         self.flags(os_interface='admin', group='placement')
         client = report.SchedulerReportClient()
 
         load_auth_mock.assert_called_once_with(CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
+        load_sess_mock.assert_called_once_with(CONF, 'placement',
+                                              auth=load_auth_mock.return_value)
         self.assertEqual('admin', client.ks_filter['interface'])
 
 
@@ -512,7 +514,7 @@ class TestAggregates(SchedulerReportClientTestCase):
         self.ks_sess_mock.get.assert_called_once_with(
             expected_url, endpoint_filter=mock.ANY, raise_exc=False,
             headers={'OpenStack-API-Version': 'placement 1.1'})
-        self.assertTrue(expected, result)
+        self.assertEqual(expected, result)
 
     @mock.patch.object(report.LOG, 'warning')
     def test_get_provider_aggregates_not_found(self, log_mock):

@@ -726,7 +726,7 @@ class LibvirtDriver(driver.ComputeDriver):
         try:
             self._host.get_guest(instance)
             return True
-        except exception.InternalError:
+        except (exception.InternalError, exception.InstanceNotFound):
             return False
 
     def list_instances(self):
@@ -1110,7 +1110,8 @@ class LibvirtDriver(driver.ComputeDriver):
             host=CONF.host)
 
     def _cleanup_resize(self, instance, network_info):
-        target = libvirt_utils.get_instance_path(instance) + '_resize'
+        inst_base = libvirt_utils.get_instance_path(instance)
+        target = inst_base + '_resize'
 
         if os.path.exists(target):
             # Deletion can fail over NFS, so retry the deletion as required.
@@ -1130,6 +1131,16 @@ class LibvirtDriver(driver.ComputeDriver):
         if root_disk.exists():
             root_disk.remove_snap(libvirt_utils.RESIZE_SNAPSHOT_NAME,
                                   ignore_errors=True)
+
+        # NOTE(mjozefcz):
+        # self.image_backend.image for some backends recreates instance
+        # directory and image disk.info - remove it here if exists
+        if os.path.exists(inst_base) and not root_disk.exists():
+            try:
+                shutil.rmtree(inst_base)
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    raise
 
         if instance.host != CONF.host:
             self._undefine_domain(instance)
@@ -1286,19 +1297,18 @@ class LibvirtDriver(driver.ComputeDriver):
                 CONF.libvirt.virt_type, disk_dev),
             'type': 'disk',
             }
+        # NOTE (lyarwood): new_connection_info will be modified by the
+        # following _connect_volume call down into the volume drivers. The
+        # majority of the volume drivers will add a device_path that is in turn
+        # used by _get_volume_config to set the source_path of the
+        # LibvirtConfigGuestDisk object it returns. We do not explicitly save
+        # this to the BDM here as the upper compute swap_volume method will
+        # eventually do this for us.
         self._connect_volume(new_connection_info, disk_info)
         conf = self._get_volume_config(new_connection_info, disk_info)
         if not conf.source_path:
             self._disconnect_volume(new_connection_info, disk_dev)
             raise NotImplementedError(_("Swap only supports host devices"))
-
-        # Save updates made in connection_info when connect_volume was called
-        volume_id = new_connection_info.get('serial')
-        bdm = objects.BlockDeviceMapping.get_by_volume_and_instance(
-            nova_context.get_admin_context(), volume_id, instance.uuid)
-        driver_bdm = driver_block_device.convert_volume(bdm)
-        driver_bdm['connection_info'] = new_connection_info
-        driver_bdm.save()
 
         self._swap_volume(guest, disk_dev, conf.source_path, resize_to)
         self._disconnect_volume(old_connection_info, disk_dev)
@@ -4450,8 +4460,10 @@ class LibvirtDriver(driver.ComputeDriver):
         if virt_type == 'parallels':
             pass
         elif virt_type not in ("qemu", "kvm"):
+            log_path = self._get_console_log_path(instance)
             self._create_pty_device(guest_cfg,
-                                    vconfig.LibvirtConfigGuestConsole)
+                                    vconfig.LibvirtConfigGuestConsole,
+                                    log_path=log_path)
         elif (virt_type in ("qemu", "kvm") and
                   self._is_s390x_guest(image_meta)):
             self._create_consoles_s390x(guest_cfg, instance,
@@ -4740,6 +4752,7 @@ class LibvirtDriver(driver.ComputeDriver):
         if (CONF.spice.enabled and CONF.spice.agent_enabled and
                 virt_type not in ('lxc', 'uml', 'xen')):
             channel = vconfig.LibvirtConfigGuestChannel()
+            channel.type = 'spicevmc'
             channel.target_name = "com.redhat.spice.0"
             guest.add_device(channel)
 
