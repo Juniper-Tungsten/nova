@@ -317,7 +317,8 @@ class TestDatabaseAtVersionFixture(testtools.TestCase):
 
 
 class TestDefaultFlavorsFixture(testtools.TestCase):
-    def test_flavors(self):
+    @mock.patch("nova.objects.flavor.Flavor._send_notification")
+    def test_flavors(self, mock_send_notification):
         self.useFixture(conf_fixture.ConfFixture())
         self.useFixture(fixtures.Database())
         self.useFixture(fixtures.Database(database='api'))
@@ -467,3 +468,22 @@ class TestSingleCellSimpleFixture(testtools.TestCase):
         self.useFixture(fixtures.SingleCellSimple())
         with context.target_cell(mock.sentinel.context, None) as c:
             self.assertIs(mock.sentinel.context, c)
+
+
+class TestPlacementFixture(testtools.TestCase):
+    def test_responds_to_version(self):
+        """Ensure the Placement server responds to calls sensibly."""
+        placement_fixture = self.useFixture(fixtures.PlacementFixture())
+
+        # request the API root, which provides us the versions of the API
+        resp = placement_fixture._fake_get(None, '/')
+        self.assertEqual(200, resp.status_code)
+
+        # request a known bad url, and we should get a 404
+        resp = placement_fixture._fake_get(None, '/foo')
+        self.assertEqual(404, resp.status_code)
+
+        # unsets the token so we fake missing it
+        placement_fixture.token = None
+        resp = placement_fixture._fake_get(None, '/foo')
+        self.assertEqual(401, resp.status_code)

@@ -23,7 +23,7 @@ SHOULD include dedicated exception logging.
 """
 
 from oslo_log import log as logging
-import six
+
 import webob.exc
 from webob import util as woutil
 
@@ -89,7 +89,7 @@ class NovaException(Exception):
                 # kwargs doesn't match a variable in the message
                 # log the issue and the kwargs
                 LOG.exception(_LE('Exception in string format operation'))
-                for name, value in six.iteritems(kwargs):
+                for name, value in kwargs.items():
                     LOG.error("%s: %s" % (name, value))  # noqa
 
                 message = self.msg_fmt
@@ -139,6 +139,10 @@ class GlanceConnectionFailed(NovaException):
 
 class CinderConnectionFailed(NovaException):
     msg_fmt = _("Connection to cinder host failed: %(reason)s")
+
+
+class UnsupportedCinderAPIVersion(NovaException):
+    msg_fmt = _('Nova does not support Cinder API version %(version)s')
 
 
 class Forbidden(NovaException):
@@ -320,7 +324,7 @@ class ApiVersionsIntersect(Invalid):
 # Cannot be templated as the error syntax varies.
 # msg needs to be constructed when raised.
 class InvalidParameterValue(Invalid):
-    msg_fmt = _("%(err)s")
+    msg_fmt = "%(err)s"
 
 
 class InvalidAggregateAction(Invalid):
@@ -1762,6 +1766,10 @@ class PciConfigInvalidWhitelist(Invalid):
 
 # Cannot be templated, msg needs to be constructed when raised.
 class InternalError(NovaException):
+    """Generic hypervisor errors.
+
+    Consider subclassing this to provide more specific exceptions.
+    """
     msg_fmt = "%(err)s"
 
 

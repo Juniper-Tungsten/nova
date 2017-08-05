@@ -1757,7 +1757,8 @@ class _TestInstanceListObject(object):
 
         def fake_instance_get_active_by_window_joined(context, begin, end,
                                                       project_id, host,
-                                                      columns_to_join):
+                                                      columns_to_join,
+                                                      limit=None, marker=None):
             # make sure begin is tz-aware
             self.assertIsNotNone(begin.utcoffset())
             self.assertIsNone(end)
@@ -1834,7 +1835,8 @@ class _TestInstanceListObject(object):
             self.assertEqual(set(), inst.obj_what_changed())
 
         mock_fault_get.assert_called_once_with(self.context,
-                                               [x.uuid for x in insts])
+                                               [x.uuid for x in insts],
+                                               latest=True)
 
     @mock.patch('nova.objects.instance.Instance.obj_make_compatible')
     def test_get_by_security_group(self, mock_compat):

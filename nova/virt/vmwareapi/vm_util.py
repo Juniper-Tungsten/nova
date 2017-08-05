@@ -29,7 +29,7 @@ from oslo_vmware import exceptions as vexc
 from oslo_vmware.objects import datastore as ds_obj
 from oslo_vmware import pbm
 from oslo_vmware import vim_util as vutil
-import six
+
 
 import nova.conf
 from nova import exception
@@ -206,7 +206,8 @@ def get_vm_create_spec(client_factory, instance, data_store_name,
     config_spec.version = extra_specs.hw_version
 
     # Allow nested hypervisor instances to host 64 bit VMs.
-    if os_type in ("vmkernel5Guest", "vmkernel6Guest", "windowsHyperVGuest"):
+    if os_type in ("vmkernel5Guest", "vmkernel6Guest", "vmkernel65Guest",
+                   "windowsHyperVGuest"):
         config_spec.nestedHVEnabled = "True"
 
     # Append the profile spec
@@ -591,7 +592,7 @@ def get_vm_extra_config_spec(client_factory, extra_opts):
     config_spec = client_factory.create('ns0:VirtualMachineConfigSpec')
     # add the key value pairs
     extra_config = []
-    for key, value in six.iteritems(extra_opts):
+    for key, value in extra_opts.items():
         opt = client_factory.create('ns0:OptionValue')
         opt.key = key
         opt.value = value
@@ -678,7 +679,7 @@ scsi_controller_classes = {
     'ParaVirtualSCSIController': constants.ADAPTER_TYPE_PARAVIRTUAL,
     'VirtualLsiLogicController': constants.DEFAULT_ADAPTER_TYPE,
     'VirtualLsiLogicSASController': constants.ADAPTER_TYPE_LSILOGICSAS,
-    'VirtualBusLogicController': constants.ADAPTER_TYPE_PARAVIRTUAL,
+    'VirtualBusLogicController': constants.ADAPTER_TYPE_BUSLOGIC,
 }
 
 

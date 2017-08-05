@@ -16,7 +16,6 @@
 from oslo_serialization import jsonutils
 import six
 
-from nova import compute
 from nova.compute import vm_states
 from nova import exception
 from nova import objects
@@ -41,12 +40,12 @@ class HideServerAddressesTestV21(test.TestCase):
     base_url = '/v2/fake/servers'
 
     def _setup_wsgi(self):
-        self.wsgi_app = fakes.wsgi_app_v21(
-            init_only=('servers', 'os-hide-server-addresses'))
+        self.wsgi_app = fakes.wsgi_app_v21()
 
     def setUp(self):
         super(HideServerAddressesTestV21, self).setUp()
         fakes.stub_out_nw_api(self)
+        fakes.stub_out_secgroup_api(self)
         return_server = fakes.fake_instance_get()
         self.stub_out('nova.db.instance_get_by_uuid', return_server)
         self._setup_wsgi()
@@ -79,11 +78,11 @@ class HideServerAddressesTestV21(test.TestCase):
     def test_show_hides_in_building(self):
         instance_id = 1
         uuid = fakes.get_fake_uuid(instance_id)
-        self.stubs.Set(compute.api.API, 'get',
-                       fake_compute_get(instance_id, uuid=uuid,
-                                        vm_state=vm_states.BUILDING))
+        self.stub_out('nova.compute.api.API.get',
+                      fake_compute_get(instance_id, uuid=uuid,
+                                       vm_state=vm_states.BUILDING))
         res = self._make_request(self.base_url + '/%s' % uuid)
-        self.assertEqual(res.status_int, 200)
+        self.assertEqual(200, res.status_int)
 
         server = self._get_server(res.body)
         addresses = self._get_addresses(server)
@@ -92,11 +91,11 @@ class HideServerAddressesTestV21(test.TestCase):
     def test_show(self):
         instance_id = 1
         uuid = fakes.get_fake_uuid(instance_id)
-        self.stubs.Set(compute.api.API, 'get',
-                       fake_compute_get(instance_id, uuid=uuid,
-                                        vm_state=vm_states.ACTIVE))
+        self.stub_out('nova.compute.api.API.get',
+                      fake_compute_get(instance_id, uuid=uuid,
+                                       vm_state=vm_states.ACTIVE))
         res = self._make_request(self.base_url + '/%s' % uuid)
-        self.assertEqual(res.status_int, 200)
+        self.assertEqual(200, res.status_int)
 
         server = self._get_server(res.body)
         addresses = self._get_addresses(server)
@@ -114,10 +113,10 @@ class HideServerAddressesTestV21(test.TestCase):
             return instance_obj._make_instance_list(
                 args[1], objects.InstanceList(), instances, fields)
 
-        self.stubs.Set(compute.api.API, 'get_all', get_all)
+        self.stub_out('nova.compute.api.API.get_all', get_all)
         res = self._make_request(self.base_url + '/detail')
 
-        self.assertEqual(res.status_int, 200)
+        self.assertEqual(200, res.status_int)
         servers = self._get_servers(res.body)
 
         self.assertEqual(len(servers), len(instances))
@@ -132,7 +131,7 @@ class HideServerAddressesTestV21(test.TestCase):
         def fake_compute_get(*args, **kwargs):
             raise exception.InstanceNotFound(instance_id='fake')
 
-        self.stubs.Set(compute.api.API, 'get', fake_compute_get)
+        self.stub_out('nova.compute.api.API.get', fake_compute_get)
         res = self._make_request(self.base_url + '/' + fakes.get_fake_uuid())
 
-        self.assertEqual(res.status_int, 404)
+        self.assertEqual(404, res.status_int)

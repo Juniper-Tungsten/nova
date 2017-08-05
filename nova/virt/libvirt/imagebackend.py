@@ -65,9 +65,9 @@ class Image(object):
         """
         if (CONF.ephemeral_storage_encryption.enabled and
                 not self._supports_encryption()):
-            raise exception.NovaException(_('Incompatible settings: '
-                                  'ephemeral storage encryption is supported '
-                                  'only for LVM images.'))
+            msg = _('Incompatible settings: ephemeral storage encryption is '
+                    'supported only for LVM images.')
+            raise exception.InternalError(msg)
 
         self.path = path
 
@@ -168,7 +168,7 @@ class Image(object):
         tune_items = ['disk_read_bytes_sec', 'disk_read_iops_sec',
             'disk_write_bytes_sec', 'disk_write_iops_sec',
             'disk_total_bytes_sec', 'disk_total_iops_sec']
-        for key, value in six.iteritems(extra_specs):
+        for key, value in extra_specs.items():
             scope = key.split(':')
             if len(scope) > 1 and scope[0] == 'quota':
                 if scope[1] in tune_items:
@@ -359,7 +359,7 @@ class Image(object):
                 with open(self.disk_info_path) as disk_info_file:
                     line = disk_info_file.read().rstrip()
                     dct = _dict_from_line(line)
-                    for path, driver_format in six.iteritems(dct):
+                    for path, driver_format in dct.items():
                         if path == self.path:
                             return driver_format
             driver_format = self._get_driver_format()
@@ -707,7 +707,7 @@ class Lvm(Image):
         def create_lvm_image(base, size):
             base_size = disk.get_disk_size(base)
             self.verify_base_size(base, size, base_size=base_size)
-            resize = size > base_size
+            resize = size > base_size if size else False
             size = size if resize else base_size
             lvm.create_volume(self.vg, self.lv,
                                          size, sparse=self.sparse)
@@ -740,7 +740,7 @@ class Lvm(Image):
                         LOG.error(_LE("Failed to retrieve ephemeral encryption"
                                       " key"))
             else:
-                raise exception.NovaException(
+                raise exception.InternalError(
                     _("Instance disk to be encrypted but no context provided"))
         # Generate images with specified size right on volume
         if generated and size:
@@ -1072,7 +1072,7 @@ class Ploop(Image):
                 elif format == "raw":
                     self.pcs_format = "raw"
                 else:
-                    reason = _("PCS doesn't support images in %s format."
+                    reason = _("Virtuozzo doesn't support images in %s format."
                                 " You should either set force_raw_images=True"
                                 " in config or upload an image in ploop"
                                 " or raw format.") % format

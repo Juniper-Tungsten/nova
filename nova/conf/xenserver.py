@@ -13,8 +13,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+
 from oslo_config import cfg
 from oslo_utils import units
+import socket
 
 xenserver_group = cfg.OptGroup('xenserver',
                                title='Xenserver Options',
@@ -22,8 +24,8 @@ xenserver_group = cfg.OptGroup('xenserver',
 XenServer options are used when the compute_driver is set to use
 XenServer (compute_driver=xenapi.XenAPIDriver).
 
-Must specify connection_url, and connection_password to use
-compute_driver=xenapi.XenAPIDriver.
+Must specify connection_url, connection_password and ovs_integration_bridge to
+use compute_driver=xenapi.XenAPIDriver.
 """)
 
 xenapi_agent_opts = [
@@ -257,7 +259,7 @@ xenapi_vm_utils_opts = [
         help="""
 Cache glance images locally.
 
-The value for this option must be choosen from the choices listed
+The value for this option must be chosen from the choices listed
 here. Configuring a value other than these will default to 'all'.
 
 Note: There is nothing that deletes these images.
@@ -336,7 +338,7 @@ If set to 0, should try once, no retries.
         help="""
 Whether or not to download images via Bit Torrent.
 
-The value for this option must be choosen from the choices listed
+The value for this option must be chosen from the choices listed
 here. Configuring a value other than these will default to 'none'.
 
 Possible values:
@@ -596,7 +598,6 @@ before raising VDI not found exception.
 
 xenapi_ovs_integration_bridge_opts = [
     cfg.StrOpt('ovs_integration_bridge',
-        default='xapi1',
         help="""
 The name of the integration Bridge that is used with xenapi
 when connecting with Open vSwitch.
@@ -607,7 +608,7 @@ accordingly if you are using XenAPI.
 
 Possible values:
 
-* Any string that represents a bridge name(default is xapi1).
+* Any string that represents a bridge name.
 """),
 ]
 
@@ -629,6 +630,18 @@ that adding new host will fail, thus option to force join was introduced.
 """),
 ]
 
+xenapi_console_opts = [
+    cfg.StrOpt('console_public_hostname',
+        default=socket.gethostname(),
+        deprecated_group='DEFAULT',
+        help="""
+Publicly visible name for this console host.
+
+Possible values:
+
+* A string representing a valid hostname
+"""),
+]
 
 ALL_XENSERVER_OPTS = (xenapi_agent_opts +
                       xenapi_session_opts +
@@ -638,7 +651,8 @@ ALL_XENSERVER_OPTS = (xenapi_agent_opts +
                       xenapi_vmops_opts +
                       xenapi_volume_utils_opts +
                       xenapi_ovs_integration_bridge_opts +
-                      xenapi_pool_opts)
+                      xenapi_pool_opts +
+                      xenapi_console_opts)
 
 
 def register_opts(conf):

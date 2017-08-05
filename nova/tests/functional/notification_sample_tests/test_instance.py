@@ -147,7 +147,8 @@ class TestInstanceNotificationSample(
         # for notification samples that expect instance.info_cache.network_info
         # to be set.
         self.useFixture(fixtures.SpawnIsSynchronousFixture())
-        self.flags(notify_on_state_change='vm_and_task_state')
+        self.flags(notify_on_state_change='vm_and_task_state',
+                   group='notifications')
 
         server = self._boot_a_server(
             extra_params={'networks': [{'port': self.neutron.port_1['id']}]})
@@ -162,7 +163,10 @@ class TestInstanceNotificationSample(
                          instance_updates[0]['publisher_id'])
         instance_updates[0]['publisher_id'] = 'nova-compute:fake-mini'
 
-        self.assertEqual(7, len(instance_updates))
+        self.assertEqual(7, len(instance_updates),
+                         'Unexpected number of instance.update notifications. '
+                         'Expected 7, got %s: %s' % (
+                             len(instance_updates), instance_updates))
         create_steps = [
             # nothing -> scheduling
             {'reservation_id': server['reservation_id'],
@@ -487,6 +491,13 @@ class TestInstanceNotificationSample(
             }
         }
         other_flavor_id = self.api.post_flavor(other_flavor_body)['id']
+        extra_specs = {
+            "extra_specs": {
+                "hw:watchdog_action": "reset"}}
+        self.admin_api.post_extra_spec(other_flavor_id, extra_specs)
+
+        # Ignore the create flavor notification
+        fake_notifier.reset()
 
         post = {
             'resize': {

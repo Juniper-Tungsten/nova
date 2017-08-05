@@ -275,6 +275,17 @@ class CPUThreadAllocationPolicy(BaseNovaEnum):
     ALL = (PREFER, ISOLATE, REQUIRE)
 
 
+class CPUEmulatorThreadsPolicy(BaseNovaEnum):
+
+    # share (default): Emulator threads float across the pCPUs
+    # associated to the guest.
+    SHARE = "share"
+    # isolate: Emulator threads are isolated on a single pCPU.
+    ISOLATE = "isolate"
+
+    ALL = (SHARE, ISOLATE)
+
+
 class CPUMode(BaseNovaEnum):
 
     CUSTOM = 'custom'
@@ -358,10 +369,11 @@ class HVType(BaseNovaEnum):
     VMWARE = 'vmware'
     XEN = 'xen'
     ZVM = 'zvm'
+    PRSM = 'prsm'
 
     ALL = (BAREMETAL, BHYVE, DOCKER, FAKE, HYPERV, IRONIC, KQEMU, KVM, LXC,
            LXD, OPENVZ, PARALLELS, PHYP, QEMU, TEST, UML, VBOX, VIRTUOZZO,
-           VMWARE, XEN, ZVM)
+           VMWARE, XEN, ZVM, PRSM)
 
     def coerce(self, obj, attr, value):
         try:
@@ -773,6 +785,8 @@ class NotificationAction(BaseNovaEnum):
     TRIGGER_CRASH_DUMP = 'trigger_crash_dump'
     UNRESCUE = 'unrescue'
     UNSHELVE = 'unshelve'
+    ADD_HOST = 'add_host'
+    REMOVE_HOST = 'remove_host'
 
     ALL = (UPDATE, EXCEPTION, DELETE, PAUSE, UNPAUSE, RESIZE, VOLUME_SWAP,
            SUSPEND, POWER_ON, REBOOT, SHUTDOWN, SNAPSHOT, ADD_FIXED_IP,
@@ -782,7 +796,8 @@ class NotificationAction(BaseNovaEnum):
            LIVE_MIGRATION_PRE, LIVE_MIGRATION_ROLLBACK,
            LIVE_MIGRATION_ROLLBACK_DEST, REBUILD, REMOVE_FIXED_IP,
            RESIZE_CONFIRM, RESIZE_PREP, RESIZE_REVERT, SHELVE_OFFLOAD,
-           SOFT_DELETE, TRIGGER_CRASH_DUMP, UNRESCUE, UNSHELVE)
+           SOFT_DELETE, TRIGGER_CRASH_DUMP, UNRESCUE, UNSHELVE, ADD_HOST,
+           REMOVE_HOST)
 
 
 # TODO(rlrossit): These should be changed over to be a StateMachine enum from
@@ -934,6 +949,9 @@ class NetworkModel(FieldType):
         return 'NetworkModel(%s)' % (
             ','.join([str(vif['id']) for vif in value]))
 
+    def get_schema(self):
+        return {'type': ['string']}
+
 
 class AddressBase(FieldType):
     @staticmethod
@@ -1021,6 +1039,10 @@ class CPUAllocationPolicyField(BaseEnumField):
 
 class CPUThreadAllocationPolicyField(BaseEnumField):
     AUTO_TYPE = CPUThreadAllocationPolicy()
+
+
+class CPUEmulatorThreadsPolicyField(BaseEnumField):
+    AUTO_TYPE = CPUEmulatorThreadsPolicy()
 
 
 class CPUModeField(BaseEnumField):

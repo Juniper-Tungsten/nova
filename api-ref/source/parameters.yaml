@@ -525,8 +525,8 @@ limit_simple:
   description: |
     Used in conjunction with ``offset`` to return a slice of items. ``limit``
     is the maximum number of items to return. If ``limit`` is not specified,
-    or exceeds the configurable ``osapi_max_limit``, then ``osapi_max_limit``
-    will be used instead.
+    or exceeds the configurable ``max_limit``, then ``max_limit`` will be
+    used instead.
   in: query
   required: false
   type: integer
@@ -717,6 +717,25 @@ tags_query:
     all tags in this list will be returned. Boolean expression in this
     case is 't1 AND t2'. Tags in query must be separated by comma.
   min_version: 2.26
+usage_limit:
+  description: |
+    Requests a page size of items. Calculate usage for the limited number of
+    instances. Use the ``limit`` parameter to make an initial limited request
+    and use the last-seen instance UUID from the response as the ``marker``
+    parameter value in a subsequent limited request.
+  in: query
+  required: false
+  type: integer
+  min_version: 2.40
+usage_marker:
+  description: |
+    The last-seen item. Use the ``limit`` parameter to make an initial limited
+    request and use the last-seen instance UUID from the response as the
+    ``marker`` parameter value in a subsequent limited request.
+  in: query
+  required: false
+  type: string
+  min_version: 2.40
 user_id_query_quota:
   description: |
     ID of user to list the quotas for.
@@ -732,13 +751,6 @@ user_id_query_quota_delete:
 user_id_query_set_quota:
   description: |
     ID of user to set the quotas for.
-  in: query
-  required: false
-  type: string
-user_id_server_group:
-  description: |
-    The user ID who owns the server group.
-  min_version: 2.13
   in: query
   required: false
   type: string
@@ -955,6 +967,12 @@ aggregate_remove_host:
   in: body
   required: true
   type: object
+aggregate_uuid:
+  description: |
+    The UUID of the host aggregate.
+  in: body
+  type: string
+  min_version: 2.41
 aggregates:
   description: |
     The list of existing aggregates.
@@ -1160,7 +1178,7 @@ block_device_mapping_v2:
 block_device_uuid:
   description: |
     This is the uuid of source resource. The uuid is point to different resource
-    based on the source_type. For example if source_type is ``image`` as the above
+    based on the source_type. For example, if source_type is ``image`` as the above
     sample, the block device is created based on the specified image which is gotten
     from the image service.
   in: body
@@ -1270,7 +1288,7 @@ confirmResize:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 console:
   description: |
     The console object.
@@ -1376,7 +1394,7 @@ createBackup:
     The action.
   in: body
   required: true
-  type: string
+  type: object
 created:
   description: |
     The date and time when the resource was created. The date and time
@@ -1812,8 +1830,8 @@ flavor_disk:
   description: |
     The size of the root disk that will be created in GiB. If 0 the
     root disk will be set to exactly the size of the image used to
-    deploy the instance. However in this case filter scheduler cannot
-    select the compute host based on the virtual image size. Therefore
+    deploy the instance. However, in this case filter scheduler cannot
+    select the compute host based on the virtual image size. Therefore,
     0 should only be used for volume booted instances or for testing
     purposes.
 flavor_ephem_disk:
@@ -1824,7 +1842,7 @@ flavor_ephem_disk:
     The size of the ephemeral disk that will be created, in
     GiB. Ephemeral disks may be written over on server state
     changes. So should only be used as a scratch space for
-    applications that are aware of it's limitations. Defaults to 0.
+    applications that are aware of its limitations. Defaults to 0.
 flavor_ephem_disk_in:
   in: body
   required: false
@@ -1833,7 +1851,7 @@ flavor_ephem_disk_in:
     The size of the ephemeral disk that will be created, in
     GiB. Ephemeral disks may be written over on server state
     changes. So should only be used as a scratch space for
-    applications that are aware of it's limitations. Defaults to 0.
+    applications that are aware of its limitations. Defaults to 0.
 flavor_extra_spec_key2:
   description: |
     The extra spec key of a flavor.  It appears in the os-extra-specs'
@@ -2054,7 +2072,7 @@ forceDelete:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 free_ram_mb:
   description: |
     The free RAM in this hypervisor(in MB).
@@ -2130,7 +2148,7 @@ host_memory_mb:
   type: string
 host_migration:
   description: |
-    The host to which to migrate the server. If you omit this parameter, the scheduler
+    The host to which to migrate the server. If this parameter is ``None``, the scheduler
     chooses a host.
   in: body
   required: true
@@ -2245,6 +2263,12 @@ hosts.availability_zone:
   in: body
   required: true
   type: object
+hosts.availability_zone_none:
+  description: |
+    It is always ``null``.
+  in: body
+  required: true
+  type: none
 hours:
   description: |
    The duration that the server exists (in hours).
@@ -2503,7 +2527,7 @@ injectNetworkInfo:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 instance_action_events:
   description: |
     The events occurred in this action.
@@ -2831,7 +2855,7 @@ lock:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 locked:
   description: |
     True if the instance is locked otherwise False.
@@ -3328,12 +3352,18 @@ os-getVNCConsole-type:
   in: body
   required: true
   type: string
+os-migrateLive:
+  description: |
+    The action.
+  in: body
+  required: true
+  type: object
 os-resetState:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: object
 os-resetState_state:
   description: |
     The state of the server to be set, ``active`` or ``error`` are valid.
@@ -3378,13 +3408,13 @@ os-start:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 os-stop:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 os:scheduler_hints:
   description: |
     The dictionary of data to send to the scheduler. Alternatively, you can specify
@@ -3442,7 +3472,7 @@ pause:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 period_beginning:
   description: |
     The beginning time of the instance usage audit period.
@@ -3584,7 +3614,7 @@ quota_set:
     A ``quota_set`` object.
   in: body
   required: true
-  type: string
+  type: object
 quota_tenant_or_user_id_body:
   description: |
     The UUID of the tenant/user the quotas listed for.
@@ -3692,7 +3722,7 @@ resetNetwork:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 resize:
   description: |
     The action.
@@ -3704,13 +3734,13 @@ restore:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 resume:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 return_reservation_id:
   description: |
     Set to ``True`` to request that the response return a reservation ID instead of
@@ -3723,7 +3753,7 @@ revertResize:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 rules:
   description: |
     A security group rules object.
@@ -3863,6 +3893,18 @@ server_description:
     A free form description of the server. Limited to 255 characters
     in length. Before microversion 2.19 this was set to the server
     name.
+server_group:
+  description: |
+    The server group obejct.
+  in: body
+  required: true
+  type: object
+server_group_id_body:
+  description: |
+    The UUID of the server group.
+  in: body
+  required: true
+  type: string
 server_group_members:
   description: |
     The number of allowed members for each server group.
@@ -4083,13 +4125,13 @@ shelve:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 shelveOffload:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 size:
   description: |
     The size of the volume, in gibibytes (GiB).
@@ -4243,7 +4285,7 @@ suspend:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 tags:
   description: |
     A list of tags. The maximum count of tags in this list is 50.
@@ -4337,25 +4379,25 @@ unlock:
     The action.
   in: body
   required: true
-  type: string
+  type: none
 unpause:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 unrescue:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 unshelve:
   description: |
     The action.
   in: body
   required: true
-  type: string
+  type: none
 updated:
   description: |
     The date and time when the resource was updated. The date and time
@@ -4412,6 +4454,16 @@ url:
   in: body
   required: true
   type: string
+usage_links:
+  description: |
+    Links pertaining to usage. See `API Guide / Links and
+    References
+    <http://developer.openstack.org/api-guide/compute/links_and_references.html>`_
+    for more info.
+  in: body
+  type: array
+  required: false
+  min_version: 2.40
 user_data:
   description: |
     Configuration information or scripts to use upon launch. Must be Base64 encoded.
@@ -4426,6 +4478,13 @@ user_id:
     The user ID of the user who owns the server.
   in: body
   required: true
+  type: string
+user_id_server_group:
+  description: |
+    The user ID who owns the server group.
+  min_version: 2.13
+  in: body
+  required: false
   type: string
 vcpus:
   description: |

@@ -31,7 +31,6 @@ from oslo_log import log as logging
 from oslo_service import loopingcall
 from oslo_utils import excutils
 from oslo_utils import fileutils
-from oslo_utils import importutils
 from oslo_utils import units
 from oslo_utils import uuidutils
 
@@ -50,6 +49,7 @@ from nova.virt.hyperv import constants
 from nova.virt.hyperv import imagecache
 from nova.virt.hyperv import pathutils
 from nova.virt.hyperv import serialconsoleops
+from nova.virt.hyperv import vif as vif_utils
 from nova.virt.hyperv import volumeops
 
 LOG = logging.getLogger(__name__)
@@ -81,17 +81,6 @@ def check_admin_permissions(function):
         return function(self, *args, **kwds)
     return wrapper
 
-NEUTRON_VIF_DRIVER = 'nova.virt.hyperv.vif.HyperVNeutronVIFDriver'
-NOVA_VIF_DRIVER = 'nova.virt.hyperv.vif.HyperVNovaNetworkVIFDriver'
-
-
-def get_network_driver():
-    """"Return the correct network module"""
-    if nova.network.is_neutron():
-        return NEUTRON_VIF_DRIVER
-    else:
-        return NOVA_VIF_DRIVER
-
 
 class VMOps(object):
     # The console log is stored in two files, each should have at most half of
@@ -111,12 +100,7 @@ class VMOps(object):
         self._serial_console_ops = serialconsoleops.SerialConsoleOps()
         self._block_dev_man = (
             block_device_manager.BlockDeviceInfoManager())
-        self._vif_driver = None
-        self._load_vif_driver_class()
-
-    def _load_vif_driver_class(self):
-        class_name = get_network_driver()
-        self._vif_driver = importutils.import_object(class_name)
+        self._vif_driver = vif_utils.HyperVVIFDriver()
 
     def list_instance_uuids(self):
         instance_uuids = []
@@ -271,6 +255,15 @@ class VMOps(object):
             instance.device_metadata = objects.InstanceDeviceMetadata(
                 devices=metadata)
 
+    def set_boot_order(self, instance_name, vm_gen, block_device_info):
+        boot_order = self._block_dev_man.get_boot_order(
+            vm_gen, block_device_info)
+        LOG.debug("Setting boot order for instance: %(instance_name)s: "
+                  "%(boot_order)s", {'instance_name': instance_name,
+                                     'boot_order': boot_order})
+
+        self._vmutils.set_boot_order(instance_name, boot_order)
+
     @check_admin_permissions
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, network_info, block_device_info=None):
@@ -308,8 +301,8 @@ class VMOps(object):
                                                              network_info)
 
                 self.attach_config_drive(instance, configdrive_path, vm_gen)
-
-            self.power_on(instance)
+            self.set_boot_order(instance.name, vm_gen, block_device_info)
+            self.power_on(instance, network_info=network_info)
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.destroy(instance)
@@ -356,14 +349,37 @@ class VMOps(object):
         secure_boot_enabled = self._requires_secure_boot(instance, image_meta,
                                                          vm_gen)
 
+        memory_per_numa_node, cpus_per_numa_node = (
+            self._get_instance_vnuma_config(instance, image_meta))
+
+        if memory_per_numa_node:
+            LOG.debug("Instance requires vNUMA topology. Host's NUMA spanning "
+                      "has to be disabled in order for the instance to "
+                      "benefit from it.", instance=instance)
+            if CONF.hyperv.dynamic_memory_ratio > 1.0:
+                LOG.warning(_LW(
+                    "Instance vNUMA topology requested, but dynamic memory "
+                    "ratio is higher than 1.0 in nova.conf. Ignoring dynamic "
+                    "memory ratio option."), instance=instance)
+            dynamic_memory_ratio = 1.0
+            vnuma_enabled = True
+        else:
+            dynamic_memory_ratio = CONF.hyperv.dynamic_memory_ratio
+            vnuma_enabled = False
+
         self._vmutils.create_vm(instance_name,
-                                instance.flavor.memory_mb,
-                                instance.flavor.vcpus,
-                                CONF.hyperv.limit_cpu_features,
-                                CONF.hyperv.dynamic_memory_ratio,
+                                vnuma_enabled,
                                 vm_gen,
                                 instance_path,
                                 [instance.uuid])
+
+        self._vmutils.update_vm(instance_name,
+                                instance.flavor.memory_mb,
+                                memory_per_numa_node,
+                                instance.flavor.vcpus,
+                                cpus_per_numa_node,
+                                CONF.hyperv.limit_cpu_features,
+                                dynamic_memory_ratio)
 
         self._configure_remotefx(instance, vm_gen)
 
@@ -388,7 +404,6 @@ class VMOps(object):
             self._vmutils.create_nic(instance_name,
                                      vif['id'],
                                      vif['address'])
-            self._vif_driver.plug(instance, vif)
 
         if CONF.hyperv.enable_instance_metrics_collection:
             self._metricsutils.enable_vm_metrics_collection(instance_name)
@@ -399,6 +414,47 @@ class VMOps(object):
             certificate_required = self._requires_certificate(image_meta)
             self._vmutils.enable_secure_boot(
                 instance.name, msft_ca_required=certificate_required)
+
+    def _get_instance_vnuma_config(self, instance, image_meta):
+        """Returns the appropriate NUMA configuration for Hyper-V instances,
+        given the desired instance NUMA topology.
+
+        :param instance: instance containing the flavor and it's extra_specs,
+                         where the NUMA topology is defined.
+        :param image_meta: image's metadata, containing properties related to
+                           the instance's NUMA topology.
+        :returns: memory amount and number of vCPUs per NUMA node or
+                  (None, None), if instance NUMA topology was not requested.
+        :raises exception.InstanceUnacceptable:
+            If the given instance NUMA topology is not possible on Hyper-V.
+        """
+        instance_topology = hardware.numa_get_constraints(instance.flavor,
+                                                          image_meta)
+        if not instance_topology:
+            # instance NUMA topology was not requested.
+            return None, None
+
+        memory_per_numa_node = instance_topology.cells[0].memory
+        cpus_per_numa_node = len(instance_topology.cells[0].cpuset)
+
+        # validate that the requested NUMA topology is not asymetric.
+        # e.g.: it should be like: (X cpus, X cpus, Y cpus), where X == Y.
+        # same with memory.
+        for cell in instance_topology.cells:
+            if len(cell.cpuset) != cpus_per_numa_node:
+                reason = _("Hyper-V does not support NUMA topologies with "
+                           "uneven number of processors. (%(a)s != %(b)s)") % {
+                    'a': len(cell.cpuset), 'b': cpus_per_numa_node}
+                raise exception.InstanceUnacceptable(reason=reason,
+                                                     instance_id=instance.uuid)
+            if cell.memory != memory_per_numa_node:
+                reason = _("Hyper-V does not support NUMA topologies with "
+                           "uneven amounts of memory. (%(a)s != %(b)s)") % {
+                    'a': cell.memory, 'b': memory_per_numa_node}
+                raise exception.InstanceUnacceptable(reason=reason,
+                                                     instance_id=instance.uuid)
+
+        return memory_per_numa_node, cpus_per_numa_node
 
     def _configure_remotefx(self, instance, vm_gen):
         extra_specs = instance.flavor.extra_specs
@@ -634,11 +690,7 @@ class VMOps(object):
                 # Stop the VM first.
                 self._vmutils.stop_vm_jobs(instance_name)
                 self.power_off(instance)
-
-                if network_info:
-                    for vif in network_info:
-                        self._vif_driver.unplug(instance, vif)
-
+                self.unplug_vifs(instance, network_info)
                 self._vmutils.destroy_vm(instance_name)
                 self._volumeops.disconnect_volumes(block_device_info)
             else:
@@ -657,7 +709,7 @@ class VMOps(object):
 
         if reboot_type == REBOOT_TYPE_SOFT:
             if self._soft_shutdown(instance):
-                self.power_on(instance)
+                self.power_on(instance, network_info=network_info)
                 return
 
         self._set_vm_state(instance,
@@ -750,7 +802,7 @@ class VMOps(object):
             LOG.debug("Instance not found. Skipping power off",
                       instance=instance)
 
-    def power_on(self, instance, block_device_info=None):
+    def power_on(self, instance, block_device_info=None, network_info=None):
         """Power on the specified instance."""
         LOG.debug("Power on instance", instance=instance)
 
@@ -759,6 +811,7 @@ class VMOps(object):
                                                            block_device_info)
 
         self._set_vm_state(instance, os_win_const.HYPERV_VM_STATE_ENABLED)
+        self.plug_vifs(instance, network_info)
 
     def _set_vm_state(self, instance, req_state):
         instance_name = instance.name
@@ -812,7 +865,7 @@ class VMOps(object):
     def resume_state_on_host_boot(self, context, instance, network_info,
                                   block_device_info=None):
         """Resume guest state when a host is booted."""
-        self.power_on(instance, block_device_info)
+        self.power_on(instance, block_device_info, network_info)
 
     def _create_vm_com_port_pipes(self, instance, serial_ports):
         for port_number, port_type in serial_ports.items():
@@ -826,6 +879,16 @@ class VMOps(object):
             vm_name, remote_server=dest_host)
         for path in dvd_disk_paths:
             self._pathutils.copyfile(path, dest_path)
+
+    def plug_vifs(self, instance, network_info):
+        if network_info:
+            for vif in network_info:
+                self._vif_driver.plug(instance, vif)
+
+    def unplug_vifs(self, instance, network_info):
+        if network_info:
+            for vif in network_info:
+                self._vif_driver.unplug(instance, vif)
 
     def _check_hotplug_available(self, instance):
         """Check whether attaching an interface is possible for the given

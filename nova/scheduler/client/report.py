@@ -14,6 +14,7 @@
 #    under the License.
 
 import functools
+import re
 import time
 
 from keystoneauth1 import exceptions as ks_exc
@@ -32,27 +33,44 @@ LOG = logging.getLogger(__name__)
 VCPU = fields.ResourceClass.VCPU
 MEMORY_MB = fields.ResourceClass.MEMORY_MB
 DISK_GB = fields.ResourceClass.DISK_GB
+_RE_INV_IN_USE = re.compile("Inventory for (.+) on resource provider "
+                            "(.+) in use")
+WARN_EVERY = 10
+
+
+def warn_limit(self, msg):
+    if self._warn_count:
+        self._warn_count -= 1
+    else:
+        self._warn_count = WARN_EVERY
+        LOG.warning(msg)
 
 
 def safe_connect(f):
     @functools.wraps(f)
     def wrapper(self, *a, **k):
         try:
-            # We've failed in a non recoverable way, fully give up.
-            if self._disabled:
-                return
             return f(self, *a, **k)
         except ks_exc.EndpointNotFound:
-            msg = _LW("The placement API endpoint not found. Optional use of "
-                      "placement API for reporting is now disabled.")
-            LOG.warning(msg)
-            self._disabled = True
+            warn_limit(
+                self,
+                _LW('The placement API endpoint not found. Placement is '
+                    'optional in Newton, but required in Ocata. Please '
+                    'enable the placement service before upgrading.'))
         except ks_exc.MissingAuthPlugin:
-            msg = _LW("No authentication information found for placement API. "
-                      "Optional use of placement API for reporting is now "
-                      "disabled.")
-            LOG.warning(msg)
-            self._disabled = True
+            warn_limit(
+                self,
+                _LW('No authentication information found for placement '
+                    'API. Placement is optional in Newton, but required '
+                    'in Ocata. Please enable the placement service '
+                    'before upgrading.'))
+        except ks_exc.Unauthorized:
+            warn_limit(
+                self,
+                _LW('Placement service credentials do not work. '
+                    'Placement is optional in Newton, but required '
+                    'in Ocata. Please enable the placement service '
+                    'before upgrading.'))
         except ks_exc.ConnectFailure:
             msg = _LW('Placement API service is not responding.')
             LOG.warning(msg)
@@ -65,32 +83,38 @@ def _compute_node_to_inventory_dict(compute_node):
 
     :param compute_node: `objects.ComputeNode` object to translate
     """
-    return {
-        VCPU: {
+    result = {}
+
+    # NOTE(jaypipes): Ironic virt driver will return 0 values for vcpus,
+    # memory_mb and disk_gb if the Ironic node is not available/operable
+    if compute_node.vcpus > 0:
+        result[VCPU] = {
             'total': compute_node.vcpus,
             'reserved': 0,
             'min_unit': 1,
             'max_unit': compute_node.vcpus,
             'step_size': 1,
             'allocation_ratio': compute_node.cpu_allocation_ratio,
-        },
-        MEMORY_MB: {
+        }
+    if compute_node.memory_mb > 0:
+        result[MEMORY_MB] = {
             'total': compute_node.memory_mb,
             'reserved': CONF.reserved_host_memory_mb,
             'min_unit': 1,
             'max_unit': compute_node.memory_mb,
             'step_size': 1,
             'allocation_ratio': compute_node.ram_allocation_ratio,
-        },
-        DISK_GB: {
+        }
+    if compute_node.local_gb > 0:
+        result[DISK_GB] = {
             'total': compute_node.local_gb,
             'reserved': CONF.reserved_host_disk_mb * 1024,
             'min_unit': 1,
             'max_unit': compute_node.local_gb,
             'step_size': 1,
             'allocation_ratio': compute_node.disk_allocation_ratio,
-        },
-    }
+        }
+    return result
 
 
 def _instance_to_allocations_dict(instance):
@@ -105,11 +129,26 @@ def _instance_to_allocations_dict(instance):
     disk = ((0 if is_bfv else instance.flavor.root_gb) +
             instance.flavor.swap +
             instance.flavor.ephemeral_gb)
-    return {
+    alloc_dict = {
         MEMORY_MB: instance.flavor.memory_mb,
         VCPU: instance.flavor.vcpus,
         DISK_GB: disk,
     }
+    # Remove any zero allocations.
+    return {key: val for key, val in alloc_dict.items() if val}
+
+
+def _extract_inventory_in_use(body):
+    """Given an HTTP response body, extract the resource classes that were
+    still in use when we tried to delete inventory.
+
+    :returns: String of resource classes or None if there was no InventoryInUse
+              error in the response body.
+    """
+    match = _RE_INV_IN_USE.search(body)
+    if match:
+        return match.group(1)
+    return None
 
 
 class SchedulerReportClient(object):
@@ -123,17 +162,27 @@ class SchedulerReportClient(object):
         # objects that will have their inventories and allocations tracked by
         # the placement API for the compute host
         self._resource_providers = {}
+        # A dict, keyed by resource provider UUID, of sets of aggregate UUIDs
+        # the provider is associated with
+        self._provider_aggregate_map = {}
         auth_plugin = keystone.load_auth_from_conf_options(
             CONF, 'placement')
         self._client = session.Session(auth=auth_plugin)
-        # TODO(sdague): use this to disable fully when we don't find
-        # the endpoint.
-        self._disabled = False
+        # NOTE(danms): Keep track of how naggy we've been
+        self._warn_count = 0
 
-    def get(self, url):
+    def get(self, url, version=None):
+        kwargs = {}
+        if version is not None:
+            # TODO(mriedem): Perform some version discovery at some point.
+            kwargs = {
+                'headers': {
+                    'OpenStack-API-Version': 'placement %s' % version
+                },
+            }
         return self._client.get(
             url,
-            endpoint_filter=self.ks_filter, raise_exc=False)
+            endpoint_filter=self.ks_filter, raise_exc=False, **kwargs)
 
     def post(self, url, data):
         # NOTE(sdague): using json= instead of data= sets the
@@ -157,6 +206,34 @@ class SchedulerReportClient(object):
         return self._client.delete(
             url,
             endpoint_filter=self.ks_filter, raise_exc=False)
+
+    @safe_connect
+    def _get_provider_aggregates(self, rp_uuid):
+        """Queries the placement API for a resource provider's aggregates.
+        Returns a set() of aggregate UUIDs or None if no such resource provider
+        was found or there was an error communicating with the placement API.
+
+        :param rp_uuid: UUID of the resource provider to grab aggregates for.
+        """
+        resp = self.get("/resource_providers/%s/aggregates" % rp_uuid,
+                        version='1.1')
+        if resp.status_code == 200:
+            data = resp.json()
+            return set(data['aggregates'])
+        if resp.status_code == 404:
+            msg = _LW("Tried to get a provider's aggregates; however the "
+                      "provider %s does not exist.")
+            LOG.warning(msg, rp_uuid)
+        else:
+            msg = _LE("Failed to retrieve aggregates from placement API "
+                      "for resource provider with UUID %(uuid)s. "
+                      "Got %(status_code)d: %(err_text)s.")
+            args = {
+                'uuid': rp_uuid,
+                'status_code': resp.status_code,
+                'err_text': resp.text,
+            }
+            LOG.error(msg, args)
 
     @safe_connect
     def _get_resource_provider(self, uuid):
@@ -253,6 +330,17 @@ class SchedulerReportClient(object):
                      value
         """
         if uuid in self._resource_providers:
+            # NOTE(jaypipes): This isn't optimal to check if aggregate
+            # associations have changed each time we call
+            # _ensure_resource_provider() and get a hit on the local cache of
+            # provider objects, however the alternative is to force operators
+            # to restart all their nova-compute workers every time they add or
+            # change an aggregate. We might optionally want to add some sort of
+            # cache refresh delay or interval as an optimization?
+            msg = "Refreshing aggregate associations for resource provider %s"
+            LOG.debug(msg, uuid)
+            aggs = self._get_provider_aggregates(uuid)
+            self._provider_aggregate_map[uuid] = aggs
             return self._resource_providers[uuid]
 
         rp = self._get_resource_provider(uuid)
@@ -261,7 +349,11 @@ class SchedulerReportClient(object):
             rp = self._create_resource_provider(uuid, name)
             if rp is None:
                 return
+        msg = "Grabbing aggregate associations for resource provider %s"
+        LOG.debug(msg, uuid)
+        aggs = self._get_provider_aggregates(uuid)
         self._resource_providers[uuid] = rp
+        self._provider_aggregate_map[uuid] = aggs
         return rp
 
     def _get_inventory(self, rp_uuid):
@@ -271,13 +363,11 @@ class SchedulerReportClient(object):
             return {'inventories': {}}
         return result.json()
 
-    def _update_inventory_attempt(self, rp_uuid, inv_data):
-        """Update the inventory for this resource provider if needed.
-
-        :param rp_uuid: The resource provider UUID for the operation
-        :param inv_data: The new inventory for the resource provider
-        :returns: True if the inventory was updated (or did not need to be),
-                  False otherwise.
+    def _get_inventory_and_update_provider_generation(self, rp_uuid):
+        """Helper method that retrieves the current inventory for the supplied
+        resource provider according to the placement API. If the cached
+        generation of the resource provider is not the same as the generation
+        returned from the placement API, we update the cached generation.
         """
         curr = self._get_inventory(rp_uuid)
 
@@ -293,6 +383,17 @@ class SchedulerReportClient(object):
                           {'old': my_rp.generation,
                            'new': server_gen})
             my_rp.generation = server_gen
+        return curr
+
+    def _update_inventory_attempt(self, rp_uuid, inv_data):
+        """Update the inventory for this resource provider if needed.
+
+        :param rp_uuid: The resource provider UUID for the operation
+        :param inv_data: The new inventory for the resource provider
+        :returns: True if the inventory was updated (or did not need to be),
+                  False otherwise.
+        """
+        curr = self._get_inventory_and_update_provider_generation(rp_uuid)
 
         # Check to see if we need to update placement's view
         if inv_data == curr.get('inventories', {}):
@@ -359,6 +460,66 @@ class SchedulerReportClient(object):
             time.sleep(1)
         return False
 
+    @safe_connect
+    def _delete_inventory(self, rp_uuid):
+        """Deletes all inventory records for a resource provider with the
+        supplied UUID.
+        """
+        curr = self._get_inventory_and_update_provider_generation(rp_uuid)
+
+        # Check to see if we need to update placement's view
+        if not curr.get('inventories', {}):
+            msg = "No inventory to delete from resource provider %s."
+            LOG.debug(msg, rp_uuid)
+            return
+
+        msg = _LI("Compute node %s reported no inventory but previous "
+                  "inventory was detected. Deleting existing inventory "
+                  "records.")
+        LOG.info(msg, rp_uuid)
+
+        url = '/resource_providers/%s/inventories' % rp_uuid
+        cur_rp_gen = self._resource_providers[rp_uuid].generation
+        payload = {
+            'resource_provider_generation': cur_rp_gen,
+            'inventories': {},
+        }
+        r = self.put(url, payload)
+        if r.status_code == 200:
+            # Update our view of the generation for next time
+            updated_inv = r.json()
+            new_gen = updated_inv['resource_provider_generation']
+
+            self._resource_providers[rp_uuid].generation = new_gen
+            msg_args = {
+                'rp_uuid': rp_uuid,
+                'generation': new_gen,
+            }
+            LOG.info(_LI('Deleted all inventory for resource provider '
+                         '%(rp_uuid)s at generation %(generation)i'),
+                     msg_args)
+            return
+        elif r.status_code == 409:
+            rc_str = _extract_inventory_in_use(r.text)
+            if rc_str is not None:
+                msg = _LW("We cannot delete inventory %(rc_str)s for resource "
+                          "provider %(rp_uuid)s because the inventory is "
+                          "in use.")
+                msg_args = {
+                    'rp_uuid': rp_uuid,
+                    'rc_str': rc_str,
+                }
+                LOG.warning(msg, msg_args)
+                return
+
+        msg = _LE("Failed to delete inventory for resource provider "
+                  "%(rp_uuid)s. Got error response: %(err)s")
+        msg_args = {
+            'rp_uuid': rp_uuid,
+            'err': r.text,
+        }
+        LOG.error(msg, msg_args)
+
     def update_resource_stats(self, compute_node):
         """Creates or updates stats for the supplied compute node.
 
@@ -368,7 +529,10 @@ class SchedulerReportClient(object):
         self._ensure_resource_provider(compute_node.uuid,
                                        compute_node.hypervisor_hostname)
         inv_data = _compute_node_to_inventory_dict(compute_node)
-        self._update_inventory(compute_node.uuid, inv_data)
+        if inv_data:
+            self._update_inventory(compute_node.uuid, inv_data)
+        else:
+            self._delete_inventory(compute_node.uuid)
 
     def _get_allocations_for_instance(self, rp_uuid, instance):
         url = '/allocations/%s' % instance.uuid
@@ -429,12 +593,15 @@ class SchedulerReportClient(object):
             LOG.info(_LI('Deleted allocation for instance %s'),
                      uuid)
         else:
-            LOG.warning(
-                _LW('Unable to delete allocation for instance '
-                    '%(uuid)s: (%(code)i %(text)s)'),
-                {'uuid': uuid,
-                 'code': r.status_code,
-                 'text': r.text})
+            # Check for 404 since we don't need to log a warning if we tried to
+            # delete something which doesn't actually exist.
+            if r.status_code != 404:
+                LOG.warning(
+                    _LW('Unable to delete allocation for instance '
+                        '%(uuid)s: (%(code)i %(text)s)'),
+                    {'uuid': uuid,
+                     'code': r.status_code,
+                     'text': r.text})
 
     def update_instance_allocation(self, compute_node, instance, sign):
         if sign > 0:

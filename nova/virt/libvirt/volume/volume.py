@@ -17,12 +17,13 @@
 """Volume drivers for libvirt."""
 
 from oslo_log import log as logging
-import six
+
 
 import nova.conf
 from nova import exception
 from nova.i18n import _LE
 from nova.i18n import _LW
+from nova import profiler
 from nova.virt.libvirt import config as vconfig
 import nova.virt.libvirt.driver
 from nova.virt.libvirt import host
@@ -35,6 +36,7 @@ CONF = nova.conf.CONF
 SHOULD_LOG_DISCARD_WARNING = True
 
 
+@profiler.trace_cls("volume_api")
 class LibvirtBaseVolumeDriver(object):
     """Base class for volume drivers."""
     def __init__(self, host, is_block_dev):
@@ -72,7 +74,7 @@ class LibvirtBaseVolumeDriver(object):
                          'read_iops_sec', 'write_iops_sec']
             specs = data['qos_specs']
             if isinstance(specs, dict):
-                for k, v in six.iteritems(specs):
+                for k, v in specs.items():
                     if k in tune_opts:
                         new_key = 'disk_' + k
                         setattr(conf, new_key, v)

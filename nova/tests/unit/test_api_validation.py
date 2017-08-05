@@ -26,6 +26,43 @@ from nova.api.validation import parameter_types
 from nova.api.validation import validators
 from nova import exception
 from nova import test
+from nova.tests.unit.api.openstack import fakes
+
+
+query_schema = {
+    'type': 'object',
+    'properties': {
+        'foo': parameter_types.single_param({'type': 'string',
+                                             'format': 'uuid'}),
+        'foos': parameter_types.multi_params({'type': 'string'})
+    },
+    'patternProperties': {
+        "^_": parameter_types.multi_params({'type': 'string'})},
+    'additionalProperties': True
+}
+
+
+class FakeQueryParametersController(object):
+
+    @validation.query_schema(query_schema, '2.3')
+    def get(self, req):
+        return list(set(req.GET.keys()))
+
+
+class RegexFormatFakeController(object):
+
+    schema = {
+        'type': 'object',
+        'properties': {
+            'foo': {
+                'format': 'regex',
+            },
+        },
+    }
+
+    @validation.schema(request_body_schema=schema)
+    def post(self, req, body):
+        return 'Validation succeeded.'
 
 
 class FakeRequest(object):
@@ -99,7 +136,7 @@ class APIValidationTestCase(test.NoDBTestCase):
         if not req:
             req = FakeRequest()
         try:
-            method(body=body, req=req,)
+            method(body=body, req=req)
         except exception.ValidationError as ex:
             self.assertEqual(400, ex.kwargs['code'])
             if not re.match(expected_detail, ex.kwargs['detail']):
@@ -201,6 +238,64 @@ class MicroversionsSchemaTestCase(APIValidationTestCase):
                   "'bar' is not of type 'integer'")
         self.check_validation_error(post, body={'foo': 'bar'},
                                     expected_detail=detail, req=req)
+
+
+class QueryParamsSchemaTestCase(test.NoDBTestCase):
+
+    def setUp(self):
+        super(QueryParamsSchemaTestCase, self).setUp()
+        self.controller = FakeQueryParametersController()
+
+    def test_validate_request(self):
+        req = fakes.HTTPRequest.blank("/tests?foo=%s" % fakes.FAKE_UUID)
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        self.assertEqual(['foo'], self.controller.get(req))
+
+    def test_validate_request_failed(self):
+        # parameter 'foo' expect a UUID
+        req = fakes.HTTPRequest.blank("/tests?foo=abc")
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        self.assertRaises(exception.ValidationError, self.controller.get, req)
+
+    def test_validate_request_with_multiple_values(self):
+        req = fakes.HTTPRequest.blank("/tests?foos=abc")
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        self.assertEqual(['foos'], self.controller.get(req))
+        req = fakes.HTTPRequest.blank("/tests?foos=abc&foos=def")
+        self.assertEqual(['foos'], self.controller.get(req))
+
+    def test_validate_request_with_multiple_values_fails(self):
+        req = fakes.HTTPRequest.blank(
+            "/tests?foo=%s&foo=%s" % (fakes.FAKE_UUID, fakes.FAKE_UUID))
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        self.assertRaises(exception.ValidationError, self.controller.get, req)
+
+    def test_strip_out_additional_properties(self):
+        req = fakes.HTTPRequest.blank(
+            "/tests?foos=abc&foo=%s&bar=123&-bar=456" % fakes.FAKE_UUID)
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        res = self.controller.get(req)
+        res.sort()
+        self.assertEqual(['foo', 'foos'], res)
+
+    def test_no_strip_out_additional_properties_when_not_match_version(self):
+        req = fakes.HTTPRequest.blank(
+            "/tests?foos=abc&foo=%s&bar=123&bar=456" % fakes.FAKE_UUID)
+        # The JSON-schema matches to the API version 2.3 and above. Request
+        # with version 2.1 to ensure there isn't no strip out for additional
+        # parameters when schema didn't match the request version.
+        req.api_version_request = api_version.APIVersionRequest("2.1")
+        res = self.controller.get(req)
+        res.sort()
+        self.assertEqual(['bar', 'foo', 'foos'], res)
+
+    def test_strip_out_correct_pattern_retained(self):
+        req = fakes.HTTPRequest.blank(
+            "/tests?foos=abc&foo=%s&bar=123&_foo_=456" % fakes.FAKE_UUID)
+        req.api_version_request = api_version.APIVersionRequest("2.3")
+        res = self.controller.get(req)
+        res.sort()
+        self.assertEqual(['_foo_', 'foo', 'foos'], res)
 
 
 class RequiredDisableTestCase(APIValidationTestCase):
@@ -1344,4 +1439,25 @@ class Base64TestCase(APIValidationTestCase):
         detail = ("Invalid input for field/attribute foo. "
                   "Value: %s. '%s' is not a 'base64'") % (value, value)
         self.check_validation_error(self.post, body={'foo': value},
+                                    expected_detail=detail)
+
+
+class RegexFormatTestCase(APIValidationTestCase):
+
+    def setUp(self):
+        super(APIValidationTestCase, self).setUp()
+        self.controller = RegexFormatFakeController()
+
+    def test_validate_regex(self):
+        req = fakes.HTTPRequest.blank("")
+        self.assertEqual('Validation succeeded.',
+                         self.controller.post(req, body={'foo': u'Myserver'}))
+
+    def test_validate_regex_fails(self):
+        value = 1
+        req = fakes.HTTPRequest.blank("")
+        detail = ("Invalid input for field/attribute foo. "
+                  "Value: %s. %s is not a 'regex'") % (value, value)
+        self.check_validation_error(self.controller.post, req=req,
+                                    body={'foo': value},
                                     expected_detail=detail)

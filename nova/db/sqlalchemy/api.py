@@ -31,6 +31,7 @@ from oslo_db.sqlalchemy import update_match
 from oslo_db.sqlalchemy import utils as sqlalchemyutils
 from oslo_log import log as logging
 from oslo_utils import excutils
+from oslo_utils import importutils
 from oslo_utils import timeutils
 from oslo_utils import uuidutils
 import six
@@ -68,6 +69,7 @@ from nova.i18n import _, _LI, _LE, _LW
 from nova import quota
 from nova import safe_utils
 
+profiler_sqlalchemy = importutils.try_import('osprofiler.sqlalchemy')
 
 CONF = nova.conf.CONF
 
@@ -109,6 +111,14 @@ def _context_manager_from_context(context):
 def configure(conf):
     main_context_manager.configure(**_get_db_conf(conf.database))
     api_context_manager.configure(**_get_db_conf(conf.api_database))
+
+    if profiler_sqlalchemy and CONF.profiler.enabled \
+            and CONF.profiler.trace_sqlalchemy:
+
+        main_context_manager.append_on_engine_create(
+            lambda eng: profiler_sqlalchemy.add_tracing(sa, eng, "db"))
+        api_context_manager.append_on_engine_create(
+            lambda eng: profiler_sqlalchemy.add_tracing(sa, eng, "db"))
 
 
 def create_context_manager(connection=None):
@@ -622,7 +632,7 @@ def _compute_node_select(context, filters=None, limit=None, marker=None):
         select = select.where(cn_tbl.c.id > marker)
     if limit is not None:
         select = select.limit(limit)
-    # Explictly order by id, so we're not dependent on the native sort
+    # Explicitly order by id, so we're not dependent on the native sort
     # order of the underlying DB.
     select = select.order_by(asc("id"))
     return select
@@ -2513,7 +2523,8 @@ def process_sort_params(sort_keys, sort_dirs,
 @pick_context_manager_reader_allow_async
 def instance_get_active_by_window_joined(context, begin, end=None,
                                          project_id=None, host=None,
-                                         columns_to_join=None):
+                                         columns_to_join=None, limit=None,
+                                         marker=None):
     """Return instances and joins that were active during window."""
     query = context.session.query(models.Instance)
 
@@ -2538,6 +2549,16 @@ def instance_get_active_by_window_joined(context, begin, end=None,
         query = query.filter_by(project_id=project_id)
     if host:
         query = query.filter_by(host=host)
+
+    if marker is not None:
+        try:
+            marker = _instance_get_by_uuid(
+                context.elevated(read_deleted='yes'), marker)
+        except exception.InstanceNotFound:
+            raise exception.MarkerNotFound(marker=marker)
+
+    query = sqlalchemyutils.paginate_query(
+        query, models.Instance, limit, ['project_id', 'uuid'], marker=marker)
 
     return _instances_fill_metadata(context, query.all(), manual_joins)
 
@@ -2731,7 +2752,7 @@ def _instance_update(context, instance_uuid, values, expected, original=None):
     else:
         # Coerce all single values to singleton lists
         expected = {k: [None] if v is None else sqlalchemyutils.to_list(v)
-                       for (k, v) in six.iteritems(expected)}
+                       for (k, v) in expected.items()}
 
     # Extract 'expected_' values from values dict, as these aren't actually
     # updates
@@ -2787,7 +2808,7 @@ def _instance_update(context, instance_uuid, values, expected, original=None):
 
         conflicts_expected = {}
         conflicts_actual = {}
-        for (field, expected_values) in six.iteritems(expected):
+        for (field, expected_values) in expected.items():
             actual = original[field]
             if actual not in expected_values:
                 conflicts_expected[field] = expected_values
@@ -4499,7 +4520,7 @@ def _security_group_ensure_default(context):
                                 context.user_id,
                                 'security_groups',
                                 1, 0,
-                                CONF.until_refresh,
+                                CONF.quota.until_refresh,
                                 context.session)
         else:
             usage.update({'in_use': int(usage.first().in_use) + 1})
@@ -6036,24 +6057,63 @@ def instance_fault_create(context, values):
 
 
 @pick_context_manager_reader
-def instance_fault_get_by_instance_uuids(context, instance_uuids):
-    """Get all instance faults for the provided instance_uuids."""
+def instance_fault_get_by_instance_uuids(context, instance_uuids,
+                                         latest=False):
+    """Get all instance faults for the provided instance_uuids.
+
+    :param instance_uuids: List of UUIDs of instances to grab faults for
+    :param latest: Optional boolean indicating we should only return the latest
+                   fault for the instance
+    """
     if not instance_uuids:
         return {}
 
-    rows = model_query(context, models.InstanceFault, read_deleted='no').\
-                       filter(models.InstanceFault.instance_uuid.in_(
-                           instance_uuids)).\
-                       order_by(desc("created_at"), desc("id")).\
-                       all()
+    faults_tbl = models.InstanceFault.__table__
+    # NOTE(rpodolyaka): filtering by instance_uuids is performed in both
+    # code branches below for the sake of a better query plan. On change,
+    # make sure to update the other one as well.
+    query = model_query(context, models.InstanceFault,
+                        [faults_tbl],
+                        read_deleted='no')
+
+    if latest:
+        # NOTE(jaypipes): We join instance_faults to a derived table of the
+        # latest faults per instance UUID. The SQL produced below looks like
+        # this:
+        #
+        #  SELECT instance_faults.*
+        #  FROM instance_faults
+        #  JOIN (
+        #    SELECT instance_uuid, MAX(id) AS max_id
+        #    FROM instance_faults
+        #    WHERE instance_uuid IN ( ... )
+        #    AND deleted = 0
+        #    GROUP BY instance_uuid
+        #  ) AS latest_faults
+        #    ON instance_faults.id = latest_faults.max_id;
+        latest_faults = model_query(
+            context, models.InstanceFault,
+            [faults_tbl.c.instance_uuid,
+             sql.func.max(faults_tbl.c.id).label('max_id')],
+            read_deleted='no'
+        ).filter(
+            faults_tbl.c.instance_uuid.in_(instance_uuids)
+        ).group_by(
+            faults_tbl.c.instance_uuid
+        ).subquery(name="latest_faults")
+
+        query = query.join(latest_faults,
+                           faults_tbl.c.id == latest_faults.c.max_id)
+    else:
+        query = query.filter(models.InstanceFault.instance_uuid.in_(
+                                        instance_uuids)).order_by(desc("id"))
 
     output = {}
     for instance_uuid in instance_uuids:
         output[instance_uuid] = []
 
-    for row in rows:
-        data = dict(row)
-        output[row['instance_uuid']].append(data)
+    for row in query:
+        output[row.instance_uuid].append(row._asdict())
 
     return output
 

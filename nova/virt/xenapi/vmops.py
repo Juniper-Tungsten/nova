@@ -588,15 +588,18 @@ class VMOps(object):
             # for neutron event regardless of whether or not it is
             # migrated to another host, if unplug VIFs locally, the
             # port status may not changed in neutron side and we
-            # cannot get the vif plug event from neturon
+            # cannot get the vif plug event from neutron
+            # rescue is True in rescued instance and the port in neutron side
+            # won't change, so we don't wait event from neutron
             timeout = CONF.vif_plugging_timeout
-            events = self._get_neutron_events(network_info,
-                                              power_on, first_boot)
+            events = self._get_neutron_events(network_info, power_on,
+                                              first_boot, rescue)
             try:
                 with self._virtapi.wait_for_instance_event(
                     instance, events, deadline=timeout,
                     error_callback=self._neutron_failed_callback):
-                    LOG.debug("wait for instance event:%s", events)
+                    LOG.debug("wait for instance event:%s", events,
+                              instance=instance)
                     setup_network_step(undo_mgr, vm_ref)
                     if rescue:
                         attach_orig_disks_step(undo_mgr, vm_ref)
@@ -632,11 +635,13 @@ class VMOps(object):
         if CONF.vif_plugging_is_fatal:
             raise exception.VirtualInterfaceCreateException()
 
-    def _get_neutron_events(self, network_info, power_on, first_boot):
+    def _get_neutron_events(self, network_info, power_on, first_boot, rescue):
         # Only get network-vif-plugged events with VIF's status is not active.
         # With VIF whose status is active, neutron may not notify such event.
+        # Don't get network-vif-plugged events from rescued VM or migrated VM
         timeout = CONF.vif_plugging_timeout
-        if (utils.is_neutron() and power_on and timeout and first_boot):
+        if (utils.is_neutron() and power_on and timeout and first_boot and
+                not rescue):
             return [('network-vif-plugged', vif['id'])
                 for vif in network_info if vif.get('active', True) is False]
         else:
@@ -664,7 +669,7 @@ class VMOps(object):
             vbd_refs.append(vbd_ref)
 
         # Attach original ephemeral disks
-        for userdevice, vdi_ref in six.iteritems(orig_vdi_refs):
+        for userdevice, vdi_ref in orig_vdi_refs.items():
             if userdevice >= DEVICE_EPHEMERAL:
                 vbd_ref = vm_utils.create_vbd(self._session, vm_ref, vdi_ref,
                                               userdevice, bootable=False)
@@ -789,7 +794,7 @@ class VMOps(object):
             ephemeral_vdis = vdis.get('ephemerals')
             if ephemeral_vdis:
                 # attach existing (migrated) ephemeral disks
-                for userdevice, ephemeral_vdi in six.iteritems(ephemeral_vdis):
+                for userdevice, ephemeral_vdi in ephemeral_vdis.items():
                     vm_utils.create_vbd(self._session, vm_ref,
                                         ephemeral_vdi['ref'],
                                         userdevice, bootable=False)
@@ -1796,7 +1801,7 @@ class VMOps(object):
             if dom is None or dom not in counters:
                 continue
             vifs_bw = bw.setdefault(name, {})
-            for vif_num, vif_data in six.iteritems(counters[dom]):
+            for vif_num, vif_data in counters[dom].items():
                 mac = vif_map[vif_num]
                 vif_data['mac_address'] = mac
                 vifs_bw[mac] = vif_data
@@ -2484,3 +2489,47 @@ class VMOps(object):
                     volume_utils.forget_sr(self._session, sr_ref)
 
         return sr_uuid_map
+
+    def attach_interface(self, instance, vif):
+        LOG.debug("Attach interface, vif info: %s", vif, instance=instance)
+        vm_ref = self._get_vm_opaque_ref(instance)
+
+        @utils.synchronized('xenapi-vif-' + vm_ref)
+        def _attach_interface(instance, vm_ref, vif):
+            # find device for use with XenAPI
+            allowed_devices = self._session.VM.get_allowed_VIF_devices(vm_ref)
+            if allowed_devices is None or len(allowed_devices) == 0:
+                raise exception.InterfaceAttachFailed(
+                    _('attach network interface %(vif_id)s to instance '
+                      '%(instance_uuid)s failed, no allowed devices.'),
+                    vif_id=vif['id'], instance_uuid=instance.uuid)
+            device = allowed_devices[0]
+            try:
+                # plug VIF
+                self.vif_driver.plug(instance, vif, vm_ref=vm_ref,
+                                     device=device)
+                # set firewall filtering
+                self.firewall_driver.setup_basic_filtering(instance, [vif])
+            except exception.NovaException:
+                with excutils.save_and_reraise_exception():
+                    LOG.exception(_LE('attach network interface %s failed.'),
+                                  vif['id'], instance=instance)
+                    try:
+                        self.vif_driver.unplug(instance, vif, vm_ref)
+                    except exception.NovaException:
+                        # if unplug failed, no need to raise exception
+                        LOG.warning(_LW('Unplug VIF %s failed.'),
+                                    vif['id'], instance=instance)
+
+        _attach_interface(instance, vm_ref, vif)
+
+    def detach_interface(self, instance, vif):
+        LOG.debug("Detach interface, vif info: %s", vif, instance=instance)
+
+        try:
+            vm_ref = self._get_vm_opaque_ref(instance)
+            self.vif_driver.unplug(instance, vif, vm_ref)
+        except exception.NovaException:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE('detach network interface %s failed.'),
+                              vif['id'], instance=instance)

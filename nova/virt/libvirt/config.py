@@ -76,6 +76,8 @@ class LibvirtConfigObject(object):
     def to_xml(self, pretty_print=True):
         root = self.format_dom()
         xml_str = etree.tostring(root, pretty_print=pretty_print)
+        if six.PY3 and isinstance(xml_str, six.binary_type):
+            xml_str = xml_str.decode("utf-8")
         return xml_str
 
 
@@ -1254,7 +1256,7 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
 
         if self.vlan and self.net_type in ("direct", "hostdev"):
             vlan_elem = etree.Element("vlan")
-            tag_elem = etree.Element("tag", id=self.vlan)
+            tag_elem = etree.Element("tag", id=str(self.vlan))
             vlan_elem.append(tag_elem)
             dev.append(vlan_elem)
 
@@ -1347,7 +1349,7 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
                 # id in the vlan attribute.
                 for sub in c.getchildren():
                     if sub.tag == 'tag' and sub.get('id'):
-                        self.vlan = sub.get('id')
+                        self.vlan = int(sub.get('id'))
                         break
             elif c.tag == 'virtualport':
                 self.vporttype = c.get('type')

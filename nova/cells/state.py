@@ -63,7 +63,7 @@ class CellState(object):
 
     def update_db_info(self, cell_db_info):
         """Update cell credentials from db."""
-        self.db_info = {k: v for k, v in six.iteritems(cell_db_info)
+        self.db_info = {k: v for k, v in cell_db_info.items()
                         if k != 'name'}
 
     def update_capabilities(self, cell_metadata):
@@ -276,11 +276,9 @@ class CellStateManager(base.Base):
 
                 chost = compute_hosts[host]
                 chost['free_ram_mb'] += max(0, compute.free_ram_mb)
-                free_disk = compute.free_disk_gb * 1024
-                chost['free_disk_mb'] += max(0, free_disk)
+                chost['free_disk_mb'] += max(0, compute.free_disk_gb) * 1024
                 chost['total_ram_mb'] += max(0, compute.memory_mb)
-                total_disk = compute.local_gb * 1024
-                chost['total_disk_mb'] += max(0, total_disk)
+                chost['total_disk_mb'] += max(0, compute.local_gb) * 1024
 
         _get_compute_hosts()
         if not compute_hosts:

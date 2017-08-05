@@ -827,27 +827,6 @@ class IronicDriverTestCase(test.NoDBTestCase):
         self.assertEqual(hardware.InstanceInfo(state=nova_states.NOSTATE),
                          result)
 
-    @mock.patch.object(FAKE_CLIENT, 'node')
-    def test_macs_for_instance(self, mock_node):
-        node = ironic_utils.get_test_node()
-        port = ironic_utils.get_test_port()
-        mock_node.get.return_value = node
-        mock_node.list_ports.return_value = [port]
-        instance = fake_instance.fake_instance_obj(self.ctx,
-                                                   node=node.uuid)
-        result = self.driver.macs_for_instance(instance)
-        self.assertEqual(set([port.address]), result)
-        mock_node.list_ports.assert_called_once_with(node.uuid)
-
-    @mock.patch.object(FAKE_CLIENT.node, 'get')
-    def test_macs_for_instance_http_not_found(self, mock_get):
-        mock_get.side_effect = ironic_exception.NotFound()
-
-        instance = fake_instance.fake_instance_obj(
-                                  self.ctx, node=uuidutils.generate_uuid())
-        result = self.driver.macs_for_instance(instance)
-        self.assertIsNone(result)
-
     @mock.patch.object(objects.Instance, 'save')
     @mock.patch.object(loopingcall, 'FixedIntervalLoopingCall')
     @mock.patch.object(FAKE_CLIENT, 'node')
@@ -969,6 +948,8 @@ class IronicDriverTestCase(test.NoDBTestCase):
                            'value': instance.display_name, 'op': 'add'},
                           {'path': '/instance_info/vcpus', 'op': 'add',
                            'value': str(instance.flavor.vcpus)},
+                          {'path': '/instance_info/nova_host_id', 'op': 'add',
+                           'value': instance.host},
                           {'path': '/instance_info/memory_mb', 'op': 'add',
                            'value': str(instance.flavor.memory_mb)},
                           {'path': '/instance_info/local_gb', 'op': 'add',
@@ -1355,27 +1336,47 @@ class IronicDriverTestCase(test.NoDBTestCase):
         mock_looping.return_value = fake_looping_call
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node.uuid)
-        self.driver.reboot(self.ctx, instance, None, None)
+        self.driver.reboot(self.ctx, instance, None, 'HARD')
         mock_sp.assert_called_once_with(node.uuid, 'reboot')
 
     @mock.patch.object(loopingcall, 'FixedIntervalLoopingCall')
     @mock.patch.object(ironic_driver.IronicDriver,
                        '_validate_instance_and_node')
     @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
-    def test_power_off(self, mock_sp, fake_validate, mock_looping):
-        self._test_power_on_off(mock_sp, fake_validate, mock_looping,
-                                method_name='power_off')
+    def test_reboot_soft(self, mock_sp, fake_validate, mock_looping):
+        node = ironic_utils.get_test_node()
+        fake_validate.side_effect = [node, node]
+
+        fake_looping_call = FakeLoopingCall()
+        mock_looping.return_value = fake_looping_call
+        instance = fake_instance.fake_instance_obj(self.ctx,
+                                                   node=node.uuid)
+        self.driver.reboot(self.ctx, instance, None, 'SOFT')
+        mock_sp.assert_called_once_with(node.uuid, 'reboot', soft=True)
+
+    @mock.patch.object(loopingcall, 'FixedIntervalLoopingCall')
+    @mock.patch.object(ironic_driver.IronicDriver,
+                       '_validate_instance_and_node')
+    @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
+    def test_reboot_soft_not_supported(self, mock_sp, fake_validate,
+                                       mock_looping):
+        node = ironic_utils.get_test_node()
+        fake_validate.side_effect = [node, node]
+        mock_sp.side_effect = [ironic_exception.BadRequest(), None]
+
+        fake_looping_call = FakeLoopingCall()
+        mock_looping.return_value = fake_looping_call
+        instance = fake_instance.fake_instance_obj(self.ctx,
+                                                   node=node.uuid)
+        self.driver.reboot(self.ctx, instance, None, 'SOFT')
+        mock_sp.assert_has_calls([mock.call(node.uuid, 'reboot', soft=True),
+                                  mock.call(node.uuid, 'reboot')])
 
     @mock.patch.object(loopingcall, 'FixedIntervalLoopingCall')
     @mock.patch.object(ironic_driver.IronicDriver,
                        '_validate_instance_and_node')
     @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
     def test_power_on(self, mock_sp, fake_validate, mock_looping):
-        self._test_power_on_off(mock_sp, fake_validate, mock_looping,
-                                method_name='power_on')
-
-    def _test_power_on_off(self, mock_sp, fake_validate, mock_looping,
-                           method_name=None):
         node = ironic_utils.get_test_node()
         fake_validate.side_effect = [node, node]
 
@@ -1383,40 +1384,80 @@ class IronicDriverTestCase(test.NoDBTestCase):
         mock_looping.return_value = fake_looping_call
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=self.instance_uuid)
-        # Call the method under test here
-        if method_name == 'power_on':
-            self.driver.power_on(self.ctx, instance,
-                                 utils.get_test_network_info())
-            mock_sp.assert_called_once_with(node.uuid, 'on')
-        elif method_name == 'power_off':
-            self.driver.power_off(instance)
-            mock_sp.assert_called_once_with(node.uuid, 'off')
+        self.driver.power_on(self.ctx, instance,
+                             utils.get_test_network_info())
+        mock_sp.assert_called_once_with(node.uuid, 'on')
 
-    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
-    @mock.patch.object(ironic_driver.IronicDriver, '_unplug_vifs')
-    def test_plug_vifs_with_port(self, mock_uvifs, mock_port_udt, mock_lp):
+    @mock.patch.object(loopingcall, 'FixedIntervalLoopingCall')
+    def _test_power_off(self, mock_looping, timeout=0):
+        fake_looping_call = FakeLoopingCall()
+        mock_looping.return_value = fake_looping_call
+        instance = fake_instance.fake_instance_obj(self.ctx,
+                                                   node=self.instance_uuid)
+        self.driver.power_off(instance, timeout)
+
+    @mock.patch.object(ironic_driver.IronicDriver,
+                       '_validate_instance_and_node')
+    @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
+    def test_power_off(self, mock_sp, fake_validate):
+        node = ironic_utils.get_test_node()
+        fake_validate.side_effect = [node, node]
+
+        self._test_power_off()
+        mock_sp.assert_called_once_with(node.uuid, 'off')
+
+    @mock.patch.object(ironic_driver.IronicDriver,
+                       '_validate_instance_and_node')
+    @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
+    def test_power_off_soft(self, mock_sp, fake_validate):
+        node = ironic_utils.get_test_node()
+        power_off_node = ironic_utils.get_test_node(
+            power_state=ironic_states.POWER_OFF)
+        fake_validate.side_effect = [node, power_off_node]
+
+        self._test_power_off(timeout=30)
+        mock_sp.assert_called_once_with(node.uuid, 'off', soft=True,
+                                        timeout=30)
+
+    @mock.patch.object(ironic_driver.IronicDriver,
+                       '_validate_instance_and_node')
+    @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
+    def test_power_off_soft_exception(self, mock_sp, fake_validate):
+        node = ironic_utils.get_test_node()
+        fake_validate.side_effect = [node, node]
+        mock_sp.side_effect = [ironic_exception.BadRequest(), None]
+
+        self._test_power_off(timeout=30)
+        mock_sp.assert_has_calls([mock.call(node.uuid, 'off', soft=True,
+                                            timeout=30).
+                                  mock.call(node.uuid, 'off')])
+
+    @mock.patch.object(ironic_driver.IronicDriver,
+                       '_validate_instance_and_node')
+    @mock.patch.object(FAKE_CLIENT.node, 'set_power_state')
+    def test_power_off_soft_not_stopped(self, mock_sp, fake_validate):
+        node = ironic_utils.get_test_node()
+        fake_validate.side_effect = [node, node]
+
+        self._test_power_off(timeout=30)
+        mock_sp.assert_has_calls([mock.call(node.uuid, 'off', soft=True,
+                                            timeout=30).
+                                  mock.call(node.uuid, 'off')])
+
+    @mock.patch.object(FAKE_CLIENT.node, 'vif_attach')
+    def test_plug_vifs_with_port(self, mock_vatt):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        # make the address be consistent with network_info's
-        port = ironic_utils.get_test_port(address=utils.FAKE_VIF_MAC)
-
-        mock_lp.return_value = [port]
 
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid)
         network_info = utils.get_test_network_info()
+        vif_id = six.text_type(network_info[0]['id'])
 
-        port_id = six.text_type(network_info[0]['id'])
-        expected_patch = [{'op': 'add',
-                           'path': '/extra/vif_port_id',
-                           'value': port_id}]
         self.driver._plug_vifs(node, instance, network_info)
 
         # asserts
-        mock_uvifs.assert_called_once_with(node, instance, network_info)
-        mock_lp.assert_called_once_with(node_uuid)
-        mock_port_udt.assert_called_with(port.uuid, expected_patch)
+        mock_vatt.assert_called_with(node.uuid, vif_id)
 
     @mock.patch.object(FAKE_CLIENT.node, 'get')
     @mock.patch.object(ironic_driver.IronicDriver, '_plug_vifs')
@@ -1434,82 +1475,67 @@ class IronicDriverTestCase(test.NoDBTestCase):
                                          fields=ironic_driver._NODE_FIELDS)
         mock__plug_vifs.assert_called_once_with(node, instance, network_info)
 
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
-    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
-    @mock.patch.object(ironic_driver.IronicDriver, '_unplug_vifs')
-    def test_plug_vifs_multiple_ports(self, mock_uvifs, mock_lp,
-                                       mock_port_udt):
+    @mock.patch.object(FAKE_CLIENT.node, 'vif_attach')
+    def test_plug_vifs_multiple_ports(self, mock_vatt):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        first_ironic_port_uuid = 'aaaaaaaa-bbbb-1111-dddd-eeeeeeeeeeee'
-        first_port = ironic_utils.get_test_port(uuid=first_ironic_port_uuid,
-                                                node_uuid=node_uuid,
-                                                address='11:FF:FF:FF:FF:FF')
-        second_ironic_port_uuid = 'aaaaaaaa-bbbb-2222-dddd-eeeeeeeeeeee'
-        second_port = ironic_utils.get_test_port(uuid=second_ironic_port_uuid,
-                                                 node_uuid=node_uuid,
-                                                 address='22:FF:FF:FF:FF:FF')
-        mock_lp.return_value = [second_port, first_port]
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid)
         first_vif_id = 'aaaaaaaa-vv11-cccc-dddd-eeeeeeeeeeee'
         second_vif_id = 'aaaaaaaa-vv22-cccc-dddd-eeeeeeeeeeee'
-        first_vif = ironic_utils.get_test_vif(
-                                            address='22:FF:FF:FF:FF:FF',
-                                            id=second_vif_id)
-        second_vif = ironic_utils.get_test_vif(
-                                            address='11:FF:FF:FF:FF:FF',
-                                            id=first_vif_id)
+        first_vif = ironic_utils.get_test_vif(address='22:FF:FF:FF:FF:FF',
+                                              id=first_vif_id)
+        second_vif = ironic_utils.get_test_vif(address='11:FF:FF:FF:FF:FF',
+                                               id=second_vif_id)
         network_info = [first_vif, second_vif]
         self.driver._plug_vifs(node, instance, network_info)
 
         # asserts
-        mock_uvifs.assert_called_once_with(node, instance, network_info)
-        mock_lp.assert_called_once_with(node_uuid)
-        calls = (mock.call(first_ironic_port_uuid,
-                           [{'op': 'add', 'path': '/extra/vif_port_id',
-                             'value': first_vif_id}]),
-                 mock.call(second_ironic_port_uuid,
-                           [{'op': 'add', 'path': '/extra/vif_port_id',
-                             'value': second_vif_id}]))
-        mock_port_udt.assert_has_calls(calls, any_order=True)
+        calls = (mock.call(node.uuid, first_vif_id),
+                 mock.call(node.uuid, second_vif_id))
+        mock_vatt.assert_has_calls(calls, any_order=True)
 
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
-    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
-    @mock.patch.object(ironic_driver.IronicDriver, '_unplug_vifs')
-    def test_plug_vifs_count_mismatch(self, mock_uvifs, mock_lp,
-                                      mock_port_udt):
+    @mock.patch.object(FAKE_CLIENT, 'node')
+    def test_plug_vifs_failure(self, mock_node):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        port = ironic_utils.get_test_port()
-
-        mock_lp.return_value = [port]
-
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid)
-        # len(network_info) > len(ports)
-        network_info = (utils.get_test_network_info() +
-                        utils.get_test_network_info())
-        self.assertRaises(exception.NovaException,
+        first_vif_id = 'aaaaaaaa-vv11-cccc-dddd-eeeeeeeeeeee'
+        second_vif_id = 'aaaaaaaa-vv22-cccc-dddd-eeeeeeeeeeee'
+        first_vif = ironic_utils.get_test_vif(address='22:FF:FF:FF:FF:FF',
+                                              id=first_vif_id)
+        second_vif = ironic_utils.get_test_vif(address='11:FF:FF:FF:FF:FF',
+                                               id=second_vif_id)
+        mock_node.vif_attach.side_effect = [None,
+                                            ironic_exception.BadRequest()]
+        network_info = [first_vif, second_vif]
+        self.assertRaises(exception.VirtualInterfacePlugException,
                           self.driver._plug_vifs, node, instance,
                           network_info)
 
-        # asserts
-        mock_uvifs.assert_called_once_with(node, instance, network_info)
-        mock_lp.assert_called_once_with(node_uuid)
-        # assert port.update() was not called
-        self.assertFalse(mock_port_udt.called)
-
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
-    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
-    @mock.patch.object(ironic_driver.IronicDriver, '_unplug_vifs')
-    def test_plug_vifs_no_network_info(self, mock_uvifs, mock_lp,
-                                       mock_port_udt):
+    @mock.patch.object(FAKE_CLIENT, 'node')
+    def test_plug_vifs_already_attached(self, mock_node):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        port = ironic_utils.get_test_port()
+        instance = fake_instance.fake_instance_obj(self.ctx,
+                                                   node=node_uuid)
+        first_vif_id = 'aaaaaaaa-vv11-cccc-dddd-eeeeeeeeeeee'
+        second_vif_id = 'aaaaaaaa-vv22-cccc-dddd-eeeeeeeeeeee'
+        first_vif = ironic_utils.get_test_vif(address='22:FF:FF:FF:FF:FF',
+                                              id=first_vif_id)
+        second_vif = ironic_utils.get_test_vif(address='11:FF:FF:FF:FF:FF',
+                                               id=second_vif_id)
+        mock_node.vif_attach.side_effect = [ironic_exception.Conflict(),
+                                            None]
+        network_info = [first_vif, second_vif]
+        self.driver._plug_vifs(node, instance, network_info)
+        self.assertEqual(2, mock_node.vif_attach.call_count)
 
-        mock_lp.return_value = [port]
+    @mock.patch.object(FAKE_CLIENT.node, 'vif_attach')
+    def test_plug_vifs_no_network_info(self, mock_vatt):
+        node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        node = ironic_utils.get_test_node(uuid=node_uuid)
 
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid)
@@ -1517,60 +1543,45 @@ class IronicDriverTestCase(test.NoDBTestCase):
         self.driver._plug_vifs(node, instance, network_info)
 
         # asserts
-        mock_uvifs.assert_called_once_with(node, instance, network_info)
-        mock_lp.assert_called_once_with(node_uuid)
-        # assert port.update() was not called
-        self.assertFalse(mock_port_udt.called)
+        self.assertFalse(mock_vatt.called)
 
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
     @mock.patch.object(FAKE_CLIENT, 'node')
-    def test_unplug_vifs(self, mock_node, mock_update):
+    def test_unplug_vifs(self, mock_node):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        port = ironic_utils.get_test_port(extra={'vif_port_id': 'fake-vif'})
-
         mock_node.get.return_value = node
-        mock_node.list_ports.return_value = [port]
 
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid)
-        expected_patch = [{'op': 'remove', 'path':
-                           '/extra/vif_port_id'}]
-        self.driver.unplug_vifs(instance,
-                                utils.get_test_network_info())
+        network_info = utils.get_test_network_info()
+        vif_id = six.text_type(network_info[0]['id'])
+        self.driver.unplug_vifs(instance, network_info)
 
         # asserts
         mock_node.get.assert_called_once_with(
             node_uuid, fields=ironic_driver._NODE_FIELDS)
-        mock_node.list_ports.assert_called_once_with(node_uuid, detail=True)
-        mock_update.assert_called_once_with(port.uuid, expected_patch)
+        mock_node.vif_detach.assert_called_once_with(node.uuid, vif_id)
 
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
     @mock.patch.object(FAKE_CLIENT, 'node')
-    def test_unplug_vifs_port_not_associated(self, mock_node, mock_update):
+    def test_unplug_vifs_port_not_associated(self, mock_node):
         node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         node = ironic_utils.get_test_node(uuid=node_uuid)
-        port = ironic_utils.get_test_port(extra={})
 
         mock_node.get.return_value = node
-        mock_node.list_ports.return_value = [port]
         instance = fake_instance.fake_instance_obj(self.ctx, node=node_uuid)
-        self.driver.unplug_vifs(instance, utils.get_test_network_info())
+        network_info = utils.get_test_network_info()
+        self.driver.unplug_vifs(instance, network_info)
 
         mock_node.get.assert_called_once_with(
             node_uuid, fields=ironic_driver._NODE_FIELDS)
-        mock_node.list_ports.assert_called_once_with(node_uuid, detail=True)
-        # assert port.update() was not called
-        self.assertFalse(mock_update.called)
+        self.assertEqual(len(network_info), mock_node.vif_detach.call_count)
 
-    @mock.patch.object(FAKE_CLIENT.port, 'update')
-    def test_unplug_vifs_no_network_info(self, mock_update):
+    @mock.patch.object(FAKE_CLIENT.node, 'vif_detach')
+    def test_unplug_vifs_no_network_info(self, mock_vdet):
         instance = fake_instance.fake_instance_obj(self.ctx)
         network_info = []
         self.driver.unplug_vifs(instance, network_info)
-
-        # assert port.update() was not called
-        self.assertFalse(mock_update.called)
+        self.assertFalse(mock_vdet.called)
 
     @mock.patch.object(firewall.NoopFirewallDriver, 'unfilter_instance',
                        create=True)
@@ -1697,33 +1708,19 @@ class IronicDriverTestCase(test.NoDBTestCase):
                 detach_block_devices=None, attach_block_devices=None)
 
     @mock.patch.object(FAKE_CLIENT.node, 'get')
-    def _test_network_binding_host_id(self, network_interface, mock_get):
+    def test_network_binding_host_id(self, mock_get):
         node_uuid = uuidutils.generate_uuid()
         hostname = 'ironic-compute'
         instance = fake_instance.fake_instance_obj(self.ctx,
                                                    node=node_uuid,
                                                    host=hostname)
-        if network_interface == 'neutron':
-            expected = None
-        else:
-            expected = hostname
         node = ironic_utils.get_test_node(uuid=node_uuid,
                                           instance_uuid=self.instance_uuid,
                                           instance_type_id=5,
-                                          network_interface=network_interface)
+                                          network_interface='flat')
         mock_get.return_value = node
-
         host_id = self.driver.network_binding_host_id(self.ctx, instance)
-        self.assertEqual(expected, host_id)
-
-    def test_network_binding_host_id_neutron(self):
-        self._test_network_binding_host_id('neutron')
-
-    def test_network_binding_host_id_flat(self):
-        self._test_network_binding_host_id('flat')
-
-    def test_network_binding_host_id_noop(self):
-        self._test_network_binding_host_id('noop')
+        self.assertIsNone(host_id)
 
 
 @mock.patch.object(instance_metadata, 'InstanceMetadata')
@@ -1748,11 +1745,15 @@ class IronicDriverGenerateConfigDriveTestCase(test.NoDBTestCase):
         mock_instance_meta.return_value = 'fake-instance'
         mock_make_drive = mock.MagicMock(make_drive=lambda *_: None)
         mock_cd_builder.return_value.__enter__.return_value = mock_make_drive
+        network_metadata_mock = mock.Mock()
+        self.driver._get_network_metadata = network_metadata_mock
         self.driver._generate_configdrive(None, self.instance,
                                           self.node, self.network_info)
         mock_cd_builder.assert_called_once_with(instance_md='fake-instance')
-        mock_instance_meta.assert_called_once_with(self.instance,
-            network_info=self.network_info, extra_md={}, content=None,
+        mock_instance_meta.assert_called_once_with(
+            self.instance, content=None, extra_md={},
+            network_info=self.network_info,
+            network_metadata=network_metadata_mock.return_value,
             request_context=None)
 
     def test_generate_configdrive_fail(self, mock_cd_builder,
@@ -1762,15 +1763,97 @@ class IronicDriverGenerateConfigDriveTestCase(test.NoDBTestCase):
         mock_instance_meta.return_value = 'fake-instance'
         mock_make_drive = mock.MagicMock(make_drive=lambda *_: None)
         mock_cd_builder.return_value.__enter__.return_value = mock_make_drive
+        network_metadata_mock = mock.Mock()
+        self.driver._get_network_metadata = network_metadata_mock
 
         self.assertRaises(exception.ConfigDriveMountFailed,
                           self.driver._generate_configdrive, None,
                           self.instance, self.node, self.network_info)
 
         mock_cd_builder.assert_called_once_with(instance_md='fake-instance')
-        mock_instance_meta.assert_called_once_with(self.instance,
-            network_info=self.network_info, extra_md={}, content=None,
+        mock_instance_meta.assert_called_once_with(
+            self.instance, content=None, extra_md={},
+            network_info=self.network_info,
+            network_metadata=network_metadata_mock.return_value,
             request_context=None)
+
+    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
+    @mock.patch.object(FAKE_CLIENT.portgroup, 'list')
+    def _test_generate_network_metadata(self, mock_portgroups, mock_ports,
+                                        address=None, vif_internal_info=True):
+        internal_info = ({'tenant_vif_port_id': utils.FAKE_VIF_UUID}
+                         if vif_internal_info else {})
+        extra = ({'vif_port_id': utils.FAKE_VIF_UUID}
+                 if not vif_internal_info else {})
+        portgroup = ironic_utils.get_test_portgroup(
+            node_uuid=self.node.uuid, address=address,
+            extra=extra, internal_info=internal_info,
+            properties={'bond_miimon': 100, 'xmit_hash_policy': 'layer3+4'}
+        )
+        port1 = ironic_utils.get_test_port(uuid=uuidutils.generate_uuid(),
+                                           node_uuid=self.node.uuid,
+                                           address='00:00:00:00:00:01',
+                                           portgroup_uuid=portgroup.uuid)
+        port2 = ironic_utils.get_test_port(uuid=uuidutils.generate_uuid(),
+                                           node_uuid=self.node.uuid,
+                                           address='00:00:00:00:00:02',
+                                           portgroup_uuid=portgroup.uuid)
+        mock_ports.return_value = [port1, port2]
+        mock_portgroups.return_value = [portgroup]
+
+        metadata = self.driver._get_network_metadata(self.node,
+                                                     self.network_info)
+
+        pg_vif = metadata['links'][0]
+        self.assertEqual('bond', pg_vif['type'])
+        self.assertEqual('active-backup', pg_vif['bond_mode'])
+        self.assertEqual(address if address else utils.FAKE_VIF_MAC,
+                         pg_vif['ethernet_mac_address'])
+        self.assertEqual('layer3+4',
+                         pg_vif['bond_xmit_hash_policy'])
+        self.assertEqual(100, pg_vif['bond_miimon'])
+        self.assertEqual([port1.uuid, port2.uuid],
+                         pg_vif['bond_links'])
+        self.assertEqual([{'id': port1.uuid, 'type': 'phy',
+                           'ethernet_mac_address': port1.address},
+                          {'id': port2.uuid, 'type': 'phy',
+                           'ethernet_mac_address': port2.address}],
+                         metadata['links'][1:])
+        # assert there are no duplicate links
+        link_ids = [link['id'] for link in metadata['links']]
+        self.assertEqual(len(set(link_ids)), len(link_ids),
+                         'There are duplicate link IDs: %s' % link_ids)
+
+    def test_generate_network_metadata_with_pg_address(self, mock_cd_builder,
+                                       mock_instance_meta):
+        self._test_generate_network_metadata(address='00:00:00:00:00:00')
+
+    def test_generate_network_metadata_no_pg_address(self, mock_cd_builder,
+                                                     mock_instance_meta):
+        self._test_generate_network_metadata()
+
+    def test_generate_network_metadata_vif_in_extra(self, mock_cd_builder,
+                                                    mock_instance_meta):
+        self._test_generate_network_metadata(vif_internal_info=False)
+
+    @mock.patch.object(FAKE_CLIENT.node, 'list_ports')
+    @mock.patch.object(FAKE_CLIENT.portgroup, 'list')
+    def test_generate_network_metadata_ports_only(self, mock_portgroups,
+                                                  mock_ports, mock_cd_builder,
+                                                  mock_instance_meta):
+        address = self.network_info[0]['address']
+        port = ironic_utils.get_test_port(
+            node_uuid=self.node.uuid, address=address,
+            internal_info={'tenant_vif_port_id': utils.FAKE_VIF_UUID})
+        mock_ports.return_value = [port]
+        mock_portgroups.return_value = []
+
+        metadata = self.driver._get_network_metadata(self.node,
+                                                     self.network_info)
+
+        self.assertEqual(port.address,
+                         metadata['links'][0]['ethernet_mac_address'])
+        self.assertEqual('phy', metadata['links'][0]['type'])
 
 
 class HashRingTestCase(test.NoDBTestCase):

@@ -509,23 +509,23 @@ class LibvirtDriver(driver.ComputeDriver):
             guestfs.force_tcg()
 
         if not self._host.has_min_version(MIN_LIBVIRT_VERSION):
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _('Nova requires libvirt version %s or greater.') %
                 self._version_to_string(MIN_LIBVIRT_VERSION))
 
         if (CONF.libvirt.virt_type in ("qemu", "kvm") and
             not self._host.has_min_version(hv_ver=MIN_QEMU_VERSION)):
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _('Nova requires QEMU version %s or greater.') %
                 self._version_to_string(MIN_QEMU_VERSION))
 
         if CONF.libvirt.virt_type == 'parallels':
             if not self._host.has_min_version(hv_ver=MIN_VIRTUOZZO_VERSION):
-                raise exception.NovaException(
+                raise exception.InternalError(
                     _('Nova requires Virtuozzo version %s or greater.') %
                     self._version_to_string(MIN_VIRTUOZZO_VERSION))
             if not self._host.has_min_version(MIN_LIBVIRT_VIRTUOZZO_VERSION):
-                raise exception.NovaException(
+                raise exception.InternalError(
                     _('Running Nova with parallels virt_type requires '
                       'libvirt version %s') %
                     self._version_to_string(MIN_LIBVIRT_VIRTUOZZO_VERSION))
@@ -554,7 +554,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 not self._host.has_min_version(
                                         MIN_LIBVIRT_OTHER_ARCH.get(kvm_arch),
                                         MIN_QEMU_OTHER_ARCH.get(kvm_arch))):
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _('Running Nova with qemu/kvm virt_type on %(arch)s '
                   'requires libvirt version %(libvirt_ver)s and '
                   'qemu version %(qemu_ver)s, or greater') %
@@ -681,12 +681,11 @@ class LibvirtDriver(driver.ComputeDriver):
 
     @staticmethod
     def _live_migration_uri(dest):
-        # Only Xen and QEMU support live migration, see
-        # https://libvirt.org/migration.html#scenarios for reference
         uris = {
             'kvm': 'qemu+tcp://%s/system',
             'qemu': 'qemu+tcp://%s/system',
             'xen': 'xenmigr://%s/system',
+            'parallels': 'parallels+tcp://%s/system',
         }
         virt_type = CONF.libvirt.virt_type
         uri = CONF.libvirt.live_migration_uri or uris.get(virt_type)
@@ -717,7 +716,7 @@ class LibvirtDriver(driver.ComputeDriver):
         try:
             self._host.get_guest(instance)
             return True
-        except exception.NovaException:
+        except exception.InternalError:
             return False
 
     def list_instances(self):
@@ -948,9 +947,9 @@ class LibvirtDriver(driver.ComputeDriver):
                 retry = False
 
         # FIXME(wangpan): if the instance is booted again here, such as the
-        #                 the soft reboot operation boot it here, it will
-        #                 become "running deleted", should we check and destroy
-        #                 it at the end of this method?
+        #                 soft reboot operation boot it here, it will become
+        #                 "running deleted", should we check and destroy it
+        #                 at the end of this method?
 
         # NOTE(vish): we disconnect from volumes regardless
         block_device_mapping = driver.block_device_info_get_mapping(
@@ -1317,20 +1316,20 @@ class LibvirtDriver(driver.ComputeDriver):
             state = guest.get_power_state(self._host)
             live = state in (power_state.RUNNING, power_state.PAUSED)
 
+            # The volume must be detached from the VM before disconnecting it
+            # from its encryptor. Otherwise, the encryptor may report that the
+            # volume is still in use.
             wait_for_detach = guest.detach_device_with_retry(guest.get_disk,
                                                              disk_dev,
                                                              persistent=True,
                                                              live=live)
+            wait_for_detach()
 
             if encryption:
-                # The volume must be detached from the VM before
-                # disconnecting it from its encryptor. Otherwise, the
-                # encryptor may report that the volume is still in use.
                 encryptor = self._get_volume_encryptor(connection_info,
                                                        encryption)
                 encryptor.detach_volume(**encryption)
 
-            wait_for_detach()
         except exception.InstanceNotFound:
             # NOTE(zhaoqin): If the instance does not exist, _lookup_by_name()
             #                will throw InstanceNotFound exception. Need to
@@ -1606,7 +1605,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 # Upload that image to the image service
                 update_task_state(task_state=task_states.IMAGE_UPLOADING,
                         expected_state=task_states.IMAGE_PENDING_UPLOAD)
-                with libvirt_utils.file_open(out_path) as image_file:
+                with libvirt_utils.file_open(out_path, 'rb') as image_file:
                     self._image_api.update(context,
                                            image_id,
                                            metadata,
@@ -1644,7 +1643,8 @@ class LibvirtDriver(driver.ComputeDriver):
             if guest is not None:
                 self._attach_pci_devices(
                     guest, pci_manager.get_instance_pci_devs(instance))
-                self._attach_sriov_ports(context, instance, guest)
+                self._attach_direct_passthrough_ports(
+                    context, instance, guest)
 
     def _can_set_admin_password(self, image_meta):
 
@@ -1678,7 +1678,7 @@ class LibvirtDriver(driver.ComputeDriver):
             msg = (_('Error from libvirt while set password for username '
                      '"%(user)s": [Error Code %(error_code)s] %(ex)s')
                    % {'user': user, 'error_code': error_code, 'ex': ex})
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
     def _can_quiesce(self, instance, image_meta):
         if (CONF.libvirt.virt_type not in ('kvm', 'qemu') or
@@ -1703,7 +1703,7 @@ class LibvirtDriver(driver.ComputeDriver):
                      '[Error Code %(error_code)s] %(ex)s')
                    % {'instance_name': instance.name,
                       'error_code': error_code, 'ex': ex})
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
     def quiesce(self, context, instance, image_meta):
         """Freeze the guest filesystems to prepare for snapshot.
@@ -1857,7 +1857,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         if not disks_to_snap and not network_disks_to_snap:
             msg = _('Found no disk to snapshot.')
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
         snapshot = vconfig.LibvirtConfigGuestSnapshot()
 
@@ -1946,13 +1946,13 @@ class LibvirtDriver(driver.ComputeDriver):
             raise exception.InstanceNotRunning(instance_id=instance.uuid)
 
         if create_info['type'] != 'qcow2':
-            raise exception.NovaException(_('Unknown type: %s') %
-                                          create_info['type'])
+            msg = _('Unknown type: %s') % create_info['type']
+            raise exception.InternalError(msg)
 
         snapshot_id = create_info.get('snapshot_id', None)
         if snapshot_id is None:
-            raise exception.NovaException(_('snapshot_id required '
-                                            'in create_info'))
+            msg = _('snapshot_id required in create_info')
+            raise exception.InternalError(msg)
 
         try:
             self._volume_snapshot_create(context, instance, guest,
@@ -2005,7 +2005,7 @@ class LibvirtDriver(driver.ComputeDriver):
                     "has not been fully tested") % {'protocol':
                     active_protocol}
             LOG.error(msg)
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
         if rebase_base is None:
             # If backing_file is specified as "" (the empty string), then
@@ -2050,7 +2050,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         if delete_info['type'] != 'qcow2':
             msg = _('Unknown delete_info type %s') % delete_info['type']
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
         try:
             guest = self._host.get_guest(instance)
@@ -2085,17 +2085,17 @@ class LibvirtDriver(driver.ComputeDriver):
                 break
 
         if my_dev is None or (active_disk is None and active_protocol is None):
-            msg = _('Disk with id: %s '
-                    'not found attached to instance.') % volume_id
             LOG.debug('Domain XML: %s', xml, instance=instance)
-            raise exception.NovaException(msg)
+            msg = (_('Disk with id: %s not found attached to instance.')
+                   % volume_id)
+            raise exception.InternalError(msg)
 
         LOG.debug("found device at %s", my_dev, instance=instance)
 
         def _get_snap_dev(filename, backing_store):
             if filename is None:
                 msg = _('filename cannot be None')
-                raise exception.NovaException(msg)
+                raise exception.InternalError(msg)
 
             # libgfapi delete
             LOG.debug("XML: %s", xml)
@@ -2124,7 +2124,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
             if matched_name is None:
                 msg = _('no match found for %s') % (filename_to_merge)
-                raise exception.NovaException(msg)
+                raise exception.InternalError(msg)
 
             LOG.debug('index of match (%s) is %s', b.source_name, index)
 
@@ -2519,7 +2519,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
         self._detach_pci_devices(guest,
             pci_manager.get_instance_pci_devs(instance))
-        self._detach_sriov_ports(context, instance, guest)
+        self._detach_direct_passthrough_ports(context, instance, guest)
         guest.save_memory_state()
 
     def resume(self, context, instance, network_info, block_device_info=None):
@@ -2536,7 +2536,8 @@ class LibvirtDriver(driver.ComputeDriver):
                            vifs_already_plugged=True)
         self._attach_pci_devices(guest,
             pci_manager.get_instance_pci_devs(instance))
-        self._attach_sriov_ports(context, instance, guest, network_info)
+        self._attach_direct_passthrough_ports(
+            context, instance, guest, network_info)
         timer = loopingcall.FixedIntervalLoopingCall(self._wait_for_running,
                                                      instance)
         timer.start(interval=0.5).wait()
@@ -2558,7 +2559,7 @@ class LibvirtDriver(driver.ComputeDriver):
 
             if state in ignored_states:
                 return
-        except exception.NovaException:
+        except (exception.InternalError, exception.InstanceNotFound):
             pass
 
         # Instance is not up and could be in an unknown state.
@@ -3323,56 +3324,61 @@ class LibvirtDriver(driver.ComputeDriver):
             raise
 
     @staticmethod
-    def _has_sriov_port(network_info):
+    def _has_direct_passthrough_port(network_info):
         for vif in network_info:
-            if vif['vnic_type'] in [network_model.VNIC_TYPE_DIRECT,
-                                    network_model.VNIC_TYPE_DIRECT_PHYSICAL]:
+            if (vif['vnic_type'] in
+                network_model.VNIC_TYPES_DIRECT_PASSTHROUGH):
                 return True
         return False
 
-    def _attach_sriov_ports(self, context, instance, guest, network_info=None):
+    def _attach_direct_passthrough_ports(
+        self, context, instance, guest, network_info=None):
         if network_info is None:
             network_info = instance.info_cache.network_info
         if network_info is None:
             return
 
-        if self._has_sriov_port(network_info):
+        if self._has_direct_passthrough_port(network_info):
             for vif in network_info:
-                if vif['vnic_type'] in network_model.VNIC_TYPES_SRIOV:
+                if (vif['vnic_type'] in
+                    network_model.VNIC_TYPES_DIRECT_PASSTHROUGH):
                     cfg = self.vif_driver.get_config(instance,
                                                      vif,
                                                      instance.image_meta,
                                                      instance.flavor,
                                                      CONF.libvirt.virt_type,
                                                      self._host)
-                    LOG.debug('Attaching SR-IOV port %(port)s to %(dom)s',
-                              {'port': vif, 'dom': guest.id},
+                    LOG.debug('Attaching direct passthrough port %(port)s '
+                              'to %(dom)s', {'port': vif, 'dom': guest.id},
                               instance=instance)
                     guest.attach_device(cfg)
 
-    def _detach_sriov_ports(self, context, instance, guest):
+    def _detach_direct_passthrough_ports(self, context, instance, guest):
         network_info = instance.info_cache.network_info
         if network_info is None:
             return
 
-        if self._has_sriov_port(network_info):
-            # In case of SR-IOV vif types we create pci request per SR-IOV port
-            # Therefore we can trust that pci_slot value in the vif is correct.
-            sriov_pci_addresses = [
+        if self._has_direct_passthrough_port(network_info):
+            # In case of VNIC_TYPES_DIRECT_PASSTHROUGH ports we create
+            # pci request per direct passthrough port. Therefore we can trust
+            # that pci_slot value in the vif is correct.
+            direct_passthrough_pci_addresses = [
                 vif['profile']['pci_slot']
                 for vif in network_info
-                if vif['vnic_type'] in network_model.VNIC_TYPES_SRIOV and
-                   vif['profile'].get('pci_slot') is not None
+                if (vif['vnic_type'] in
+                    network_model.VNIC_TYPES_DIRECT_PASSTHROUGH and
+                    vif['profile'].get('pci_slot') is not None)
             ]
 
             # use detach_pci_devices to avoid failure in case of
-            # multiple guest SRIOV ports with the same MAC
+            # multiple guest direct passthrough ports with the same MAC
             # (protection use-case, ports are on different physical
             # interfaces)
             pci_devs = pci_manager.get_instance_pci_devs(instance, 'all')
-            sriov_devs = [pci_dev for pci_dev in pci_devs
-                          if pci_dev.address in sriov_pci_addresses]
-            self._detach_pci_devices(guest, sriov_devs)
+            direct_passthrough_pci_addresses = (
+                [pci_dev for pci_dev in pci_devs
+                 if pci_dev.address in direct_passthrough_pci_addresses])
+            self._detach_pci_devices(guest, direct_passthrough_pci_addresses)
 
     def _set_host_enabled(self, enabled,
                           disable_reason=DISABLE_REASON_UNDEFINED):
@@ -3643,7 +3649,7 @@ class LibvirtDriver(driver.ComputeDriver):
         """
         if not os.path.exists("/etc/machine-id"):
             msg = _("Unable to get host UUID: /etc/machine-id does not exist")
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
         with open("/etc/machine-id") as f:
             # We want to have '-' in the right place
@@ -3651,7 +3657,7 @@ class LibvirtDriver(driver.ComputeDriver):
             lines = f.read().split()
             if not lines:
                 msg = _("Unable to get host UUID: /etc/machine-id is empty")
-                raise exception.NovaException(msg)
+                raise exception.InternalError(msg)
 
             return str(uuid.UUID(lines[0]))
 
@@ -5154,8 +5160,7 @@ class LibvirtDriver(driver.ComputeDriver):
         for guest in self._host.list_guests():
             try:
                 vcpus = guest.get_vcpus_info()
-                if vcpus is not None:
-                    total += len(list(vcpus))
+                total += len(list(vcpus))
             except libvirt.libvirtError as e:
                 LOG.warning(
                     _LW("couldn't obtain the vcpu count from domain id:"
@@ -5662,7 +5667,7 @@ class LibvirtDriver(driver.ComputeDriver):
             dest_check_data = md_obj
 
         # Checking shared storage connectivity
-        # if block migration, instances_paths should not be on shared storage.
+        # if block migration, instances_path should not be on shared storage.
         source = CONF.host
 
         dest_check_data.is_shared_instance_path = (
@@ -5977,7 +5982,7 @@ class LibvirtDriver(driver.ComputeDriver):
             timeout_count.pop()
             if len(timeout_count) == 0:
                 msg = _('The firewall filter for %s does not exist')
-                raise exception.NovaException(msg % instance.name)
+                raise exception.InternalError(msg % instance.name)
             greenthread.sleep(1)
 
     def filter_defer_apply_on(self):
@@ -6090,11 +6095,13 @@ class LibvirtDriver(driver.ComputeDriver):
                     migrate_uri = self._migrate_uri(dest)
 
             params = None
-            new_xml_str = libvirt_migrate.get_updated_guest_xml(
-                # TODO(sahid): It's not a really good idea to pass
-                # the method _get_volume_config and we should to find
-                # a way to avoid this in future.
-                guest, migrate_data, self._get_volume_config)
+            new_xml_str = None
+            if CONF.libvirt.virt_type != "parallels":
+                new_xml_str = libvirt_migrate.get_updated_guest_xml(
+                    # TODO(sahid): It's not a really good idea to pass
+                    # the method _get_volume_config and we should to find
+                    # a way to avoid this in future.
+                    guest, migrate_data, self._get_volume_config)
             if self._host.has_min_version(
                     MIN_LIBVIRT_BLOCK_LM_WITH_VOLUMES_VERSION):
                 params = {
@@ -6181,74 +6188,6 @@ class LibvirtDriver(driver.ComputeDriver):
 
         LOG.debug("Migration operation thread has finished",
                   instance=instance)
-
-    @staticmethod
-    def _migration_downtime_steps(data_gb):
-        '''Calculate downtime value steps and time between increases.
-
-        :param data_gb: total GB of RAM and disk to transfer
-
-        This looks at the total downtime steps and upper bound
-        downtime value and uses an exponential backoff. So initially
-        max downtime is increased by small amounts, and as time goes
-        by it is increased by ever larger amounts
-
-        For example, with 10 steps, 30 second step delay, 3 GB
-        of RAM and 400ms target maximum downtime, the downtime will
-        be increased every 90 seconds in the following progression:
-
-        -   0 seconds -> set downtime to  37ms
-        -  90 seconds -> set downtime to  38ms
-        - 180 seconds -> set downtime to  39ms
-        - 270 seconds -> set downtime to  42ms
-        - 360 seconds -> set downtime to  46ms
-        - 450 seconds -> set downtime to  55ms
-        - 540 seconds -> set downtime to  70ms
-        - 630 seconds -> set downtime to  98ms
-        - 720 seconds -> set downtime to 148ms
-        - 810 seconds -> set downtime to 238ms
-        - 900 seconds -> set downtime to 400ms
-
-        This allows the guest a good chance to complete migration
-        with a small downtime value.
-        '''
-        downtime = CONF.libvirt.live_migration_downtime
-        steps = CONF.libvirt.live_migration_downtime_steps
-        delay = CONF.libvirt.live_migration_downtime_delay
-
-        downtime_min = nova.conf.libvirt.LIVE_MIGRATION_DOWNTIME_MIN
-        steps_min = nova.conf.libvirt.LIVE_MIGRATION_DOWNTIME_STEPS_MIN
-        delay_min = nova.conf.libvirt.LIVE_MIGRATION_DOWNTIME_DELAY_MIN
-
-        # TODO(hieulq): Need to move min/max value into the config option,
-        # currently oslo_config will raise ValueError instead of setting
-        # option value to its min/max.
-        if downtime < downtime_min:
-            LOG.warning(_LW("Config option live_migration_downtime's value "
-                            "is less than minimum value %dms, rounded up to "
-                            "the minimum value and will raise ValueError in "
-                            "the future release."), downtime_min)
-            downtime = downtime_min
-
-        if steps < steps_min:
-            LOG.warning(_LW("Config option live_migration_downtime_steps's "
-                            "value is less than minimum value %dms, rounded "
-                            "up to the minimum value and will raise "
-                            "ValueError in the future release."), steps_min)
-            steps = steps_min
-        if delay < delay_min:
-            LOG.warning(_LW("Config option live_migration_downtime_delay's "
-                            "value is less than minimum value %dms, rounded "
-                            "up to the minimum value and will raise "
-                            "ValueError in the future release."), delay_min)
-            delay = delay_min
-        delay = int(delay * data_gb)
-
-        offset = downtime / float(steps + 1)
-        base = (downtime - offset) ** (1 / float(steps))
-
-        for i in range(steps + 1):
-            yield (int(delay * i), int(offset + base ** i))
 
     def _live_migration_copy_disk_paths(self, context, instance, guest):
         '''Get list of disks to copy during migration
@@ -6344,7 +6283,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                 disk_paths):
         on_migration_failure = deque()
         data_gb = self._live_migration_data_gb(instance, disk_paths)
-        downtime_steps = list(self._migration_downtime_steps(data_gb))
+        downtime_steps = list(libvirt_migrate.downtime_steps(data_gb))
         migration = migrate_data.migration
         curdowntime = None
 
@@ -6537,7 +6476,8 @@ class LibvirtDriver(driver.ComputeDriver):
 
         disk_paths = []
         device_names = []
-        if migrate_data.block_migration:
+        if (migrate_data.block_migration and
+                CONF.libvirt.virt_type != "parallels"):
             disk_paths, device_names = self._live_migration_copy_disk_paths(
                 context, instance, guest)
 
@@ -6847,6 +6787,12 @@ class LibvirtDriver(driver.ComputeDriver):
                not available.
 
         """
+
+        # Virtuozzo containers don't use backing file
+        if (CONF.libvirt.virt_type == "parallels" and
+                instance.vm_mode == fields.VMMode.EXE):
+            return
+
         if not disk_info:
             disk_info = []
 

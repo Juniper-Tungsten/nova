@@ -24,10 +24,11 @@ from lxml import etree
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_service import loopingcall
+from oslo_utils import encodeutils
 from oslo_utils import strutils
 from oslo_utils import units
 from oslo_vmware import rw_handles
-import six
+
 
 from nova import exception
 from nova.i18n import _, _LI
@@ -172,7 +173,7 @@ class VMwareImage(object):
             'hw_vif_model': 'vif_model'
         }
 
-        for k, v in six.iteritems(props_map):
+        for k, v in props_map.items():
             if properties.obj_attr_is_set(k):
                 props[v] = properties.get(k)
 
@@ -368,7 +369,7 @@ def fetch_image_stream_optimized(context, instance, session, vm_name,
 def get_vmdk_name_from_ovf(xmlstr):
     """Parse the OVA descriptor to extract the vmdk name."""
 
-    ovf = etree.fromstring(xmlstr)
+    ovf = etree.fromstring(encodeutils.safe_encode(xmlstr))
     nsovf = "{%s}" % ovf.nsmap["ovf"]
 
     disk = ovf.find("./%sDiskSection/%sDisk" % (nsovf, nsovf))

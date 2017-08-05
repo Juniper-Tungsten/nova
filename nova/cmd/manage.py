@@ -57,6 +57,7 @@ from __future__ import print_function
 import functools
 import os
 import sys
+import traceback
 
 import decorator
 import netaddr
@@ -67,7 +68,7 @@ import oslo_messaging as messaging
 from oslo_utils import importutils
 from oslo_utils import uuidutils
 import prettytable
-import six
+
 import six.moves.urllib.parse as urlparse
 
 from nova.api.ec2 import ec2utils
@@ -82,6 +83,7 @@ from nova import exception
 from nova.i18n import _
 from nova import objects
 from nova.objects import aggregate as aggregate_obj
+from nova.objects import build_request as build_request_obj
 from nova.objects import flavor as flavor_obj
 from nova.objects import instance as instance_obj
 from nova.objects import instance_group as instance_group_obj
@@ -96,11 +98,12 @@ CONF = nova.conf.CONF
 
 QUOTAS = quota.QUOTAS
 
-_EXTRA_DEFAULT_LOG_LEVELS = ['oslo_db=INFO']
+_EXTRA_DEFAULT_LOG_LEVELS = ['oslo_db=INFO', 'oslo_policy=INFO']
 
 
 # Decorators for actions
 args = cmd_common.args
+action_description = cmd_common.action_description
 
 
 def param2id(object_id):
@@ -111,36 +114,6 @@ def param2id(object_id):
         return ec2utils.ec2_vol_id_to_uuid(object_id)
     else:
         return object_id
-
-
-class VpnCommands(object):
-    """Class for managing VPNs."""
-
-    description = ('DEPRECATED: VPN commands are deprecated since '
-                   'nova-network is deprecated in favor of Neutron. The '
-                   'VPN commands will be removed in the Nova 15.0.0 '
-                   'Ocata release.')
-
-    @args('--project', dest='project_id', metavar='<Project name>',
-            help='Project name')
-    @args('--ip', metavar='<IP Address>', help='IP Address')
-    @args('--port', metavar='<Port>', help='Port')
-    def change(self, project_id, ip, port):
-        """Change the IP and port for a VPN.
-
-        This will update all networks associated with a project
-        not sure if that's the desired behavior or not, patches accepted.
-
-        """
-        # TODO(tr3buchet): perhaps this shouldn't update all networks
-        # associated with a project in the future
-        admin_context = context.get_admin_context()
-        networks = db.project_get_networks(admin_context, project_id)
-        for network in networks:
-            db.network_update(admin_context,
-                              network['id'],
-                              {'vpn_public_address': ip,
-                               'vpn_public_port': int(port)})
 
 
 class ShellCommands(object):
@@ -291,7 +264,7 @@ class ProjectCommands(object):
             quota = QUOTAS.get_user_quotas(ctxt, project_id, user_id)
         else:
             quota = QUOTAS.get_project_quotas(ctxt, project_id)
-        for key, value in six.iteritems(quota):
+        for key, value in quota.items():
             if value['limit'] is None or value['limit'] < 0:
                 value['limit'] = 'unlimited'
             print(print_format % (key, value['limit'], value['in_use'],
@@ -321,124 +294,8 @@ class ProjectCommands(object):
             print(e.format_message())
             return 2
 
-    @args('--project', dest='project_id', metavar='<Project name>',
-            help='Project name')
-    def scrub(self, project_id):
-        """DEPRECATED: Deletes network data associated with project.
-
-        This command is only for nova-network deployments and nova-network is
-        deprecated in favor of Neutron. This command will be removed in the
-        Nova 15.0.0 Ocata release.
-        """
-        admin_context = context.get_admin_context()
-        networks = db.project_get_networks(admin_context, project_id)
-        for network in networks:
-            db.network_disassociate(admin_context, network['id'])
-        groups = db.security_group_get_by_project(admin_context, project_id)
-        for group in groups:
-            db.security_group_destroy(admin_context, group['id'])
-
 
 AccountCommands = ProjectCommands
-
-
-class FixedIpCommands(object):
-    """Class for managing fixed IP."""
-
-    description = ('DEPRECATED: Fixed IP commands are deprecated since '
-                   'nova-network is deprecated in favor of Neutron. The '
-                   'fixed IP commands will be removed in the Nova 15.0.0 '
-                   'Ocata release.')
-
-    @args('--host', metavar='<host>', help='Host')
-    def list(self, host=None):
-        """Lists all fixed IPs (optionally by host)."""
-        ctxt = context.get_admin_context()
-
-        try:
-            if host is None:
-                fixed_ips = db.fixed_ip_get_all(ctxt)
-            else:
-                fixed_ips = db.fixed_ip_get_by_host(ctxt, host)
-
-        except exception.NotFound as ex:
-            print(_("error: %s") % ex)
-            return(2)
-
-        instances = db.instance_get_all(context.get_admin_context())
-        instances_by_uuid = {}
-        for instance in instances:
-            instances_by_uuid[instance['uuid']] = instance
-
-        print("%-18s\t%-15s\t%-15s\t%s" % (_('network'),
-                                              _('IP address'),
-                                              _('hostname'),
-                                              _('host')))
-
-        all_networks = {}
-        try:
-            # use network_get_all to retrieve all existing networks
-            # this is to ensure that IPs associated with deleted networks
-            # will not throw exceptions.
-            for network in db.network_get_all(context.get_admin_context()):
-                all_networks[network.id] = network
-        except exception.NoNetworksFound:
-            # do not have any networks, so even if there are IPs, these
-            # IPs should have been deleted ones, so return.
-            print(_('No fixed IP found.'))
-            return
-
-        has_ip = False
-        for fixed_ip in fixed_ips:
-            hostname = None
-            host = None
-            network = all_networks.get(fixed_ip['network_id'])
-            if network:
-                has_ip = True
-                if fixed_ip.get('instance_uuid'):
-                    instance = instances_by_uuid.get(fixed_ip['instance_uuid'])
-                    if instance:
-                        hostname = instance['hostname']
-                        host = instance['host']
-                    else:
-                        print(_('WARNING: fixed IP %s allocated to missing'
-                                ' instance') % str(fixed_ip['address']))
-                print("%-18s\t%-15s\t%-15s\t%s" % (
-                        network['cidr'],
-                        fixed_ip['address'],
-                        hostname, host))
-
-        if not has_ip:
-            print(_('No fixed IP found.'))
-
-    @args('--address', metavar='<ip address>', help='IP address')
-    def reserve(self, address):
-        """Mark fixed IP as reserved
-
-        arguments: address
-        """
-        return self._set_reserved(address, True)
-
-    @args('--address', metavar='<ip address>', help='IP address')
-    def unreserve(self, address):
-        """Mark fixed IP as free to use
-
-        arguments: address
-        """
-        return self._set_reserved(address, False)
-
-    def _set_reserved(self, address, reserved):
-        ctxt = context.get_admin_context()
-
-        try:
-            fixed_ip = db.fixed_ip_get_by_address(ctxt, address)
-            if fixed_ip is None:
-                raise exception.NotFound('Could not find address')
-            db.fixed_ip_update(ctxt, fixed_ip['address'],
-                                {'reserved': reserved})
-        except exception.NotFound as ex:
-            print(_("error: %s") % ex)
-            return(2)
 
 
 class FloatingIpCommands(object):
@@ -599,7 +456,7 @@ class NetworkCommands(object):
         if not (cidr or cidr_v6):
             raise exception.NetworkNotCreated(req="cidr or cidr_v6")
 
-        kwargs = {k: v for k, v in six.iteritems(locals())
+        kwargs = {k: v for k, v in locals().items()
                   if v and k != "self"}
         if multi_host is not None:
             kwargs['multi_host'] = multi_host == 'T'
@@ -753,6 +610,10 @@ class DbCommands(object):
         aggregate_obj.migrate_aggregate_reset_autoincrement,
         # Added in Newton
         instance_group_obj.migrate_instance_groups_to_api_db,
+        # Added in Ocata
+        # NOTE(mriedem): This online migration is going to be backported to
+        # Newton also since it's an upgrade issue when upgrading from Mitaka.
+        build_request_obj.delete_build_requests_with_no_instance_uuid,
     )
 
     def __init__(self):
@@ -850,7 +711,7 @@ class DbCommands(object):
         """
         hits = migration.db_null_instance_uuid_scan(delete)
         records_found = False
-        for table_name, records in six.iteritems(hits):
+        for table_name, records in hits.items():
             # Don't print anything for 0 hits
             if records:
                 records_found = True
@@ -1002,7 +863,7 @@ class AgentBuildCommands(object):
 
             buildlist.append(agent_build)
 
-        for key, buildlist in six.iteritems(by_hypervisor):
+        for key, buildlist in by_hypervisor.items():
             if hypervisor and key != hypervisor:
                 continue
 
@@ -1234,13 +1095,19 @@ class CellV2Commands(object):
             return 1
         ctxt = context.RequestContext()
         try:
-            cell0_mapping = self.map_cell0()
+            cell0_mapping = self._map_cell0()
         except db_exc.DBDuplicateEntry:
-            print('Already setup, nothing to do.')
-            return 0
+            print(_('Cell0 is already setup'))
+            cell0_mapping = objects.CellMapping.get_by_uuid(
+                ctxt, objects.CellMapping.CELL0_UUID)
+
         # Run migrations so cell0 is usable
         with context.target_cell(ctxt, cell0_mapping):
-            migration.db_sync(None, context=ctxt)
+            try:
+                migration.db_sync(None, context=ctxt)
+            except db_exc.DBError as ex:
+                print(_('Unable to sync cell0 schema: %s') % ex)
+
         cell_uuid = self._map_cell_and_hosts(transport_url)
         if cell_uuid is None:
             # There are no compute hosts which means no cell_mapping was
@@ -1253,7 +1120,7 @@ class CellV2Commands(object):
           metavar='<database_connection>',
           help='The database connection url for cell0. '
                'This is optional. If not provided, a standard database '
-               'connection will be used based on the API database connection '
+               'connection will be used based on the main database connection '
                'from the Nova configuration.'
          )
     def map_cell0(self, database_connection=None):
@@ -1265,14 +1132,26 @@ class CellV2Commands(object):
 
         This command creates a cell mapping for this special cell which
         requires a database to store the instance data.
+
+        Returns 0 if cell0 created successfully or already setup.
+        """
+        try:
+            self._map_cell0(database_connection=database_connection)
+        except db_exc.DBDuplicateEntry:
+            print(_('Cell0 is already setup'))
+        return 0
+
+    def _map_cell0(self, database_connection=None):
+        """Faciliate creation of a cell mapping for cell0.
+        See map_cell0 for more.
         """
         def cell0_default_connection():
             # If no database connection is provided one is generated
-            # based on the API database connection url.
+            # based on the database connection url.
             # The cell0 database will use the same database scheme and
-            # netloc as the API database, with a related path.
+            # netloc as the main database, with a related path.
             scheme, netloc, path, query, fragment = \
-                urlparse.urlsplit(CONF.api_database.connection)
+                urlparse.urlsplit(CONF.database.connection)
             root, ext = os.path.splitext(path)
             path = root + "_cell0" + ext
             return urlparse.urlunsplit((scheme, netloc, path, query,
@@ -1469,10 +1348,6 @@ class CellV2Commands(object):
         due to an incomplete upgrade (1), or unmapped due to normally transient
         state (2).
         """
-        if not uuid:
-            print(_('Must specify --uuid'))
-            return 16
-
         def say(string):
             if not quiet:
                 print(string)
@@ -1498,7 +1373,9 @@ class CellV2Commands(object):
     @args('--cell_uuid', metavar='<cell_uuid>', dest='cell_uuid',
           help='If provided only this cell will be searched for new hosts to '
                'map.')
-    def discover_hosts(self, cell_uuid=None):
+    @args('--verbose', action='store_true',
+          help=_('Provide detailed output when discovering hosts.'))
+    def discover_hosts(self, cell_uuid=None, verbose=False):
         """Searches cells, or a single cell, and maps found hosts.
 
         When a new host is added to a deployment it will add a service entry
@@ -1515,21 +1392,150 @@ class CellV2Commands(object):
         if cell_uuid:
             cell_mappings = [objects.CellMapping.get_by_uuid(ctxt, cell_uuid)]
         else:
-            cell_mappings = objects.CellMappingList.get_all(context)
+            cell_mappings = objects.CellMappingList.get_all(ctxt)
+            if verbose:
+                print(_('Found %s cell mappings.') % len(cell_mappings))
 
         for cell_mapping in cell_mappings:
             if cell_mapping.is_cell0():
+                if verbose:
+                    print(_('Skipping cell0 since it does not contain hosts.'))
                 continue
+            if verbose:
+                if 'name' in cell_mapping and cell_mapping.name:
+                    print(_("Getting compute nodes from cell '%(name)s': "
+                            "%(uuid)s") % {'name': cell_mapping.name,
+                                           'uuid': cell_mapping.uuid})
+                else:
+                    print(_("Getting compute nodes from cell: %(uuid)s") %
+                          {'uuid': cell_mapping.uuid})
             with context.target_cell(ctxt, cell_mapping):
                 compute_nodes = objects.ComputeNodeList.get_all(ctxt)
+                if verbose:
+                    print(_('Found %(num)s computes in cell: %(uuid)s') %
+                          {'num': len(compute_nodes),
+                           'uuid': cell_mapping.uuid})
             for compute in compute_nodes:
+                if verbose:
+                    print(_("Checking host mapping for compute host "
+                            "'%(host)s': %(uuid)s") %
+                          {'host': compute.host, 'uuid': compute.uuid})
                 try:
                     objects.HostMapping.get_by_host(ctxt, compute.host)
                 except exception.HostMappingNotFound:
+                    if verbose:
+                        print(_("Creating host mapping for compute host "
+                                "'%(host)s': %(uuid)s") %
+                              {'host': compute.host, 'uuid': compute.uuid})
                     host_mapping = objects.HostMapping(
                         ctxt, host=compute.host,
                         cell_mapping=cell_mapping)
                     host_mapping.create()
+
+    @action_description(
+        _("Add a new cell to nova API database. "
+          "DB and MQ urls can be provided directly "
+          "or can be taken from config. The result is cell uuid."))
+    @args('--name', metavar='<name>', help=_('The name of the cell'))
+    @args('--database_connection', metavar='<database url>',
+          dest='database_connection',
+          help=_('The database url for the cell database'))
+    @args('--transport-url', metavar='<transport url>', dest='transport_url',
+          help=_('The transport url for the cell message queue'))
+    @args('--verbose', action='store_true',
+          help=_('Output the uuid of the created cell'))
+    def create_cell(self, name=None, database_connection=None,
+                    transport_url=None, verbose=False):
+        ctxt = context.get_context()
+        transport_url = transport_url or CONF.transport_url
+        if not transport_url:
+            print(_('Must specify --transport-url if [DEFAULT]/transport_url '
+                    'is not set in the configuration file.'))
+            return 1
+        database_connection = database_connection or CONF.database.connection
+        if not database_connection:
+            print(_('Must specify --database_connection '
+                    'if [database]/connection is not set '
+                    'in the configuration file.'))
+            return 1
+        if any(cell.database_connection == database_connection
+               and cell.transport_url == transport_url
+               for cell in objects.CellMappingList.get_all(ctxt)):
+            print(_('Cell with the specified transport_url '
+                    'and database_connection combination already exists'))
+            return 2
+        cell_mapping_uuid = uuidutils.generate_uuid()
+        cell_mapping = objects.CellMapping(
+            ctxt,
+            uuid=cell_mapping_uuid, name=name,
+            transport_url=transport_url,
+            database_connection=database_connection)
+        cell_mapping.create()
+        if verbose:
+            print(cell_mapping_uuid)
+        return 0
+
+    @args('--verbose', action='store_true',
+          help=_('Show more details than just the cell name and uuid.'))
+    def list_cells(self, verbose=False):
+        """Lists the v2 cells in the deployment.
+
+        By default only the cell name and uuid are shown. Use the --verbose
+        option to see transport URL and database connection details.
+        """
+        cell_mappings = objects.CellMappingList.get_all(
+            context.get_admin_context())
+
+        field_names = [_('Name'), _('UUID')]
+        if verbose:
+            field_names.extend([_('Transport URL'), _('Database Connection')])
+
+        t = prettytable.PrettyTable(field_names)
+        for cell in sorted(cell_mappings, key=lambda _cell: _cell.name):
+            fields = [cell.name, cell.uuid]
+            if verbose:
+                fields.extend([cell.transport_url, cell.database_connection])
+            t.add_row(fields)
+        print(t)
+        return 0
+
+    @args('--cell_uuid', metavar='<cell_uuid>', dest='cell_uuid',
+          required=True, help=_('The uuid of the cell to delete.'))
+    def delete_cell(self, cell_uuid):
+        """Delete an empty cell by the given uuid.
+
+        If the cell is not found by uuid or it is not empty (it has host or
+        instance mappings) this command will return a non-zero exit code.
+
+        Returns 0 if the empty cell is found and deleted successfully.
+        """
+        ctxt = context.get_admin_context()
+        # Find the CellMapping given the uuid.
+        try:
+            cell_mapping = objects.CellMapping.get_by_uuid(ctxt, cell_uuid)
+        except exception.CellMappingNotFound:
+            print(_('Cell with uuid %s was not found.') % cell_uuid)
+            return 1
+
+        # Check to see if there are any HostMappings for this cell.
+        host_mappings = objects.HostMappingList.get_by_cell_id(
+            ctxt, cell_mapping.id)
+        if host_mappings:
+            print(_('There are existing hosts mapped to cell with uuid %s.') %
+                  cell_uuid)
+            return 2
+
+        # Check to see if there are any InstanceMappings for this cell.
+        instance_mappings = objects.InstanceMappingList.get_by_cell_id(
+            ctxt, cell_mapping.id)
+        if instance_mappings:
+            print(_('There are existing instances mapped to cell with '
+                    'uuid %s.') % cell_uuid)
+            return 3
+
+        # There are no hosts or instances mapped to the cell so delete it.
+        cell_mapping.destroy()
+        return 0
 
 
 CATEGORIES = {
@@ -1539,14 +1545,12 @@ CATEGORIES = {
     'cell': CellCommands,
     'cell_v2': CellV2Commands,
     'db': DbCommands,
-    'fixed': FixedIpCommands,
     'floating': FloatingIpCommands,
     'host': HostCommands,
     'logs': GetLogCommands,
     'network': NetworkCommands,
     'project': ProjectCommands,
     'shell': ShellCommands,
-    'vpn': VpnCommands,
 }
 
 
@@ -1583,6 +1587,6 @@ def main():
         ret = fn(*fn_args, **fn_kwargs)
         rpc.cleanup()
         return(ret)
-    except Exception as ex:
-        print(_("error: %s") % ex)
+    except Exception:
+        print(_("An error has occurred:\n%s") % traceback.format_exc())
         return(1)

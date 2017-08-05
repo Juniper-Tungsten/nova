@@ -43,8 +43,7 @@ class SchedulerHintsTestCaseV21(test.TestCase):
         self._set_up_router()
 
     def _set_up_router(self):
-        self.app = compute.APIRouterV21(init_only=('servers',
-                                                   'os-scheduler-hints'))
+        self.app = compute.APIRouterV21()
 
     def _get_request(self):
         return fakes.HTTPRequest.blank('/fake/servers')
@@ -147,6 +146,7 @@ class ServersControllerCreateTestV21(test.TestCase):
         super(ServersControllerCreateTestV21, self).setUp()
 
         self.instance_cache_num = 0
+        fakes.stub_out_nw_api(self)
         self._set_up_controller()
 
         def instance_create(context, inst):

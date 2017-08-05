@@ -157,7 +157,7 @@ def _quota_reserve(context, project_id, user_id):
         sqlalchemy_api.QUOTA_SYNC_FUNCTIONS[sync_name] = getattr(
             sqlalchemy_api, sync_name)
     return db.quota_reserve(context, resources, quotas, user_quotas, deltas,
-                    timeutils.utcnow(), CONF.until_refresh,
+                    timeutils.utcnow(), CONF.quota.until_refresh,
                     datetime.timedelta(days=1), project_id, user_id)
 
 
@@ -1199,6 +1199,41 @@ class SqlAlchemyDbApiTestCase(DbTestCase):
         self.assertEqual(2, len(result))
         self.assertEqual(six.text_type, type(result[0]))
 
+    @mock.patch('oslo_utils.uuidutils.generate_uuid')
+    def test_instance_get_active_by_window_joined_paging(self, mock_uuids):
+        mock_uuids.side_effect = ['BBB', 'ZZZ', 'AAA', 'CCC']
+
+        ctxt = context.get_admin_context()
+        now = datetime.datetime(2015, 10, 2)
+        self.create_instance_with_args(project_id='project-ZZZ')
+        self.create_instance_with_args(project_id='project-ZZZ')
+        self.create_instance_with_args(project_id='project-ZZZ')
+        self.create_instance_with_args(project_id='project-AAA')
+
+        # no limit or marker
+        result = sqlalchemy_api.instance_get_active_by_window_joined(
+            ctxt, begin=now, columns_to_join=[])
+        actual_uuids = [row['uuid'] for row in result]
+        self.assertEqual(['CCC', 'AAA', 'BBB', 'ZZZ'], actual_uuids)
+
+        # just limit
+        result = sqlalchemy_api.instance_get_active_by_window_joined(
+            ctxt, begin=now, columns_to_join=[], limit=2)
+        actual_uuids = [row['uuid'] for row in result]
+        self.assertEqual(['CCC', 'AAA'], actual_uuids)
+
+        # limit & marker
+        result = sqlalchemy_api.instance_get_active_by_window_joined(
+            ctxt, begin=now, columns_to_join=[], limit=2, marker='CCC')
+        actual_uuids = [row['uuid'] for row in result]
+        self.assertEqual(['AAA', 'BBB'], actual_uuids)
+
+        # unknown marker
+        self.assertRaises(
+            exception.MarkerNotFound,
+            sqlalchemy_api.instance_get_active_by_window_joined,
+            ctxt, begin=now, columns_to_join=[], limit=2, marker='unknown')
+
     def test_instance_get_active_by_window_joined(self):
         now = datetime.datetime(2013, 10, 10, 17, 16, 37, 156701)
         start_time = now - datetime.timedelta(minutes=10)
@@ -2202,7 +2237,7 @@ class SecurityGroupTestCase(test.TestCase, ModelsObjectComparatorMixin):
         self.assertEqual(1, usage.in_use)
 
     def test_security_group_ensure_default_until_refresh(self):
-        self.flags(until_refresh=2)
+        self.flags(until_refresh=2, group='quota')
         self.ctxt.project_id = 'fake'
         self.ctxt.user_id = 'fake'
         db.security_group_ensure_default(self.ctxt)
@@ -4179,10 +4214,40 @@ class InstanceFaultTestCase(test.TestCase, ModelsObjectComparatorMixin):
             for code in fault_codes:
                 fault_values = self._create_fault_values(uuid, code)
                 fault = db.instance_fault_create(self.ctxt, fault_values)
-                expected[uuid].append(fault)
+                # We expect the faults to be returned ordered by created_at in
+                # descending order, so insert the newly created fault at the
+                # front of our list.
+                expected[uuid].insert(0, fault)
 
         # Ensure faults are saved
         faults = db.instance_fault_get_by_instance_uuids(self.ctxt, uuids)
+        self.assertEqual(len(expected), len(faults))
+        for uuid in uuids:
+            self._assertEqualOrderedListOfObjects(expected[uuid], faults[uuid])
+
+    def test_instance_fault_get_latest_by_instance(self):
+        """Ensure we can retrieve only latest faults for instance."""
+        uuids = [uuidsentinel.uuid1, uuidsentinel.uuid2]
+        fault_codes = [404, 500]
+        expected = {}
+
+        # Create faults
+        for uuid in uuids:
+            db.instance_create(self.ctxt, {'uuid': uuid})
+
+            expected[uuid] = []
+            for code in fault_codes:
+                fault_values = self._create_fault_values(uuid, code)
+                fault = db.instance_fault_create(self.ctxt, fault_values)
+                expected[uuid].append(fault)
+
+        # We are only interested in the latest fault for each instance
+        for uuid in expected:
+            expected[uuid] = expected[uuid][-1:]
+
+        # Ensure faults are saved
+        faults = db.instance_fault_get_by_instance_uuids(self.ctxt, uuids,
+                                                         latest=True)
         self.assertEqual(len(expected), len(faults))
         for uuid in uuids:
             self._assertEqualListsOfObjects(expected[uuid], faults[uuid])

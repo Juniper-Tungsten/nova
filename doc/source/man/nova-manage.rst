@@ -2,14 +2,14 @@
 nova-manage
 ===========
 
-------------------------------------------------------
-control and manage cloud computer instances and images
-------------------------------------------------------
+-------------------------------------------
+control and manage cloud computer instances
+-------------------------------------------
 
 :Author: openstack@lists.openstack.org
-:Date:   2012-04-05
+:Date:   2017-01-15
 :Copyright: OpenStack Foundation
-:Version: 2012.1
+:Version: 15.0.0
 :Manual section: 1
 :Manual group: cloud computing
 
@@ -32,15 +32,13 @@ The standard pattern for executing a nova-manage command is:
 Run without arguments to see a list of available command categories:
 ``nova-manage``
 
-Categories are project, shell, vpn, and floating. Detailed descriptions are below.
-
 You can also run with a category argument such as user to see a list of all commands in that category:
-``nova-manage floating``
+``nova-manage db``
 
 These sections describe the available categories and arguments for nova-manage.
 
-Nova Db
-~~~~~~~
+Nova Database
+~~~~~~~~~~~~~
 
 ``nova-manage db version``
 
@@ -60,8 +58,8 @@ Nova Db
 
     Lists and optionally deletes database records where instance_uuid is NULL.
 
-Nova ApiDb
-~~~~~~~~~~
+Nova API Database
+~~~~~~~~~~~~~~~~~
 
 ``nova-manage api_db version``
 
@@ -70,6 +68,17 @@ Nova ApiDb
 ``nova-manage api_db sync``
 
     Sync the api cells database up to the most recent version. This is the standard way to create the db as well.
+
+Nova Cells v2
+~~~~~~~~~~~~~
+
+``nova-manage cell_v2 simple_cell_setup [--transport-url <transport_url>]``
+
+    Setup a fresh cells v2 environment; this should not be used if you
+    currently have a cells v1 environment. Returns 0 if setup is completed
+    (or has already been done), 1 if no hosts are reporting (and cannot be
+    mapped), 1 if no transport url is provided for the cell message queue,
+    and 2 if run in a cells v1 environment.
 
 Nova Logs
 ~~~~~~~~~
@@ -118,64 +127,6 @@ Nova Project
     Refresh the quota usages for the project/user so that the
     usage record matches the actual used.  If a key is not specified
     then all quota usages relevant to the project/user are refreshed.
-
-``nova-manage project scrub <project-id>``
-
-    Deletes data associated with project.
-
-Nova VPN
-~~~~~~~~
-
-``nova-manage vpn list``
-
-    Displays a list of projects, their IP port numbers, and what state they're in.
-
-``nova-manage vpn run <projectname>``
-
-    Starts the VPN for the named project.
-
-``nova-manage vpn spawn``
-
-    Runs all VPNs.
-
-Nova Floating IPs
-~~~~~~~~~~~~~~~~~
-
-``nova-manage floating create <ip_range> [--pool <pool>] [--interface <interface>]``
-
-    Creates floating IP addresses for the given range, optionally specifying
-    a floating pool and a network interface.
-
-``nova-manage floating delete <ip_range>``
-
-    Deletes floating IP addresses in the range given.
-
-``nova-manage floating list``
-
-    Displays a list of all floating IP addresses.
-
-Nova Images
-~~~~~~~~~~~
-
-``nova-manage image image_register <path> <owner>``
-
-    Registers an image with the image service.
-
-``nova-manage image kernel_register <path> <owner>``
-
-    Registers a kernel with the image service.
-
-``nova-manage image ramdisk_register <path> <owner>``
-
-    Registers a ramdisk with the image service.
-
-``nova-manage image all_register <image_path> <kernel_path> <ramdisk_path> <owner>``
-
-    Registers an image kernel and ramdisk with the image service.
-
-``nova-manage image convert <directory>``
-
-    Converts all images in directory from the old (Bexar) format to the new format.
 
 SEE ALSO
 ========

@@ -62,6 +62,7 @@ class ServerUsageTestV21(test.TestCase):
     def setUp(self):
         super(ServerUsageTestV21, self).setUp()
         fakes.stub_out_nw_api(self)
+        fakes.stub_out_secgroup_api(self)
         self.stub_out('nova.compute.api.API.get', fake_compute_get)
         self.stub_out('nova.compute.api.API.get_all', fake_compute_get_all)
         return_server = fakes.fake_instance_get()
@@ -74,7 +75,7 @@ class ServerUsageTestV21(test.TestCase):
         return res
 
     def _get_app(self):
-        return fakes.wsgi_app_v21(init_only=('servers', 'os-server-usage'))
+        return fakes.wsgi_app_v21()
 
     def _get_server(self, body):
         return jsonutils.loads(body).get('server')

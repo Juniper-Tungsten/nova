@@ -45,10 +45,8 @@ from nova import block_device
 from nova.compute import flavors
 from nova import context
 from nova import exception
-from nova.network import api as network_api
 from nova.network import model as network_model
 from nova.network.neutronv2 import api as neutronapi
-from nova.network.security_group import openstack_driver
 from nova import objects
 from nova.objects import virt_device_metadata as metadata_obj
 from nova import test
@@ -111,10 +109,6 @@ def fake_keypair_obj(name, data):
                            public_key=data)
 
 
-def return_non_existing_address(*args, **kwarg):
-    raise exception.NotFound()
-
-
 def fake_InstanceMetadata(testcase, inst_data, address=None,
                           sgroups=None, content=None, extra_md=None,
                           vd_driver=None, network_info=None,
@@ -124,13 +118,7 @@ def fake_InstanceMetadata(testcase, inst_data, address=None,
     if sgroups is None:
         sgroups = [{'name': 'default'}]
 
-    def sg_get(*args, **kwargs):
-        return sgroups
-
-    secgroup_api = openstack_driver.get_openstack_security_group_driver()
-    testcase.stub_out('%(module)s.%(class)s.get_instance_security_groups' %
-                      {'module': secgroup_api.__module__,
-                       'class': secgroup_api.__class__.__name__}, sg_get)
+    fakes.stub_out_secgroup_api(testcase, security_groups=sgroups)
     return base.InstanceMetadata(inst_data, address=address,
         content=content, extra_md=extra_md,
         vd_driver=vd_driver, network_info=network_info,
@@ -255,6 +243,7 @@ class MetadataTestCase(test.TestCase):
         self.keypair = fake_keypair_obj(self.instance.key_name,
                                         self.instance.key_data)
         fake_network.stub_out_nw_api_get_instance_nw_info(self)
+        fakes.stub_out_secgroup_api(self)
 
     def test_can_pickle_metadata(self):
         # Make sure that InstanceMetadata is possible to pickle. This is
@@ -1062,9 +1051,10 @@ class MetadataHandlerTestCase(test.TestCase):
         response_ctype = response.headers['Content-Type']
         self.assertTrue(response_ctype.startswith("application/json"))
 
-    def test_user_data_non_existing_fixed_address(self):
-        self.stub_out('nova.network.api.API.get_fixed_ip_by_address',
-                      return_non_existing_address)
+    @mock.patch('nova.network.API')
+    def test_user_data_non_existing_fixed_address(self, mock_network_api):
+        mock_network_api.return_value.get_fixed_ip_by_address.side_effect = (
+            exception.NotFound())
         response = fake_request(None, self.mdinst, "/2009-04-04/user-data",
                                 "127.1.1.1")
         self.assertEqual(response.status_int, 404)
@@ -1469,7 +1459,7 @@ class MetadataHandlerTestCase(test.TestCase):
         self.assertEqual(403, response.status_int)
 
     @mock.patch.object(context, 'get_admin_context')
-    @mock.patch.object(network_api, 'API')
+    @mock.patch('nova.network.API')
     def test_get_metadata_by_address(self, mock_net_api, mock_get_context):
         mock_get_context.return_value = 'CONTEXT'
         api = mock.Mock()
@@ -1490,13 +1480,14 @@ class MetadataHandlerTestCase(test.TestCase):
     def test_get_metadata_by_instance_id(self, mock_uuid, mock_context):
         inst = objects.Instance()
         mock_uuid.return_value = inst
+        ctxt = context.RequestContext()
 
         with mock.patch.object(base, 'InstanceMetadata') as imd:
-            base.get_metadata_by_instance_id('foo', 'bar', ctxt='CONTEXT')
+            base.get_metadata_by_instance_id('foo', 'bar', ctxt=ctxt)
 
         self.assertFalse(mock_context.called, "get_admin_context() should not"
                          "have been called, the context was given")
-        mock_uuid.assert_called_once_with('CONTEXT', 'foo',
+        mock_uuid.assert_called_once_with(ctxt, 'foo',
             expected_attrs=['ec2_ids', 'flavor', 'info_cache', 'metadata',
                             'system_metadata', 'security_groups', 'keypairs',
                             'device_metadata'])
@@ -1508,16 +1499,34 @@ class MetadataHandlerTestCase(test.TestCase):
             mock_uuid, mock_context):
         inst = objects.Instance()
         mock_uuid.return_value = inst
-        mock_context.return_value = 'CONTEXT'
+        mock_context.return_value = context.RequestContext()
 
         with mock.patch.object(base, 'InstanceMetadata') as imd:
             base.get_metadata_by_instance_id('foo', 'bar')
 
         mock_context.assert_called_once_with()
-        mock_uuid.assert_called_once_with('CONTEXT', 'foo',
+        mock_uuid.assert_called_once_with(mock_context.return_value, 'foo',
             expected_attrs=['ec2_ids', 'flavor', 'info_cache', 'metadata',
                             'system_metadata', 'security_groups', 'keypairs',
                             'device_metadata'])
+        imd.assert_called_once_with(inst, 'bar')
+
+    @mock.patch.object(objects.Instance, 'get_by_uuid')
+    @mock.patch.object(objects.InstanceMapping, 'get_by_instance_uuid')
+    def test_get_metadata_by_instance_id_with_cell_mapping(self, mock_get_im,
+                                                           mock_get_inst):
+        ctxt = context.RequestContext()
+        inst = objects.Instance()
+        im = objects.InstanceMapping(cell_mapping=objects.CellMapping())
+        mock_get_inst.return_value = inst
+        mock_get_im.return_value = im
+
+        with mock.patch.object(base, 'InstanceMetadata') as imd:
+            with mock.patch('nova.context.target_cell') as mock_tc:
+                base.get_metadata_by_instance_id('foo', 'bar', ctxt=ctxt)
+                mock_tc.assert_called_once_with(ctxt, im.cell_mapping)
+
+        mock_get_im.assert_called_once_with(ctxt, 'foo')
         imd.assert_called_once_with(inst, 'bar')
 
 

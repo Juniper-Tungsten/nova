@@ -26,6 +26,22 @@ from nova.i18n import _
 from nova.objects import tag
 
 
+def single_param(schema):
+    """Macro function for use in JSONSchema to support query parameters that
+    should have only one value.
+    """
+    ret = multi_params(schema)
+    ret['maxItems'] = 1
+    return ret
+
+
+def multi_params(schema):
+    """Macro function for use in JSONSchema to support query parameters that
+    may have multiple values.
+    """
+    return {'type': 'array', 'items': schema}
+
+
 class ValidationRegex(object):
     def __init__(self, regex, reason):
         self.regex = regex
@@ -401,4 +417,9 @@ tag = {
     "type": "string",
     "minLength": 1, "maxLength": tag.MAX_TAG_LENGTH,
     "pattern": "^[^,/]*$"
+}
+
+pagination_parameters = {
+    'limit': multi_params(non_negative_integer),
+    'marker': multi_params({'type': 'string'})
 }

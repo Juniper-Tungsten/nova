@@ -37,6 +37,9 @@ VERSIONS = [
     '1.0',
     '1.1',  # initial support for aggregate.get_aggregates and set_aggregates
     '1.2',  # Adds /resource_classes resource endpoint
+    '1.3',  # Adds 'member_of' query parameter to get resource providers
+            # that are members of any of the listed aggregates
+    '1.4',  # Adds resources query string parameter in GET /resource_providers
 ]
 
 

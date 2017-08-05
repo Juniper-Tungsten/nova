@@ -23,6 +23,7 @@ import os
 import warnings
 
 import fixtures
+from keystoneauth1 import session as ks
 import mock
 from oslo_concurrency import lockutils
 from oslo_config import cfg
@@ -31,6 +32,7 @@ import oslo_messaging as messaging
 from oslo_messaging import conffixture as messaging_conffixture
 import six
 
+from nova.api.openstack.placement import deploy as placement_deploy
 from nova.compute import rpcapi as compute_rpcapi
 from nova import context
 from nova.db import migration
@@ -43,6 +45,7 @@ from nova import rpc
 from nova import service
 from nova.tests.functional.api import client
 from nova.tests import uuidsentinel
+from nova import wsgi
 
 _TRUE_VALUES = ('True', 'true', '1', 'yes')
 
@@ -269,8 +272,24 @@ class SingleCellSimple(fixtures.Fixture):
             'nova.objects.CellMappingList._get_all_from_db',
             self._fake_cell_list))
         self.useFixture(fixtures.MonkeyPatch(
+            'nova.objects.CellMapping._get_by_uuid_from_db',
+            self._fake_cell_get))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.objects.HostMapping._get_by_host_from_db',
+            self._fake_hostmapping_get))
+        self.useFixture(fixtures.MonkeyPatch(
             'nova.context.target_cell',
             self._fake_target_cell))
+
+    def _fake_hostmapping_get(self, *args):
+        return {'id': 1,
+                'updated_at': None,
+                'created_at': None,
+                'host': 'host1',
+                'cell_mapping': self._fake_cell_list()[0]}
+
+    def _fake_cell_get(self, *args):
+        return self._fake_cell_list()[0]
 
     def _fake_cell_list(self, *args):
         return [{'id': 1,
@@ -284,7 +303,7 @@ class SingleCellSimple(fixtures.Fixture):
     @contextmanager
     def _fake_target_cell(self, context, target_cell):
         # NOTE(danms): Just pass through the context without actually
-        # targetting anything.
+        # targeting anything.
         yield context
 
 
@@ -970,6 +989,15 @@ class NeutronFixture(fixtures.Fixture):
             'create_pci_requests_for_sriov_ports',
             lambda *args, **kwargs: None)
         self.test.stub_out(
+            'nova.network.neutronv2.api.API.setup_networks_on_host',
+            lambda *args, **kwargs: None)
+        self.test.stub_out(
+            'nova.network.neutronv2.api.API.migrate_instance_start',
+            lambda *args, **kwargs: None)
+        self.test.stub_out(
+            'nova.network.neutronv2.api.API.migrate_instance_finish',
+            lambda *args, **kwargs: None)
+        self.test.stub_out(
             'nova.network.security_group.neutron_driver.SecurityGroupAPI.'
             'get_instances_security_groups_bindings',
             lambda *args, **kwargs: {})
@@ -1118,3 +1146,106 @@ class CinderFixture(fixtures.Fixture):
                            lambda *args, **kwargs: None)
         self.test.stub_out('nova.volume.cinder.API.unreserve_volume',
                            fake_unreserve_volume)
+
+
+class PlacementFixture(fixtures.Fixture):
+    """A fixture to placement operations.
+
+    Runs a local WSGI server bound on a free port and having the Placement
+    application with NoAuth middleware.
+    This fixture also prevents calling the ServiceCatalog for getting the
+    endpoint.
+
+    It's possible to ask for a specific token when running the fixtures so
+    all calls would be passing this token.
+    """
+
+    def __init__(self, token='admin'):
+        self.token = token
+
+    def setUp(self):
+        super(PlacementFixture, self).setUp()
+
+        self.useFixture(ConfPatcher(group='api', auth_strategy='noauth2'))
+        app = placement_deploy.loadapp(CONF)
+        # in order to run these in tests we need to bind only to local
+        # host, and dynamically allocate ports
+        self.service = wsgi.Server('placement', app, host='127.0.0.1')
+        self.service.start()
+        self.addCleanup(self.service.stop)
+
+        self._client = ks.Session(auth=None)
+        # NOTE(sbauza): We need to mock the scheduler report client because
+        # we need to fake Keystone by directly calling the endpoint instead
+        # of looking up the service catalog, like we did for the OSAPIFixture.
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.scheduler.client.report.SchedulerReportClient.get',
+            self._fake_get))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.scheduler.client.report.SchedulerReportClient.post',
+            self._fake_post))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.scheduler.client.report.SchedulerReportClient.put',
+            self._fake_put))
+        self.useFixture(fixtures.MonkeyPatch(
+            'nova.scheduler.client.report.SchedulerReportClient.delete',
+            self._fake_delete))
+
+    def _fake_get(self, *args, **kwargs):
+        (url,) = args[1:]
+        version = kwargs.get("version")
+        # TODO(sbauza): The current placement NoAuthMiddleware returns a 401
+        # in case a token is not provided. We should change that by creating
+        # a fake token so we could remove adding the header below.
+        headers = {'x-auth-token': self.token}
+        if version is not None:
+            # TODO(mriedem): Perform some version discovery at some point.
+            headers.update({
+                'OpenStack-API-Version': 'placement %s' % version
+            })
+        return self._client.get(
+            url,
+            endpoint_override="http://127.0.0.1:%s" % self.service.port,
+            headers=headers,
+            raise_exc=False)
+
+    def _fake_post(self, *args):
+        (url, data) = args[1:]
+        # NOTE(sdague): using json= instead of data= sets the
+        # media type to application/json for us. Placement API is
+        # more sensitive to this than other APIs in the OpenStack
+        # ecosystem.
+        # TODO(sbauza): The current placement NoAuthMiddleware returns a 401
+        # in case a token is not provided. We should change that by creating
+        # a fake token so we could remove adding the header below.
+        return self._client.post(
+            url, json=data,
+            endpoint_override="http://127.0.0.1:%s" % self.service.port,
+            headers={'x-auth-token': self.token},
+            raise_exc=False)
+
+    def _fake_put(self, *args):
+        (url, data) = args[1:]
+        # NOTE(sdague): using json= instead of data= sets the
+        # media type to application/json for us. Placement API is
+        # more sensitive to this than other APIs in the OpenStack
+        # ecosystem.
+        # TODO(sbauza): The current placement NoAuthMiddleware returns a 401
+        # in case a token is not provided. We should change that by creating
+        # a fake token so we could remove adding the header below.
+        return self._client.put(
+            url, json=data,
+            endpoint_override="http://127.0.0.1:%s" % self.service.port,
+            headers={'x-auth-token': self.token},
+            raise_exc=False)
+
+    def _fake_delete(self, *args):
+        (url,) = args[1:]
+        # TODO(sbauza): The current placement NoAuthMiddleware returns a 401
+        # in case a token is not provided. We should change that by creating
+        # a fake token so we could remove adding the header below.
+        return self._client.delete(
+            url,
+            endpoint_override="http://127.0.0.1:%s" % self.service.port,
+            headers={'x-auth-token': self.token},
+            raise_exc=False)

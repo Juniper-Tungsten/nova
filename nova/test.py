@@ -230,6 +230,10 @@ class TestCase(testtools.TestCase):
             objects_base.NovaObjectRegistry._registry._obj_classes)
         self.addCleanup(self._restore_obj_registry)
 
+        # NOTE(danms): Reset the cached list of cells
+        from nova.compute import api
+        api.CELLS = []
+
         self.cell_mappings = {}
         self.host_mappings = {}
         # NOTE(danms): If the test claims to want to set up the database
@@ -336,14 +340,14 @@ class TestCase(testtools.TestCase):
     def flags(self, **kw):
         """Override flag variables for a test."""
         group = kw.pop('group', None)
-        for k, v in six.iteritems(kw):
+        for k, v in kw.items():
             CONF.set_override(k, v, group, enforce_type=True)
 
     def start_service(self, name, host=None, **kwargs):
         svc = self.useFixture(
             nova_fixtures.ServiceFixture(name, host, **kwargs))
 
-        if name == 'compute':
+        if name == 'compute' and self.USES_DB:
             ctxt = context.get_context()
             cell = self.cell_mappings[kwargs.pop('cell', CELL1_NAME)]
             hm = objects.HostMapping(context=ctxt,
@@ -519,6 +523,21 @@ class MatchType(object):
 
     def __repr__(self):
         return "<MatchType:" + str(self.wanttype) + ">"
+
+
+class MatchObjPrims(object):
+    """Matches objects with equal primitives."""
+    def __init__(self, want_obj):
+        self.want_obj = want_obj
+
+    def __eq__(self, other):
+        return objects_base.obj_equal_prims(other, self.want_obj)
+
+    def __ne__(self, other):
+        return not other == self.want_obj
+
+    def __repr__(self):
+        return '<MatchObjPrims:' + str(self.want_obj) + '>'
 
 
 class ContainKeyValue(object):

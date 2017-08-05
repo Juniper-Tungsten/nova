@@ -21,7 +21,7 @@ Helper classes for Ironic HTTP PATCH creation.
 """
 
 from oslo_serialization import jsonutils
-import six
+
 
 import nova.conf
 
@@ -65,6 +65,8 @@ class GenericDriverFields(object):
                       'op': 'add', 'value': instance.display_name})
         patch.append({'path': '/instance_info/vcpus', 'op': 'add',
                       'value': str(instance.flavor.vcpus)})
+        patch.append({'path': '/instance_info/nova_host_id', 'op': 'add',
+                      'value': instance.get('host')})
         patch.append({'path': '/instance_info/memory_mb', 'op': 'add',
                       'value': str(instance.flavor.memory_mb)})
         patch.append({'path': '/instance_info/local_gb', 'op': 'add',
@@ -91,7 +93,7 @@ class GenericDriverFields(object):
         # scan through the extra_specs values and ignore the keys
         # not starting with keyword 'capabilities'.
 
-        for key, val in six.iteritems(extra_specs):
+        for key, val in extra_specs.items():
             if not key.startswith('capabilities:'):
                 continue
 

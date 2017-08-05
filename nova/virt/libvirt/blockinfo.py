@@ -73,7 +73,7 @@ import itertools
 import operator
 
 from oslo_config import cfg
-import six
+
 
 from nova import block_device
 from nova import exception
@@ -142,7 +142,7 @@ def get_dev_prefix_for_disk_bus(disk_bus):
     elif disk_bus == "sata":
         return "sd"
     else:
-        raise exception.NovaException(
+        raise exception.InternalError(
             _("Unable to determine disk prefix for %s") %
             disk_bus)
 
@@ -191,9 +191,8 @@ def find_disk_dev_for_disk_bus(mapping, bus,
             if disk_dev not in assigned_devices:
                 return disk_dev
 
-    raise exception.NovaException(
-        _("No free disk device names for prefix '%s'") %
-        dev_prefix)
+    msg = _("No free disk device names for prefix '%s'") % dev_prefix
+    raise exception.InternalError(msg)
 
 
 def is_disk_bus_valid_for_virt(virt_type, disk_bus):
@@ -312,9 +311,8 @@ def get_disk_bus_for_disk_dev(virt_type, disk_dev):
     elif disk_dev.startswith('ubd'):
         return "uml"
     else:
-        raise exception.NovaException(
-            _("Unable to determine disk bus for '%s'") %
-            disk_dev[:1])
+        msg = _("Unable to determine disk bus for '%s'") % disk_dev[:1]
+        raise exception.InternalError(msg)
 
 
 def get_next_disk_info(mapping, disk_bus,
@@ -648,7 +646,7 @@ def get_disk_info(virt_type, instance, image_meta,
 
 
 def get_boot_order(disk_info):
-    boot_mapping = (info for name, info in six.iteritems(disk_info['mapping'])
+    boot_mapping = (info for name, info in disk_info['mapping'].items()
                     if name != 'root' and info.get('boot_index') is not None)
     boot_devs_dup = (BOOT_DEV_FOR_TYPE[dev['type']] for dev in
                      sorted(boot_mapping,

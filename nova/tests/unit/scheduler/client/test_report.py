@@ -12,9 +12,11 @@
 
 from keystoneauth1 import exceptions as ks_exc
 import mock
+import six
 
 import nova.conf
 from nova import context
+from nova import exception
 from nova import objects
 from nova.objects import base as obj_base
 from nova.scheduler.client import report
@@ -41,55 +43,86 @@ class SafeConnectedTestCase(test.NoDBTestCase):
     def test_missing_endpoint(self, req):
         """Test EndpointNotFound behavior.
 
-        A missing endpoint entry should permanently disable the
-        client. And make future calls to it not happen.
+        A missing endpoint entry should not explode.
         """
         req.side_effect = ks_exc.EndpointNotFound()
         self.client._get_resource_provider("fake")
-        self.assertTrue(self.client._disabled)
 
-        # reset the call count to demonstrate that future calls don't
+        # reset the call count to demonstrate that future calls still
         # work
         req.reset_mock()
         self.client._get_resource_provider("fake")
-        req.assert_not_called()
+        self.assertTrue(req.called)
 
     @mock.patch('keystoneauth1.session.Session.request')
     def test_missing_auth(self, req):
         """Test Missing Auth handled correctly.
 
-        A missing auth configuration should permanently disable the
-        client. And make future calls to it not happen.
+        A missing auth configuration should not explode.
 
         """
         req.side_effect = ks_exc.MissingAuthPlugin()
         self.client._get_resource_provider("fake")
-        self.assertTrue(self.client._disabled)
 
-        # reset the call count to demonstrate that future calls don't
+        # reset the call count to demonstrate that future calls still
         # work
         req.reset_mock()
         self.client._get_resource_provider("fake")
-        req.assert_not_called()
+        self.assertTrue(req.called)
+
+    @mock.patch('keystoneauth1.session.Session.request')
+    def test_unauthorized(self, req):
+        """Test Unauthorized handled correctly.
+
+        An unauthorized configuration should not explode.
+
+        """
+        req.side_effect = ks_exc.Unauthorized()
+        self.client._get_resource_provider("fake")
+
+        # reset the call count to demonstrate that future calls still
+        # work
+        req.reset_mock()
+        self.client._get_resource_provider("fake")
+        self.assertTrue(req.called)
 
     @mock.patch('keystoneauth1.session.Session.request')
     def test_connect_fail(self, req):
         """Test Connect Failure handled correctly.
 
         If we get a connect failure, this is transient, and we expect
-        that this will end up working correctly later. We don't want
-        to disable the client.
+        that this will end up working correctly later.
 
         """
         req.side_effect = ks_exc.ConnectFailure()
         self.client._get_resource_provider("fake")
-        self.assertFalse(self.client._disabled)
 
         # reset the call count to demonstrate that future calls do
         # work
         req.reset_mock()
         self.client._get_resource_provider("fake")
         self.assertTrue(req.called)
+
+    @mock.patch.object(report, 'LOG')
+    def test_warning_limit(self, mock_log):
+        # Assert that __init__ initializes _warn_count as we expect
+        self.assertEqual(0, self.client._warn_count)
+        mock_self = mock.MagicMock()
+        mock_self._warn_count = 0
+        for i in range(0, report.WARN_EVERY + 3):
+            report.warn_limit(mock_self, 'warning')
+        mock_log.warning.assert_has_calls([mock.call('warning'),
+                                           mock.call('warning')])
+
+
+class TestConstructor(test.NoDBTestCase):
+    @mock.patch('keystoneauth1.session.Session')
+    @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
+    def test_constructor(self, load_auth_mock, ks_sess_mock):
+        report.SchedulerReportClient()
+
+        load_auth_mock.assert_called_once_with(CONF, 'placement')
+        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
 
 
 class SchedulerReportClientTestCase(test.NoDBTestCase):
@@ -116,20 +149,16 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         ) as (_auth_mock, _sess_mock):
             self.client = report.SchedulerReportClient()
 
-    @mock.patch('keystoneauth1.session.Session')
-    @mock.patch('keystoneauth1.loading.load_auth_from_conf_options')
-    def test_constructor(self, load_auth_mock, ks_sess_mock):
-        report.SchedulerReportClient()
 
-        load_auth_mock.assert_called_once_with(CONF, 'placement')
-        ks_sess_mock.assert_called_once_with(auth=load_auth_mock.return_value)
-
+class TestProviderOperations(SchedulerReportClientTestCase):
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_create_resource_provider')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_provider_aggregates')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_resource_provider')
     def test_ensure_resource_provider_exists_in_cache(self, get_rp_mock,
-            create_rp_mock):
+            get_agg_mock, create_rp_mock):
         # Override the client object's cache to contain a resource provider
         # object for the compute host and check that
         # _ensure_resource_provider() doesn't call _get_resource_provider() or
@@ -139,14 +168,23 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         }
 
         self.client._ensure_resource_provider(uuids.compute_node)
+        get_agg_mock.assert_called_once_with(uuids.compute_node)
+        self.assertIn(uuids.compute_node, self.client._provider_aggregate_map)
+        self.assertEqual(
+            get_agg_mock.return_value,
+            self.client._provider_aggregate_map[uuids.compute_node]
+        )
         self.assertFalse(get_rp_mock.called)
         self.assertFalse(create_rp_mock.called)
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_create_resource_provider')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_provider_aggregates')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_resource_provider')
-    def test_ensure_resource_provider_get(self, get_rp_mock, create_rp_mock):
+    def test_ensure_resource_provider_get(self, get_rp_mock, get_agg_mock,
+            create_rp_mock):
         # No resource provider exists in the client's cache, so validate that
         # if we get the resource provider from the placement API that we don't
         # try to create the resource provider.
@@ -155,6 +193,12 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         self.client._ensure_resource_provider(uuids.compute_node)
 
         get_rp_mock.assert_called_once_with(uuids.compute_node)
+        get_agg_mock.assert_called_once_with(uuids.compute_node)
+        self.assertIn(uuids.compute_node, self.client._provider_aggregate_map)
+        self.assertEqual(
+            get_agg_mock.return_value,
+            self.client._provider_aggregate_map[uuids.compute_node]
+        )
         self.assertEqual({uuids.compute_node: mock.sentinel.rp},
                           self.client._resource_providers)
         self.assertFalse(create_rp_mock.called)
@@ -162,9 +206,11 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_create_resource_provider')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_provider_aggregates')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_resource_provider')
     def test_ensure_resource_provider_create_none(self, get_rp_mock,
-            create_rp_mock):
+            get_agg_mock, create_rp_mock):
         # No resource provider exists in the client's cache, and
         # _create_provider returns None, indicating there was an error with the
         # create call. Ensure we don't populate the resource provider cache
@@ -177,13 +223,17 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         get_rp_mock.assert_called_once_with(uuids.compute_node)
         create_rp_mock.assert_called_once_with(uuids.compute_node,
                                                uuids.compute_node)
+        self.assertFalse(get_agg_mock.called)
         self.assertEqual({}, self.client._resource_providers)
+        self.assertEqual({}, self.client._provider_aggregate_map)
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_create_resource_provider')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_get_provider_aggregates')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_get_resource_provider')
-    def test_ensure_resource_provider_create(self, get_rp_mock,
+    def test_ensure_resource_provider_create(self, get_rp_mock, get_agg_mock,
             create_rp_mock):
         # No resource provider exists in the client's cache and no resource
         # provider was returned from the placement API, so verify that in this
@@ -193,6 +243,12 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
 
         self.client._ensure_resource_provider(uuids.compute_node)
 
+        get_agg_mock.assert_called_once_with(uuids.compute_node)
+        self.assertIn(uuids.compute_node, self.client._provider_aggregate_map)
+        self.assertEqual(
+            get_agg_mock.return_value,
+            self.client._provider_aggregate_map[uuids.compute_node]
+        )
         get_rp_mock.assert_called_once_with(uuids.compute_node)
         create_rp_mock.assert_called_once_with(
                 uuids.compute_node,
@@ -359,6 +415,75 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         self.assertTrue(logging_mock.called)
         self.assertFalse(result)
 
+
+class TestAggregates(SchedulerReportClientTestCase):
+    def test_get_provider_aggregates_found(self):
+        """Test that when the placement API returns a list of aggregate UUIDs,
+        that we cache that aggregate information in the appropriate map.
+        """
+        uuid = uuids.compute_node
+        resp_mock = mock.Mock(status_code=200)
+        json_data = {
+            'aggregates': [
+                uuids.agg1,
+                uuids.agg2,
+            ],
+        }
+        resp_mock.json.return_value = json_data
+        self.ks_sess_mock.get.return_value = resp_mock
+
+        result = self.client._get_provider_aggregates(uuid)
+
+        expected = set([
+            uuids.agg1,
+            uuids.agg2,
+        ])
+        expected_url = '/resource_providers/' + uuid + '/aggregates'
+        self.ks_sess_mock.get.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY, raise_exc=False,
+            headers={'OpenStack-API-Version': 'placement 1.1'})
+        self.assertTrue(expected, result)
+
+    @mock.patch.object(report.LOG, 'warning')
+    def test_get_provider_aggregates_not_found(self, log_mock):
+        """Test that when the placement API returns a 404 when looking up a
+        provider's aggregates, that we simply return None and log a warning
+        (since _get_provider_aggregates() should be called after
+        _ensure_resource_provider()).
+        """
+        uuid = uuids.compute_node
+        resp_mock = mock.Mock(status_code=404)
+        self.ks_sess_mock.get.return_value = resp_mock
+
+        result = self.client._get_provider_aggregates(uuid)
+
+        expected_url = '/resource_providers/' + uuid + '/aggregates'
+        self.ks_sess_mock.get.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY, raise_exc=False,
+            headers={'OpenStack-API-Version': 'placement 1.1'})
+        self.assertTrue(log_mock.called)
+        self.assertIsNone(result)
+
+    @mock.patch.object(report.LOG, 'error')
+    def test_get_provider_aggregates_bad_request(self, log_mock):
+        """Test that when the placement API returns a 400 when looking up a
+        provider's aggregates, that we simply return None and log an error.
+        """
+        uuid = uuids.compute_node
+        resp_mock = mock.Mock(status_code=400)
+        self.ks_sess_mock.get.return_value = resp_mock
+
+        result = self.client._get_provider_aggregates(uuid)
+
+        expected_url = '/resource_providers/' + uuid + '/aggregates'
+        self.ks_sess_mock.get.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY, raise_exc=False,
+            headers={'OpenStack-API-Version': 'placement 1.1'})
+        self.assertTrue(log_mock.called)
+        self.assertIsNone(result)
+
+
+class TestComputeNodeToInventoryDict(test.NoDBTestCase):
     def test_compute_node_inventory(self):
         uuid = uuids.compute_node
         name = 'computehost'
@@ -404,20 +529,221 @@ class SchedulerReportClientTestCase(test.NoDBTestCase):
         }
         self.assertEqual(expected, result)
 
+    def test_compute_node_inventory_empty(self):
+        uuid = uuids.compute_node
+        name = 'computehost'
+        compute_node = objects.ComputeNode(uuid=uuid,
+                                           hypervisor_hostname=name,
+                                           vcpus=0,
+                                           cpu_allocation_ratio=16.0,
+                                           memory_mb=0,
+                                           ram_allocation_ratio=1.5,
+                                           local_gb=0,
+                                           disk_allocation_ratio=1.0)
+        result = report._compute_node_to_inventory_dict(compute_node)
+        self.assertEqual({}, result)
+
+
+class TestInventory(SchedulerReportClientTestCase):
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 '_ensure_resource_provider')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
-                '_update_inventory_attempt')
+                '_delete_inventory')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_update_inventory')
     @mock.patch('nova.objects.ComputeNode.save')
-    def test_update_resource_stats(self, mock_save, mock_ui, mock_erp):
+    def test_update_resource_stats(self, mock_save, mock_ui, mock_delete,
+            mock_erp):
         cn = self.compute_node
         self.client.update_resource_stats(cn)
         mock_save.assert_called_once_with()
         mock_erp.assert_called_once_with(cn.uuid, cn.hypervisor_hostname)
+        expected_inv_data = {
+            'VCPU': {
+                'total': 8,
+                'reserved': 0,
+                'min_unit': 1,
+                'max_unit': 8,
+                'step_size': 1,
+                'allocation_ratio': 16.0,
+            },
+            'MEMORY_MB': {
+                'total': 1024,
+                'reserved': 512,
+                'min_unit': 1,
+                'max_unit': 1024,
+                'step_size': 1,
+                'allocation_ratio': 1.5,
+            },
+            'DISK_GB': {
+                'total': 10,
+                'reserved': 0,
+                'min_unit': 1,
+                'max_unit': 10,
+                'step_size': 1,
+                'allocation_ratio': 1.0,
+            },
+        }
+        mock_ui.assert_called_once_with(
+            cn.uuid,
+            expected_inv_data,
+        )
+        self.assertFalse(mock_delete.called)
+
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_ensure_resource_provider')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_delete_inventory')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                '_update_inventory')
+    @mock.patch('nova.objects.ComputeNode.save')
+    def test_update_resource_stats_no_inv(self, mock_save, mock_ui,
+            mock_delete, mock_erp):
+        """Ensure that if there are no inventory records, that we call
+        _delete_inventory() instead of _update_inventory().
+        """
+        cn = self.compute_node
+        cn.vcpus = 0
+        cn.memory_mb = 0
+        cn.local_gb = 0
+        self.client.update_resource_stats(cn)
+        mock_save.assert_called_once_with()
+        mock_erp.assert_called_once_with(cn.uuid, cn.hypervisor_hostname)
+        mock_delete.assert_called_once_with(cn.uuid)
         self.assertFalse(mock_ui.called)
 
+    @mock.patch('nova.scheduler.client.report._extract_inventory_in_use')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_already_no_inventory(self, mock_get, mock_put,
+            mock_extract):
+        cn = self.compute_node
+        rp = objects.ResourceProvider(uuid=cn.uuid, generation=42)
+        # Make sure the ResourceProvider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
 
-class TestInventory(SchedulerReportClientTestCase):
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+            }
+        }
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertFalse(mock_put.called)
+        self.assertFalse(mock_extract.called)
+        new_gen = self.client._resource_providers[cn.uuid].generation
+        self.assertEqual(1, new_gen)
+
+    @mock.patch('nova.scheduler.client.report._extract_inventory_in_use')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory(self, mock_get, mock_put, mock_extract):
+        cn = self.compute_node
+        rp = objects.ResourceProvider(uuid=cn.uuid, generation=42)
+        # Make sure the ResourceProvider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+                'VCPU': {'total': 16},
+                'MEMORY_MB': {'total': 1024},
+                'DISK_GB': {'total': 10},
+            }
+        }
+        mock_put.return_value.status_code = 200
+        mock_put.return_value.json.return_value = {
+            'resource_provider_generation': 44,
+            'inventories': {
+            }
+        }
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertFalse(mock_extract.called)
+        new_gen = self.client._resource_providers[cn.uuid].generation
+        self.assertEqual(44, new_gen)
+
+    @mock.patch.object(report.LOG, 'warning')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_inventory_in_use(self, mock_get, mock_put,
+            mock_warn):
+        cn = self.compute_node
+        rp = objects.ResourceProvider(uuid=cn.uuid, generation=42)
+        # Make sure the ResourceProvider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+                'VCPU': {'total': 16},
+                'MEMORY_MB': {'total': 1024},
+                'DISK_GB': {'total': 10},
+            }
+        }
+        mock_put.return_value.status_code = 409
+        rc_str = "VCPU, MEMORY_MB"
+        in_use_exc = exception.InventoryInUse(
+            resource_classes=rc_str,
+            resource_provider=cn.uuid,
+        )
+        fault_text = """
+409 Conflict
+
+There was a conflict when trying to complete your request.
+
+ update conflict: %s
+ """ % six.text_type(in_use_exc)
+        mock_put.return_value.text = fault_text
+        mock_put.return_value.json.return_value = {
+            'resource_provider_generation': 44,
+            'inventories': {
+            }
+        }
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertTrue(mock_warn.called)
+
+    @mock.patch.object(report.LOG, 'error')
+    @mock.patch.object(report.LOG, 'warning')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_inventory_error(self, mock_get, mock_put,
+            mock_warn, mock_error):
+        cn = self.compute_node
+        rp = objects.ResourceProvider(uuid=cn.uuid, generation=42)
+        # Make sure the ResourceProvider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+                'VCPU': {'total': 16},
+                'MEMORY_MB': {'total': 1024},
+                'DISK_GB': {'total': 10},
+            }
+        }
+        mock_put.return_value.status_code = 409
+        mock_put.return_value.text = (
+            'There was a failure'
+        )
+        mock_put.return_value.json.return_value = {
+            'resource_provider_generation': 44,
+            'inventories': {
+            }
+        }
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertFalse(mock_warn.called)
+        self.assertTrue(mock_error.called)
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'get')
@@ -719,6 +1045,23 @@ class TestAllocations(SchedulerReportClientTestCase):
         }
         self.assertEqual(expected, result)
 
+    @mock.patch('nova.compute.utils.is_volume_backed_instance')
+    def test_instance_to_allocations_dict_zero_disk(self, mock_vbi):
+        mock_vbi.return_value = True
+        inst = objects.Instance(
+            uuid=uuids.inst,
+            flavor=objects.Flavor(root_gb=10,
+                                  swap=0,
+                                  ephemeral_gb=0,
+                                  memory_mb=1024,
+                                  vcpus=2))
+        result = report._instance_to_allocations_dict(inst)
+        expected = {
+            'MEMORY_MB': 1024,
+            'VCPU': 2,
+        }
+        self.assertEqual(expected, result)
+
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'put')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
@@ -846,3 +1189,24 @@ class TestAllocations(SchedulerReportClientTestCase):
             mock.call('/allocations/%s' % inst1.uuid),
             mock.call('/allocations/%s' % inst2.uuid)]
         mock_delete.assert_has_calls(expected_calls, any_order=True)
+
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
+    @mock.patch('nova.scheduler.client.report.LOG')
+    def test_delete_allocation_for_instance_ignore_404(self, mock_log,
+                                                       mock_delete):
+        """Tests that we don't log a warning on a 404 response when trying to
+        delete an allocation record.
+        """
+        mock_response = mock.MagicMock(status_code=404)
+        try:
+            mock_response.__nonzero__.return_value = False
+        except AttributeError:
+            # py3 uses __bool__
+            mock_response.__bool__.return_value = False
+        mock_delete.return_value = mock_response
+        self.client._delete_allocation_for_instance(uuids.rp_uuid)
+        # make sure we didn't screw up the logic or the mock
+        mock_log.info.assert_not_called()
+        # make sure warning wasn't called for the 404
+        mock_log.warning.assert_not_called()

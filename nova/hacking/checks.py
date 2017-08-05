@@ -510,7 +510,7 @@ class _FindVariableReferences(ast.NodeVisitor):
             # variable 'foo' was used like:
             # mocked_thing.bar = foo
             # foo()
-            # self.assertRaises(excepion, foo)
+            # self.assertRaises(exception, foo)
             self._references.append(node.id)
         super(_FindVariableReferences, self).generic_visit(node)
 
@@ -672,6 +672,7 @@ def check_config_option_in_central_place(logical_line, filename):
         # CLI opts are allowed to be outside of nova/conf directory
         'nova/cmd/manage.py',
         'nova/cmd/policy_check.py',
+        'nova/cmd/status.py',
         # config options should not be declared in tests, but there is
         # another checker for it (N320)
         'nova/tests',
@@ -730,7 +731,7 @@ def check_doubled_words(physical_line, filename):
 
 
 def check_python3_no_iteritems(logical_line):
-    msg = ("N344: Use six.iteritems() instead of dict.iteritems().")
+    msg = ("N344: Use items() instead of dict.iteritems().")
 
     if re.search(r".*\.iteritems\(\)", logical_line):
         yield(0, msg)

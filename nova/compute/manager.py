@@ -514,7 +514,7 @@ class ComputeManager(manager.Manager):
         self.consoleauth_rpcapi = consoleauth.rpcapi.ConsoleAuthAPI()
         self.cells_rpcapi = cells_rpcapi.CellsAPI()
         self.scheduler_client = scheduler_client.SchedulerClient()
-        self._resource_tracker_dict = {}
+        self._resource_tracker = None
         self.instance_events = InstanceEvents()
         self._sync_power_pool = eventlet.GreenPool(
             size=CONF.sync_power_state_pool_size)
@@ -547,27 +547,18 @@ class ComputeManager(manager.Manager):
         compute_rpcapi.LAST_VERSION = None
         self.compute_rpcapi = compute_rpcapi.ComputeAPI()
 
-    def _get_resource_tracker(self, nodename):
-        rt = self._resource_tracker_dict.get(nodename)
-        if not rt:
-            if not self.driver.node_is_available(nodename):
-                raise exception.NovaException(
-                        _("%s is not a valid node managed by this "
-                          "compute host.") % nodename)
-
-            rt = resource_tracker.ResourceTracker(self.host,
-                                                  self.driver,
-                                                  nodename)
-            self._resource_tracker_dict[nodename] = rt
-        return rt
+    def _get_resource_tracker(self):
+        if not self._resource_tracker:
+            rt = resource_tracker.ResourceTracker(self.host, self.driver)
+            self._resource_tracker = rt
+        return self._resource_tracker
 
     def _update_resource_tracker(self, context, instance):
         """Let the resource tracker know that an instance has changed state."""
 
-        if (instance.host == self.host and
-                self.driver.node_is_available(instance.node)):
-            rt = self._get_resource_tracker(instance.node)
-            rt.update_usage(context, instance)
+        if instance.host == self.host:
+            rt = self._get_resource_tracker()
+            rt.update_usage(context, instance, instance.node)
 
     def _instance_update(self, context, instance, **kwargs):
         """Update an instance in the database using kwargs as value."""
@@ -1899,8 +1890,8 @@ class ComputeManager(manager.Manager):
         self._check_device_tagging(requested_networks, block_device_mapping)
 
         try:
-            rt = self._get_resource_tracker(node)
-            with rt.instance_claim(context, instance, limits):
+            rt = self._get_resource_tracker()
+            with rt.instance_claim(context, instance, node, limits):
                 # NOTE(russellb) It's important that this validation be done
                 # *after* the resource tracker instance claim, as that is where
                 # the host is set on the instance.
@@ -1992,7 +1983,8 @@ class ComputeManager(manager.Manager):
                 exception.ImageUnacceptable,
                 exception.InvalidDiskInfo,
                 exception.InvalidDiskFormat,
-                exception.SignatureVerificationError) as e:
+                exception.SignatureVerificationError,
+                exception.VolumeEncryptionNotSupported) as e:
             self._notify_about_instance_usage(context, instance,
                     'create.error', fault=e)
             compute_utils.notify_about_instance_action(
@@ -2712,7 +2704,7 @@ class ComputeManager(manager.Manager):
 
         LOG.info(_LI("Rebuilding instance"), instance=instance)
         if scheduled_node is not None:
-            rt = self._get_resource_tracker(scheduled_node)
+            rt = self._get_resource_tracker()
             rebuild_claim = rt.rebuild_claim
         else:
             rebuild_claim = claims.NopClaim
@@ -2738,7 +2730,8 @@ class ComputeManager(manager.Manager):
         with self._error_out_instance_on_exception(context, instance):
             try:
                 claim_ctxt = rebuild_claim(
-                    context, instance, limits=limits, image_meta=image_meta,
+                    context, instance, scheduled_node,
+                    limits=limits, image_meta=image_meta,
                     migration=migration)
                 self._do_rebuild_instance_with_claim(
                     claim_ctxt, context, instance, orig_image_ref,
@@ -3503,9 +3496,9 @@ class ComputeManager(manager.Manager):
             with migration.obj_as_admin():
                 migration.save()
 
-            rt = self._get_resource_tracker(migration.source_node)
-            rt.drop_move_claim(context, instance, old_instance_type,
-                               prefix='old_')
+            rt = self._get_resource_tracker()
+            rt.drop_move_claim(context, instance, migration.source_node,
+                               old_instance_type, prefix='old_')
             instance.drop_migration_context()
 
             # NOTE(mriedem): The old_vm_state could be STOPPED but the user
@@ -3595,8 +3588,8 @@ class ComputeManager(manager.Manager):
             instance.revert_migration_context()
             instance.save()
 
-            rt = self._get_resource_tracker(instance.node)
-            rt.drop_move_claim(context, instance)
+            rt = self._get_resource_tracker()
+            rt.drop_move_claim(context, instance, instance.node)
 
             self.compute_rpcapi.finish_revert_resize(context, instance,
                     migration, migration.source_compute,
@@ -3713,8 +3706,8 @@ class ComputeManager(manager.Manager):
         instance.save()
 
         limits = filter_properties.get('limits', {})
-        rt = self._get_resource_tracker(node)
-        with rt.resize_claim(context, instance, instance_type,
+        rt = self._get_resource_tracker()
+        with rt.resize_claim(context, instance, instance_type, node,
                              image_meta=image, limits=limits) as claim:
             LOG.info(_LI('Migrating'), instance=instance)
             self.compute_rpcapi.resize_instance(
@@ -4434,7 +4427,7 @@ class ComputeManager(manager.Manager):
             LOG.debug('No node specified, defaulting to %s', node,
                       instance=instance)
 
-        rt = self._get_resource_tracker(node)
+        rt = self._get_resource_tracker()
         limits = filter_properties.get('limits', {})
 
         shelved_image_ref = instance.image_ref
@@ -4450,7 +4443,7 @@ class ComputeManager(manager.Manager):
                                                         self.host)
         network_info = self.network_api.get_instance_nw_info(context, instance)
         try:
-            with rt.instance_claim(context, instance, limits):
+            with rt.instance_claim(context, instance, node, limits):
                 self.driver.spawn(context, instance, image_meta,
                                   injected_files=[],
                                   admin_password=None,
@@ -6530,9 +6523,9 @@ class ComputeManager(manager.Manager):
 
     def update_available_resource_for_node(self, context, nodename):
 
-        rt = self._get_resource_tracker(nodename)
+        rt = self._get_resource_tracker()
         try:
-            rt.update_available_resource(context)
+            rt.update_available_resource(context, nodename)
         except exception.ComputeHostNotFound:
             # NOTE(comstud): We can get to this case if a node was
             # marked 'deleted' in the DB and then re-added with a
@@ -6542,17 +6535,16 @@ class ComputeManager(manager.Manager):
             # that this will resolve itself on the next run.
             LOG.info(_LI("Compute node '%s' not found in "
                          "update_available_resource."), nodename)
-            self._resource_tracker_dict.pop(nodename, None)
+            # TODO(jaypipes): Yes, this is inefficient to throw away all of the
+            # compute nodes to force a rebuild, but this is only temporary
+            # until Ironic baremetal node resource providers are tracked
+            # properly in the report client and this is a tiny edge case
+            # anyway.
+            self._resource_tracker = None
             return
         except Exception:
             LOG.exception(_LE("Error updating resources for node "
                           "%(node)s."), {'node': nodename})
-
-        # NOTE(comstud): Replace the RT cache before looping through
-        # compute nodes to delete below, as we can end up doing greenthread
-        # switches there. Best to have everyone using the newest cache
-        # ASAP.
-        self._resource_tracker_dict[nodename] = rt
 
     @periodic_task.periodic_task(spacing=CONF.update_resources_interval)
     def update_available_resource(self, context):
@@ -6569,10 +6561,6 @@ class ComputeManager(manager.Manager):
         nodenames = set(self.driver.get_available_nodes())
         for nodename in nodenames:
             self.update_available_resource_for_node(context, nodename)
-
-        self._resource_tracker_dict = {
-            k: v for k, v in self._resource_tracker_dict.items()
-            if k in nodenames}
 
         # Delete orphan compute node not reported by driver but still in db
         for cn in compute_nodes_in_db:
@@ -6858,6 +6846,14 @@ class ComputeManager(manager.Manager):
             instances = objects.InstanceList.get_by_filters(
                 context, filters, expected_attrs=attrs, use_slave=True)
         LOG.debug('There are %d instances to clean', len(instances))
+
+        # TODO(raj_singh): Remove this if condition when min value is
+        # introduced to "maximum_instance_delete_attempts" cfg option.
+        if CONF.maximum_instance_delete_attempts < 1:
+            LOG.warning(_LW('Future versions of Nova will restrict the '
+                            '"maximum_instance_delete_attempts" config option '
+                            'to values >=1. Update your configuration file to '
+                            'mitigate future upgrade issues.'))
 
         for instance in instances:
             attempts = int(instance.system_metadata.get('clean_attempts', '0'))

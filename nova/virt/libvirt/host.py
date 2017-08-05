@@ -90,7 +90,6 @@ class Host(object):
         self._conn_event_handler = conn_event_handler
         self._conn_event_handler_queue = six.moves.queue.Queue()
         self._lifecycle_event_handler = lifecycle_event_handler
-        self._skip_list_all_domains = False
         self._caps = None
         self._hostname = None
 
@@ -200,7 +199,7 @@ class Host(object):
     def _connect_auth_cb(creds, opaque):
         if len(creds) == 0:
             return 0
-        raise exception.NovaException(
+        raise exception.InternalError(
             _("Can not handle authentication request for %d credentials")
             % len(creds))
 
@@ -518,110 +517,47 @@ class Host(object):
         return self._version_check(
             lv_ver=lv_ver, hv_ver=hv_ver, hv_type=hv_type, op=operator.ne)
 
+    def get_guest(self, instance):
+        """Retrieve libvirt guest object for an instance.
+
+        All libvirt error handling should be handled in this method and
+        relevant nova exceptions should be raised in response.
+
+        :param instance: a nova.objects.Instance object
+
+        :returns: a nova.virt.libvirt.Guest object
+        :raises exception.InstanceNotFound: The domain was not found
+        :raises exception.InternalError: A libvirt error occured
+        """
+        return libvirt_guest.Guest(self.get_domain(instance))
+
     # TODO(sahid): needs to be private
     def get_domain(self, instance):
         """Retrieve libvirt domain object for an instance.
 
-        :param instance: an nova.objects.Instance object
+        All libvirt error handling should be handled in this method and
+        relevant nova exceptions should be raised in response.
 
-        Attempt to lookup the libvirt domain objects
-        corresponding to the Nova instance, based on
-        its name. If not found it will raise an
-        exception.InstanceNotFound exception. On other
-        errors, it will raise an exception.NovaException
-        exception.
+        :param instance: a nova.objects.Instance object
 
         :returns: a libvirt.Domain object
-        """
-        return self._get_domain_by_name(instance.name)
-
-    def get_guest(self, instance):
-        """Retrieve libvirt domain object for an instance.
-
-        :param instance: an nova.objects.Instance object
-
-        :returns: a nova.virt.libvirt.Guest object
-        """
-        return libvirt_guest.Guest(
-            self.get_domain(instance))
-
-    def _get_domain_by_id(self, instance_id):
-        """Retrieve libvirt domain object given an instance id.
-
-        All libvirt error handling should be handled in this method and
-        relevant nova exceptions should be raised in response.
-
+        :raises exception.InstanceNotFound: The domain was not found
+        :raises exception.InternalError: A libvirt error occured
         """
         try:
             conn = self.get_connection()
-            return conn.lookupByID(instance_id)
+            return conn.lookupByName(instance.name)
         except libvirt.libvirtError as ex:
             error_code = ex.get_error_code()
             if error_code == libvirt.VIR_ERR_NO_DOMAIN:
-                raise exception.InstanceNotFound(instance_id=instance_id)
-
-            msg = (_("Error from libvirt while looking up %(instance_id)s: "
-                     "[Error Code %(error_code)s] %(ex)s")
-                   % {'instance_id': instance_id,
-                      'error_code': error_code,
-                      'ex': ex})
-            raise exception.NovaException(msg)
-
-    def _get_domain_by_name(self, instance_name):
-        """Retrieve libvirt domain object given an instance name.
-
-        All libvirt error handling should be handled in this method and
-        relevant nova exceptions should be raised in response.
-
-        """
-        try:
-            conn = self.get_connection()
-            return conn.lookupByName(instance_name)
-        except libvirt.libvirtError as ex:
-            error_code = ex.get_error_code()
-            if error_code == libvirt.VIR_ERR_NO_DOMAIN:
-                raise exception.InstanceNotFound(instance_id=instance_name)
+                raise exception.InstanceNotFound(instance_id=instance.uuid)
 
             msg = (_('Error from libvirt while looking up %(instance_name)s: '
                      '[Error Code %(error_code)s] %(ex)s') %
-                   {'instance_name': instance_name,
+                   {'instance_name': instance.name,
                     'error_code': error_code,
                     'ex': ex})
-            raise exception.NovaException(msg)
-
-    def _list_instance_domains_fast(self, only_running=True):
-        # The modern (>= 0.9.13) fast way - 1 single API call for all domains
-        flags = libvirt.VIR_CONNECT_LIST_DOMAINS_ACTIVE
-        if not only_running:
-            flags = flags | libvirt.VIR_CONNECT_LIST_DOMAINS_INACTIVE
-        return self.get_connection().listAllDomains(flags)
-
-    def _list_instance_domains_slow(self, only_running=True):
-        # The legacy (< 0.9.13) slow way - O(n) API call for n domains
-        uuids = []
-        doms = []
-        # Redundant numOfDomains check is for libvirt bz #836647
-        if self.get_connection().numOfDomains() > 0:
-            for id in self.get_connection().listDomainsID():
-                try:
-                    dom = self._get_domain_by_id(id)
-                    doms.append(dom)
-                    uuids.append(dom.UUIDString())
-                except exception.InstanceNotFound:
-                    continue
-
-        if only_running:
-            return doms
-
-        for name in self.get_connection().listDefinedDomains():
-            try:
-                dom = self._get_domain_by_name(name)
-                if dom.UUIDString() not in uuids:
-                    doms.append(dom)
-            except exception.InstanceNotFound:
-                continue
-
-        return doms
+            raise exception.InternalError(msg)
 
     def list_guests(self, only_running=True, only_guests=True):
         """Get a list of Guest objects for nova instances
@@ -651,20 +587,10 @@ class Host(object):
 
         :returns: list of libvirt.Domain objects
         """
-
-        if not self._skip_list_all_domains:
-            try:
-                alldoms = self._list_instance_domains_fast(only_running)
-            except (libvirt.libvirtError, AttributeError) as ex:
-                LOG.info(_LI("Unable to use bulk domain list APIs, "
-                             "falling back to slow code path: %(ex)s"),
-                         {'ex': ex})
-                self._skip_list_all_domains = True
-
-        if self._skip_list_all_domains:
-            # Old libvirt, or a libvirt driver which doesn't
-            # implement the new API
-            alldoms = self._list_instance_domains_slow(only_running)
+        flags = libvirt.VIR_CONNECT_LIST_DOMAINS_ACTIVE
+        if not only_running:
+            flags = flags | libvirt.VIR_CONNECT_LIST_DOMAINS_INACTIVE
+        alldoms = self.get_connection().listAllDomains(flags)
 
         doms = []
         for dom in alldoms:
@@ -714,8 +640,11 @@ class Host(object):
             if (hasattr(libvirt, 'VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES')
                 and self._caps.host.cpu.model is not None):
                 try:
+                    xml_str = self._caps.host.cpu.to_xml()
+                    if six.PY3 and isinstance(xml_str, six.binary_type):
+                        xml_str = xml_str.decode('utf-8')
                     features = self.get_connection().baselineCPU(
-                        [self._caps.host.cpu.to_xml()],
+                        [xml_str],
                         libvirt.VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES)
                     if features:
                         cpu = vconfig.LibvirtConfigCPU()
@@ -775,7 +704,7 @@ class Host(object):
             usage_type_const = libvirt.VIR_SECRET_USAGE_TYPE_VOLUME
         else:
             msg = _("Invalid usage_type: %s")
-            raise exception.NovaException(msg % usage_type)
+            raise exception.InternalError(msg % usage_type)
 
         try:
             conn = self.get_connection()
@@ -804,7 +733,7 @@ class Host(object):
             secret_conf.usage_type = 'volume'
         else:
             msg = _("Invalid usage_type: %s")
-            raise exception.NovaException(msg % usage_type)
+            raise exception.InternalError(msg % usage_type)
 
         xml = secret_conf.to_xml()
         try:

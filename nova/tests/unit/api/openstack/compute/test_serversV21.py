@@ -579,7 +579,7 @@ class ServersControllerTest(ControllerTest):
 
     def test_get_servers_with_limit_bad_value(self):
         req = self.req('/fake/servers?limit=aaa')
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller.index, req)
 
     def test_get_server_details_empty(self):
@@ -594,7 +594,7 @@ class ServersControllerTest(ControllerTest):
 
     def test_get_server_details_with_bad_name(self):
         req = self.req('/fake/servers/detail?name=%2Binstance')
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller.index, req)
 
     def test_get_server_details_with_limit(self):
@@ -616,13 +616,13 @@ class ServersControllerTest(ControllerTest):
 
     def test_get_server_details_with_limit_bad_value(self):
         req = self.req('/fake/servers/detail?limit=aaa')
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller.detail, req)
 
     def test_get_server_details_with_limit_and_other_params(self):
         req = self.req('/fake/servers/detail'
                                       '?limit=3&blah=2:t'
-                                      '&sort_key=id1&sort_dir=asc')
+                                      '&sort_key=uuid&sort_dir=asc')
         res = self.controller.detail(req)
 
         servers = res['servers']
@@ -635,8 +635,8 @@ class ServersControllerTest(ControllerTest):
         href_parts = urlparse.urlparse(servers_links[0]['href'])
         self.assertEqual('/v2/fake/servers/detail', href_parts.path)
         params = urlparse.parse_qs(href_parts.query)
-        expected = {'limit': ['3'], 'blah': ['2:t'],
-                    'sort_key': ['id1'], 'sort_dir': ['asc'],
+        expected = {'limit': ['3'],
+                    'sort_key': ['uuid'], 'sort_dir': ['asc'],
                     'marker': [fakes.get_fake_uuid(2)]}
         self.assertThat(params, matchers.DictMatches(expected))
 
@@ -647,7 +647,7 @@ class ServersControllerTest(ControllerTest):
 
     def test_get_servers_with_bad_limit(self):
         req = self.req('/fake/servers?limit=asdf')
-        self.assertRaises(webob.exc.HTTPBadRequest,
+        self.assertRaises(exception.ValidationError,
                           self.controller.index, req)
 
     def test_get_servers_with_marker(self):
@@ -667,6 +667,75 @@ class ServersControllerTest(ControllerTest):
         req = self.req('/fake/servers?limit=2&marker=asdf')
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.index, req)
+
+    def test_get_servers_with_invalid_filter_param(self):
+        req = self.req('/fake/servers?info_cache=asdf',
+                       use_admin_context=True)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.index, req)
+        req = self.req('/fake/servers?__foo__=asdf',
+                       use_admin_context=True)
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.index, req)
+
+    def test_get_servers_with_invalid_regex_filter_param(self):
+        req = self.req('/fake/servers?flavor=[[[',
+                       use_admin_context=True)
+        self.assertRaises(exception.ValidationError,
+                          self.controller.index, req)
+
+    def test_get_servers_invalid_sort_key(self):
+        req = self.req('/fake/servers?sort_key=foo&sort_dir=desc')
+        self.assertRaises(exception.ValidationError,
+                          self.controller.index, req)
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_ignore_sort_key(self, mock_get):
+        req = self.req('/fake/servers?sort_key=vcpus&sort_dir=asc')
+        self.controller.index(req)
+        mock_get.assert_called_once_with(
+            mock.ANY, search_opts=mock.ANY, limit=mock.ANY, marker=mock.ANY,
+            expected_attrs=mock.ANY, sort_keys=[], sort_dirs=[])
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_ignore_sort_key_only_one_dir(self, mock_get):
+        req = self.req(
+            '/fake/servers?sort_key=user_id&sort_key=vcpus&sort_dir=asc')
+        self.controller.index(req)
+        mock_get.assert_called_once_with(
+            mock.ANY, search_opts=mock.ANY, limit=mock.ANY, marker=mock.ANY,
+            expected_attrs=mock.ANY, sort_keys=['user_id'],
+            sort_dirs=['asc'])
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_ignore_sort_key_with_no_sort_dir(self, mock_get):
+        req = self.req('/fake/servers?sort_key=vcpus&sort_key=user_id')
+        self.controller.index(req)
+        mock_get.assert_called_once_with(
+            mock.ANY, search_opts=mock.ANY, limit=mock.ANY, marker=mock.ANY,
+            expected_attrs=mock.ANY, sort_keys=['user_id'], sort_dirs=[])
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_ignore_sort_key_with_bad_sort_dir(self, mock_get):
+        req = self.req('/fake/servers?sort_key=vcpus&sort_dir=bad_dir')
+        self.controller.index(req)
+        mock_get.assert_called_once_with(
+            mock.ANY, search_opts=mock.ANY, limit=mock.ANY, marker=mock.ANY,
+            expected_attrs=mock.ANY, sort_keys=[], sort_dirs=[])
+
+    def test_get_servers_non_admin_with_admin_only_sort_key(self):
+        req = self.req('/fake/servers?sort_key=host&sort_dir=desc')
+        self.assertRaises(webob.exc.HTTPForbidden,
+                          self.controller.index, req)
+
+    @mock.patch.object(compute_api.API, 'get_all')
+    def test_get_servers_admin_with_admin_only_sort_key(self, mock_get):
+        req = self.req('/fake/servers?sort_key=node&sort_dir=desc',
+                       use_admin_context=True)
+        self.controller.detail(req)
+        mock_get.assert_called_once_with(
+            mock.ANY, search_opts=mock.ANY, limit=mock.ANY, marker=mock.ANY,
+            expected_attrs=mock.ANY, sort_keys=['node'], sort_dirs=['desc'])
 
     def test_get_servers_with_bad_option(self):
         server_uuid = uuids.fake
@@ -1067,7 +1136,8 @@ class ServersControllerTest(ControllerTest):
     def test_get_servers_allows_changes_since_bad_value(self):
         params = 'changes-since=asdf'
         req = self.req('/fake/servers?%s' % params)
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.index, req)
+        self.assertRaises(exception.ValidationError, self.controller.index,
+                          req)
 
     def test_get_servers_admin_filters_as_user(self):
         """Test getting servers by admin-only or unknown options when
@@ -1116,7 +1186,7 @@ class ServersControllerTest(ControllerTest):
             self.assertIn('vm_state', search_opts)
             # Allowed only by admins with admin API on
             self.assertIn('ip', search_opts)
-            self.assertIn('unknown_option', search_opts)
+            self.assertNotIn('unknown_option', search_opts)
             return objects.InstanceList(
                 objects=[fakes.stub_instance_obj(100, uuid=server_uuid)])
 
@@ -1371,8 +1441,8 @@ class ServersControllerTestV29(ServersControllerTest):
     @mock.patch.object(compute_api.API, 'get_all')
     def test_get_servers_remove_non_search_options(self, get_all_mock):
         req = fakes.HTTPRequestV21.blank('/servers'
-                                         '?sort_key=id1&sort_dir=asc'
-                                         '&sort_key=id2&sort_dir=desc'
+                                         '?sort_key=uuid&sort_dir=asc'
+                                         '&sort_key=user_id&sort_dir=desc'
                                          '&limit=1&marker=123',
                                          use_admin_context=True)
         self.controller.index(req)
@@ -2891,14 +2961,14 @@ class ServersControllerCreateTest(test.TestCase):
             self._test_create_instance_numa_topology_wrong(exc)
 
     def test_create_instance_too_much_metadata(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata']['vote'] = 'fiddletown'
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(webob.exc.HTTPForbidden,
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_key_too_long(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = {('a' * 260): '12345'}
 
         self.req.body = jsonutils.dump_as_bytes(self.body)
@@ -2906,35 +2976,35 @@ class ServersControllerCreateTest(test.TestCase):
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_value_too_long(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = {'key1': ('a' * 260)}
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(exception.ValidationError,
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_key_blank(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = {'': 'abcd'}
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(exception.ValidationError,
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_not_dict(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = 'string'
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(exception.ValidationError,
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_key_not_string(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = {1: 'test'}
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(exception.ValidationError,
                           self.controller.create, self.req, body=self.body)
 
     def test_create_instance_metadata_value_not_string(self):
-        self.flags(quota_metadata_items=1)
+        self.flags(metadata_items=1, group='quota')
         self.body['server']['metadata'] = {'test': ['a', 'list']}
         self.req.body = jsonutils.dump_as_bytes(self.body)
         self.assertRaises(exception.ValidationError,
@@ -3250,7 +3320,7 @@ class ServersControllerCreateTest(test.TestCase):
 
     @mock.patch.object(compute_api.API, 'create',
                        side_effect=exception.ImageNotAuthorized(
-                           project_id=FAKE_UUID))
+                           image_id=FAKE_UUID))
     def test_create_instance_with_image_not_authorized(self,
                                                        mock_create):
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -3319,6 +3389,61 @@ class ServersControllerCreateTest(test.TestCase):
                         address='dummy'))
     def test_create_instance_raise_fixed_ip_not_found_bad_request(self,
                                                                   mock_create):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.CPUThreadPolicyConfigurationInvalid())
+    def test_create_instance_raise_cpu_thread_policy_configuration_invalid(
+            self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.ImageCPUPinningForbidden())
+    def test_create_instance_raise_image_cpu_pinning_forbidden(
+            self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.ImageCPUThreadPolicyForbidden())
+    def test_create_instance_raise_image_cpu_thread_policy_forbidden(
+            self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.MemoryPageSizeInvalid(pagesize='-1'))
+    def test_create_instance_raise_memory_page_size_invalid(self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.MemoryPageSizeForbidden(pagesize='1',
+                                                              against='2'))
+    def test_create_instance_raise_memory_page_size_forbidden(self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.RealtimeConfigurationInvalid())
+    def test_create_instance_raise_realtime_configuration_invalid(
+            self, mock_numa):
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.create,
+                          self.req, body=self.body)
+
+    @mock.patch('nova.virt.hardware.numa_get_constraints',
+                side_effect=exception.RealtimeMaskNotFoundOrInvalid())
+    def test_create_instance_raise_realtime_mask_not_found_or_invalid(
+            self, mock_numa):
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create,
                           self.req, body=self.body)
@@ -3993,6 +4118,29 @@ class ServersViewBuilderTest(test.TestCase):
         self.assertEqual("DELETED", output['server']['status'])
         self.assertThat(output['server']['fault'],
                         matchers.DictMatches(expected_fault))
+
+    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
+    def test_build_server_detail_with_fault_no_instance_mapping(self,
+                                                                mock_im):
+        self.instance['vm_state'] = vm_states.ERROR
+
+        mock_im.side_effect = exception.InstanceMappingNotFound(uuid='foo')
+
+        self.request.context = context.RequestContext('fake', 'fake')
+        self.view_builder.show(self.request, self.instance)
+        mock_im.assert_called_once_with(mock.ANY, self.uuid)
+
+    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
+    def test_build_server_detail_with_fault_loaded(self, mock_im):
+        self.instance['vm_state'] = vm_states.ERROR
+        fault = fake_instance.fake_fault_obj(self.request.context,
+                                             self.uuid, code=500,
+                                             message="No valid host was found")
+        self.instance['fault'] = fault
+
+        self.request.context = context.RequestContext('fake', 'fake')
+        self.view_builder.show(self.request, self.instance)
+        self.assertFalse(mock_im.called)
 
     def test_build_server_detail_with_fault_no_details_not_admin(self):
         self.instance['vm_state'] = vm_states.ERROR

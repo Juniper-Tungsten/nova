@@ -37,6 +37,7 @@ import nova.conf
 from nova import context
 from nova.db.sqlalchemy import models
 from nova import exception as exc
+from nova.network.security_group import security_group_base
 from nova import objects
 from nova.objects import base
 from nova import quota
@@ -62,7 +63,7 @@ def fake_wsgi(self, req):
     return self.application
 
 
-def wsgi_app_v21(fake_auth_context=None, init_only=None, v2_compatible=False):
+def wsgi_app_v21(fake_auth_context=None, v2_compatible=False):
 
     inner_app_v21 = compute.APIRouterV21()
 
@@ -189,6 +190,36 @@ def stub_out_nw_api(test, cls=None, private=None, publics=None):
     else:
         test.stub_out('nova.network.api.API', cls)
         fake_network.stub_out_nw_api_get_instance_nw_info(test)
+
+
+def stub_out_secgroup_api(test, security_groups=None):
+
+    class FakeSecurityGroupAPI(security_group_base.SecurityGroupBase):
+        """This handles both nova-network and neutron style security group APIs
+        """
+        def get_instances_security_groups_bindings(
+                self, context, servers, detailed=False):
+            # This method shouldn't be called unless using neutron.
+            if not CONF.use_neutron:
+                raise Exception('Invalid security group API call for nova-net')
+            instances_security_group_bindings = {}
+            if servers:
+                instances_security_group_bindings = {
+                    server['id']: [] for server in servers
+                }
+            return instances_security_group_bindings
+
+        def get_instance_security_groups(
+                self, context, instance, detailed=False):
+            return security_groups if security_groups is not None else []
+
+    if CONF.use_neutron:
+        test.stub_out(
+            'nova.network.security_group.neutron_driver.SecurityGroupAPI',
+            FakeSecurityGroupAPI)
+    else:
+        test.stub_out(
+            'nova.compute.api.SecurityGroupAPI', FakeSecurityGroupAPI)
 
 
 class FakeToken(object):
@@ -663,11 +694,6 @@ def stub_bdm_get_all_by_instance_uuids(context, instance_uuids,
             }))
             i += 1
     return result
-
-
-def fake_get_available_languages():
-    existing_translations = ['en_GB', 'en_AU', 'de', 'zh_CN', 'en_US']
-    return existing_translations
 
 
 def fake_not_implemented(*args, **kwargs):

@@ -40,8 +40,8 @@ Notifier object to emit notifications. The configuration of the returned
 Notifier object depends on the parameters of the get_notifier call and the
 value of the oslo.messaging configuration options `driver` and `topics`.
 There are notification configuration options in Nova which are specific for
-certain notification types like `notify_on_state_change`,
-`notify_api_faults`, `default_notification_level`, etc.
+certain notification types like `notifications.notify_on_state_change`,
+`notifications.notify_on_api_faults`, `notifications.default_level`, etc.
 
 The structure of the payload of the unversioned notifications is defined in the
 code that emits the notification and no documentation or enforced backward
@@ -97,9 +97,10 @@ notification payload:
 * a major version bump indicates a backward incompatible change of the payload
   which can mean removed fields, type change, etc in the payload.
 
-There is a Nova configuration parameter `notification_format` that can be used
-to specify which notifications are emitted by Nova. The possible values are
-`unversioned`, `versioned`, `both` and the default value is `both`.
+There is a Nova configuration parameter `notifications.notification_format`
+that can be used to specify which notifications are emitted by Nova. The
+possible values are `unversioned`, `versioned`, `both` and the default value
+is `both`.
 
 How to add a new versioned notification
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -293,13 +294,14 @@ requires the notification.
   payload (note that it is not supported by the notification framework
   currently) or sending both the old state and the new state of the entity in
   the payload.
-* You should not include those parts of the entity that are unchanged or static
-  in relation to the event you are sending the notification about. So that
-  you can limit the size of the payload and avoid unnecessary repetition.
 * You should never include a nova internal object in the payload. Create a new
   object and use the SCHEMA field to map the internal object to the
   notification payload. This way the evolution of the internal object model
   can be decoupled from the evolution of the notification payload.
+* The delete notification should contain the same information as the create or
+  update notifications. This makes it possible for the consumer to listen only to
+  the delete notifications but still filter on some fields of the entity
+  (e.g. project_id).
 
 Existing versioned notifications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

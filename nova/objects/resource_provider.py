@@ -155,7 +155,9 @@ def _update_inventory_for_provider(conn, rp, inv_list, to_update):
                 _ALLOC_TBL.c.resource_provider_id == rp.id,
                 _ALLOC_TBL.c.resource_class_id == rc_id))
         allocations = conn.execute(allocation_query).first()
-        if allocations and allocations['usage'] > inv_record.capacity:
+        if (allocations
+            and allocations['usage'] is not None
+            and allocations['usage'] > inv_record.capacity):
             exceeded.append((rp.uuid, rc_str))
         upd_stmt = _INV_TBL.update().where(sa.and_(
                 _INV_TBL.c.resource_provider_id == rp.id,
@@ -342,7 +344,7 @@ class ResourceProvider(base.NovaObject):
 
     def save(self):
         updates = self.obj_get_changes()
-        if updates and updates.keys() != ['name']:
+        if updates and list(updates.keys()) != ['name']:
             raise exception.ObjectActionError(
                 action='save',
                 reason='Immutable fields changed')
@@ -539,10 +541,6 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
         'objects': fields.ListOfObjectsField('ResourceProvider'),
     }
 
-    allowed_filters = (
-        'name', 'uuid'
-    )
-
     @staticmethod
     @db_api.api_context_manager.reader
     def _get_all_by_filters_from_db(context, filters):
@@ -550,6 +548,7 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
         #  filters = {
         #      'name': <name>,
         #      'uuid': <uuid>,
+        #      'member_of': [<aggregate_uuid>, <aggregate_uuid>]
         #      'resources': {
         #          'VCPU': 1,
         #          'MEMORY_MB': 1024
@@ -564,18 +563,32 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
         name = filters.pop('name', None)
         uuid = filters.pop('uuid', None)
         can_host = filters.pop('can_host', 0)
+        member_of = filters.pop('member_of', [])
 
         resources = filters.pop('resources', {})
         # NOTE(sbauza): We want to key the dict by the resource class IDs
         # and we want to make sure those class names aren't incorrect.
         resources = {_RC_CACHE.id_from_string(r_name): amount
-                     for r_name, amount in six.iteritems(resources)}
+                     for r_name, amount in resources.items()}
         query = context.session.query(models.ResourceProvider)
         if name:
             query = query.filter(models.ResourceProvider.name == name)
         if uuid:
             query = query.filter(models.ResourceProvider.uuid == uuid)
         query = query.filter(models.ResourceProvider.can_host == can_host)
+
+        # If 'member_of' has values join with the PlacementAggregates to
+        # get those resource providers that are associated with any of the
+        # list of aggregate uuids provided with 'member_of'.
+        if member_of:
+            join_statement = sa.join(_AGG_TBL, _RP_AGG_TBL, sa.and_(
+                _AGG_TBL.c.id == _RP_AGG_TBL.c.aggregate_id,
+                _AGG_TBL.c.uuid.in_(member_of)))
+            resource_provider_id = _RP_AGG_TBL.c.resource_provider_id
+            rps_in_aggregates = sa.select(
+                [resource_provider_id]).select_from(join_statement)
+            query = query.filter(models.ResourceProvider.id.in_(
+                rps_in_aggregates))
 
         if not resources:
             # Returns quickly the list in case we don't need to check the
@@ -650,7 +663,7 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
                 _INV_TBL.c.max_unit >= amount,
                 amount % _INV_TBL.c.step_size == 0
             )
-            for (r_idx, amount) in six.iteritems(resources)]
+            for (r_idx, amount) in resources.items()]
         query = query.filter(sa.or_(*where_clauses))
         query = query.group_by(_RP_TBL.c.uuid)
         # NOTE(sbauza): Only RPs having all the asked resources can be provided
@@ -670,8 +683,10 @@ class ResourceProviderList(base.ObjectListBase, base.NovaObject):
 
         :param context: `nova.context.RequestContext` that may be used to grab
                         a DB connection.
-        :param filters: Can be `name`, `uuid` or `resources` where `resources`
-                        is a dict of amounts keyed by resource classes
+        :param filters: Can be `name`, `uuid`, `member_of` or `resources` where
+                        `member_of` is a list of aggregate uuids and
+                        `resources` is a dict of amounts keyed by resource
+                        classes.
         :type filters: dict
         """
         _ensure_rc_cache(context)
@@ -715,7 +730,7 @@ class _HasAResourceProvider(base.NovaObject):
             rc_str = _RC_CACHE.string_from_id(source['resource_class_id'])
             target.resource_class = rc_str
         if ('resource_provider' not in target and
-            'resource_provider' in source):
+                'resource_provider' in source):
             target.resource_provider = ResourceProvider()
             ResourceProvider._from_db_object(
                 context,
@@ -1058,10 +1073,7 @@ def _check_capacity_exceeded(conn, allocs):
                 resource_class=alloc.resource_class,
                 resource_provider=rp_uuid)
         if rp_uuid not in res_providers:
-            rp = ResourceProvider(id=usage['resource_provider_id'],
-                                  uuid=rp_uuid,
-                                  generation=usage['generation'])
-            res_providers[rp_uuid] = rp
+            res_providers[rp_uuid] = alloc.resource_provider
     return list(res_providers.values())
 
 
@@ -1149,7 +1161,7 @@ class AllocationList(base.ObjectListBase, base.NovaObject):
             # by the caller to choose to try again. It will also rollback the
             # transaction so that these changes always happen atomically.
             for rp in before_gens:
-                _increment_provider_generation(conn, rp)
+                rp.generation = _increment_provider_generation(conn, rp)
 
     @classmethod
     def get_all_by_resource_provider_uuid(cls, context, rp_uuid):

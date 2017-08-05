@@ -21,11 +21,13 @@ from oslo_versionedobjects import base as ovo_base
 
 import nova.conf
 from nova.objects import base as objects_base
+from nova import profiler
 from nova import rpc
 
 CONF = nova.conf.CONF
 
 
+@profiler.trace_cls("rpc")
 class ConductorAPI(object):
     """Client side of the conductor RPC API
 
@@ -247,6 +249,7 @@ class ConductorAPI(object):
                           object_versions=object_versions)
 
 
+@profiler.trace_cls("rpc")
 class ComputeTaskAPI(object):
     """Client side of the conductor 'compute' namespaced RPC API
 
@@ -268,6 +271,7 @@ class ComputeTaskAPI(object):
     1.13 - Added request_spec to migrate_server()
     1.14 - Added request_spec to unshelve_instance()
     1.15 - Added live_migrate_instance
+    1.16 - Added schedule_and_build_instances
     """
 
     def __init__(self):
@@ -346,6 +350,23 @@ class ComputeTaskAPI(object):
 
         cctxt = self.client.prepare(version=version)
         cctxt.cast(context, 'build_instances', **kw)
+
+    def schedule_and_build_instances(self, context, build_requests,
+                                      request_specs,
+                                      image, admin_password, injected_files,
+                                      requested_networks,
+                                      block_device_mapping):
+        version = '1.16'
+        kw = {'build_requests': build_requests,
+              'request_specs': request_specs,
+              'image': jsonutils.to_primitive(image),
+              'admin_password': admin_password,
+              'injected_files': injected_files,
+              'requested_networks': requested_networks,
+              'block_device_mapping': block_device_mapping}
+
+        cctxt = self.client.prepare(version=version)
+        cctxt.cast(context, 'schedule_and_build_instances', **kw)
 
     def unshelve_instance(self, context, instance, request_spec=None):
         version = '1.14'

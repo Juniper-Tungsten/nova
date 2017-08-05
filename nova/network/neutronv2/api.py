@@ -39,6 +39,8 @@ from nova.pci import request as pci_request
 from nova.pci import utils as pci_utils
 from nova.pci import whitelist as pci_whitelist
 from nova.policies import base as base_policies
+from nova import profiler
+from nova import service_auth
 
 CONF = nova.conf.CONF
 
@@ -72,6 +74,7 @@ def _load_auth_plugin(conf):
     raise neutron_client_exc.Unauthorized(message=err_msg)
 
 
+@profiler.trace_cls("neutron_api")
 class ClientWrapper(clientv20.Client):
     """A Neutron client wrapper class.
 
@@ -136,7 +139,7 @@ def get_client(context, admin=False):
         auth_plugin = _ADMIN_AUTH
 
     elif context.auth_token:
-        auth_plugin = context.get_auth_plugin()
+        auth_plugin = service_auth.get_auth_plugin(context)
 
     if not auth_plugin:
         # We did not get a user token and we should not be using
@@ -586,7 +589,9 @@ class API(base_api.NetworkAPI):
         creating ports so it's not necessary to specify it to the
         request.
         """
-        if security_groups == [DEFAULT_SECGROUP]:
+        if not security_groups:
+            security_groups = []
+        elif security_groups == [DEFAULT_SECGROUP]:
             security_groups = []
         return security_groups
 
@@ -791,14 +796,16 @@ class API(base_api.NetworkAPI):
 
         return requests_and_created_ports
 
-    def allocate_for_instance(self, context, instance, **kwargs):
+    def allocate_for_instance(self, context, instance, vpn,
+                              requested_networks, macs=None,
+                              security_groups=None,
+                              dhcp_options=None, bind_host_id=None):
         """Allocate network resources for the instance.
 
         :param context: The request context.
         :param instance: nova.objects.instance.Instance object.
-        :param requested_networks: optional value containing
-            network_id, fixed_ip, and port_id
-        :param security_groups: security groups to allocate for instance
+        :param vpn: A boolean, ignored by this driver.
+        :param requested_networks: objects.NetworkRequestList object.
         :param macs: None or a set of MAC addresses that the instance
             should use. macs is supplied by the hypervisor driver (contrast
             with requested_networks which is user supplied).
@@ -807,12 +814,15 @@ class API(base_api.NetworkAPI):
             function correctly if more than one network is being used with
             the bare metal hypervisor (which is the only one known to limit
             MAC addresses).
+        :param security_groups: None or security groups to allocate for
+            instance.
         :param dhcp_options: None or a set of key/value pairs that should
             determine the DHCP BOOTP response, eg. for PXE booting an instance
             configured with the baremetal hypervisor. It is expected that these
             are already formatted for the neutron v2 api.
             See nova/virt/driver.py:dhcp_options_for_instance for an example.
         :param bind_host_id: the host ID to attach to the ports being created.
+        :returns: network info as from get_instance_nw_info()
         """
         LOG.debug('allocate_for_instance()', instance=instance)
         if not instance.project_id:
@@ -826,7 +836,6 @@ class API(base_api.NetworkAPI):
         #
         # Validate ports and networks with neutron
         #
-        requested_networks = kwargs.get('requested_networks')
         ports, ordered_networks = self._validate_requested_port_ids(
             context, instance, neutron, requested_networks)
 
@@ -840,8 +849,7 @@ class API(base_api.NetworkAPI):
         # Create any ports that might be required,
         # after validating requested security groups
         #
-        security_groups = self._clean_security_groups(
-            kwargs.get('security_groups', []))
+        security_groups = self._clean_security_groups(security_groups)
         security_group_ids = self._process_security_groups(
                                     instance, neutron, security_groups)
 
@@ -852,12 +860,7 @@ class API(base_api.NetworkAPI):
         #
         # Update existing and newly created ports
         #
-        dhcp_opts = kwargs.get('dhcp_options')
-        bind_host_id = kwargs.get('bind_host_id')
-
-        hypervisor_macs = kwargs.get('macs', None)
-        available_macs = _filter_hypervisor_macs(instance, ports,
-                                                 hypervisor_macs)
+        available_macs = _filter_hypervisor_macs(instance, ports, macs)
 
         # We always need admin_client to build nw_info,
         # we sometimes need it when updating ports
@@ -867,7 +870,7 @@ class API(base_api.NetworkAPI):
             created_port_ids = self._update_ports_for_instance(
                 context, instance,
                 neutron, admin_client, requests_and_created_ports, nets,
-                bind_host_id, dhcp_opts, available_macs)
+                bind_host_id, dhcp_options, available_macs)
 
         #
         # Perform a full update of the network_info_cache,
@@ -1194,7 +1197,7 @@ class API(base_api.NetworkAPI):
                                             address=requested_ip,
                                             port_id=port_id,
                                             pci_request_id=None)])
-        return self.allocate_for_instance(context, instance,
+        return self.allocate_for_instance(context, instance, vpn=False,
                 requested_networks=requested_networks,
                 bind_host_id=bind_host_id)
 
@@ -1945,7 +1948,7 @@ class API(base_api.NetworkAPI):
             with excutils.save_and_reraise_exception():
                 LOG.exception(_LE('Unable to access floating IP for %s'),
                         ', '.join(['%s %s' % (k, v)
-                                   for k, v in six.iteritems(kwargs)]))
+                                   for k, v in kwargs.items()]))
 
     def _get_floating_ip_by_address(self, client, address):
         """Get floating IP from floating IP address."""
@@ -2096,6 +2099,11 @@ class API(base_api.NetworkAPI):
             bridge = port_details.get(network_model.VIF_DETAILS_BRIDGE_NAME,
                                       CONF.neutron.ovs_bridge)
             ovs_interfaceid = port['id']
+        elif (vif_type == network_model.VIF_TYPE_VHOSTUSER and
+         port_details.get(network_model.VIF_DETAILS_VHOSTUSER_FP_PLUG,
+                          False)):
+            bridge = port_details.get(network_model.VIF_DETAILS_BRIDGE_NAME,
+                                      "brq" + port['network_id'])
 
         # Prune the bridge name if necessary. For the DVS this is not done
         # as the bridge is a '<network-name>-<network-UUID>'.

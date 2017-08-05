@@ -28,6 +28,7 @@ import string
 
 from oslo_log import log as logging
 from oslo_messaging import exceptions as oslo_exceptions
+from oslo_serialization import base64 as base64utils
 from oslo_serialization import jsonutils
 from oslo_utils import excutils
 from oslo_utils import strutils
@@ -75,6 +76,7 @@ from nova.objects import keypair as keypair_obj
 from nova.objects import quotas as quotas_obj
 from nova.pci import request as pci_request
 import nova.policy
+from nova import profiler
 from nova import rpc
 from nova.scheduler import client as scheduler_client
 from nova.scheduler import utils as scheduler_utils
@@ -104,6 +106,11 @@ AGGREGATE_ACTION_UPDATE = 'Update'
 AGGREGATE_ACTION_UPDATE_META = 'UpdateMeta'
 AGGREGATE_ACTION_DELETE = 'Delete'
 AGGREGATE_ACTION_ADD = 'Add'
+
+# FIXME(danms): Keep a global cache of the cells we find the
+# first time we look. This needs to be refreshed on a timer or
+# trigger.
+CELLS = []
 
 
 def check_instance_state(vm_state=None, task_state=(None,),
@@ -190,6 +197,7 @@ def _diff_dict(orig, new):
     return result
 
 
+@profiler.trace_cls("compute_api")
 class API(base.Base):
     """API for interacting with the compute manager."""
 
@@ -391,7 +399,7 @@ class API(base.Base):
         #  as if this is quota-controlled for forwards compatibility.
         # Those are only used in V2 API, from V2.1 API, those checks are
         # validated at API layer schema validation.
-        for k, v in six.iteritems(metadata):
+        for k, v in metadata.items():
             try:
                 utils.check_string_length(v)
                 utils.check_string_length(k, min_length=1)
@@ -832,8 +840,15 @@ class API(base.Base):
                     length=l, maxsize=MAX_USERDATA_SIZE)
 
             try:
-                base64.decodestring(user_data)
-            except base64.binascii.Error:
+                base64utils.decode_as_bytes(user_data)
+            except (base64.binascii.Error, TypeError):
+                # TODO(harlowja): reduce the above exceptions caught to
+                # only type error once we get a new oslo.serialization
+                # release that captures and makes only one be output.
+                #
+                # We can eliminate the capture of `binascii.Error` when:
+                #
+                # https://review.openstack.org/#/c/418066/ is released.
                 raise exception.InstanceUserDataMalformed()
 
         # When using Neutron, _check_requested_secgroups will translate and
@@ -1641,13 +1656,16 @@ class API(base.Base):
             # guaranteed everyone is using cellsv2.
             pass
 
-        if inst_map is None or inst_map.cell_mapping is None:
+        if (inst_map is None or inst_map.cell_mapping is None or
+                CONF.cells.enable):
             # If inst_map is None then the deployment has not migrated to
             # cellsv2 yet.
             # If inst_map.cell_mapping is None then the instance is not in a
             # cell yet. Until instance creation moves to the conductor the
             # instance can be found in the configured database, so attempt
             # to look it up.
+            # If we're on cellsv1, we can't yet short-circuit the cells
+            # messaging path
             try:
                 instance = objects.Instance.get_by_uuid(context, uuid)
             except exception.InstanceNotFound:
@@ -2222,7 +2240,10 @@ class API(base.Base):
         # service versions.
         service_version = objects.Service.get_minimum_version(
             context, 'nova-osapi_compute')
-        if service_version < 15:
+        # If we're on cellsv1, we also need to consult the top-level
+        # merged replica instead of the cell directly, so fall through
+        # here in that case as well.
+        if service_version < 15 or CONF.cells.enable:
             return objects.Instance.get_by_uuid(context, instance_uuid,
                                                 expected_attrs=expected_attrs)
         inst_map = self._get_instance_map_or_none(context, instance_uuid)
@@ -2343,7 +2364,7 @@ class API(base.Base):
                 'system_metadata': _remap_system_metadata_filter}
 
         # copy from search_opts, doing various remappings as necessary
-        for opt, value in six.iteritems(search_opts):
+        for opt, value in search_opts.items():
             # Do remappings.
             # Values not in the filter_mapping table are copied as-is.
             # If remapping is None, option is not copied
@@ -2408,10 +2429,12 @@ class API(base.Base):
         # instance lists should be proxied to project Searchlight, or a similar
         # alternative.
         if limit is None or limit > 0:
-            cell_instances = self._get_instances_by_filters(context, filters,
+            cell_instances = self._get_instances_by_filters_all_cells(
+                    context, filters,
                     limit=limit, marker=marker, expected_attrs=expected_attrs,
                     sort_keys=sort_keys, sort_dirs=sort_dirs)
         else:
+            LOG.debug('Limit excludes any results from real cells')
             cell_instances = objects.InstanceList(objects=[])
 
         def _get_unique_filter_method():
@@ -2426,6 +2449,8 @@ class API(base.Base):
             return _filter
 
         filter_method = _get_unique_filter_method()
+        # Only subtract from limit if it is not None
+        limit = (limit - len(cell_instances)) if limit else limit
         # TODO(alaski): Clean up the objects concatenation when List objects
         # support it natively.
         instances = objects.InstanceList(
@@ -2465,6 +2490,55 @@ class API(base.Base):
                     break
         return objects.InstanceList(objects=result_objs)
 
+    def _get_instances_by_filters_all_cells(self, context, *args, **kwargs):
+        """This is just a wrapper that iterates (non-zero) cells."""
+
+        global CELLS
+        if not CELLS:
+            CELLS = objects.CellMappingList.get_all(context)
+            LOG.debug('Found %(count)i cells: %(cells)s',
+                      count=len(CELLS),
+                      cells=CELLS)
+
+        if not CELLS:
+            LOG.error(_LE('No cells are configured, unable to list instances'))
+
+        limit = kwargs.pop('limit', None)
+
+        instances = []
+        for cell in CELLS:
+            if cell.uuid == objects.CellMapping.CELL0_UUID:
+                LOG.debug('Skipping already-collected cell0 list')
+                continue
+            LOG.debug('Listing %s instances in cell %s',
+                      limit or 'all', cell.name)
+            with nova_context.target_cell(context, cell) as ccontext:
+                try:
+                    cell_insts = self._get_instances_by_filters(ccontext,
+                                                                *args,
+                                                                limit=limit,
+                                                                **kwargs)
+                except exception.MarkerNotFound:
+                    # NOTE(danms): We need to keep looking through the
+                    # later cells to find the marker
+                    continue
+                instances.extend(cell_insts)
+                # NOTE(danms): We must have found a marker if we had one,
+                # so make sure we don't require a marker in the next cell
+                kwargs['marker'] = None
+                if limit:
+                    limit -= len(cell_insts)
+                    if limit <= 0:
+                        break
+
+        marker = kwargs.get('marker')
+        if marker is not None and len(instances) == 0:
+            # NOTE(danms): If we did not find the marker in any cell,
+            # mimic the db_api behavior here.
+            raise exception.MarkerNotFound(marker=marker)
+
+        return objects.InstanceList(objects=instances)
+
     def _get_instances_by_filters(self, context, filters,
                                   limit=None, marker=None, expected_attrs=None,
                                   sort_keys=None, sort_dirs=None):
@@ -2490,7 +2564,10 @@ class API(base.Base):
             # Instance has been scheduled and the BuildRequest has been deleted
             # we can directly write the update down to the right cell.
             inst_map = self._get_instance_map_or_none(context, instance.uuid)
-            if inst_map and (inst_map.cell_mapping is not None):
+            # If we have a cell_mapping and we're not on cells v1, then
+            # look up the instance in the cell database
+            if inst_map and (inst_map.cell_mapping is not None) and (
+                    not CONF.cells.enable):
                 with nova_context.target_cell(context, inst_map.cell_mapping):
                     instance.save()
             else:
@@ -4108,7 +4185,7 @@ class HostAPI(base.Base):
                                                set_zones=set_zones)
         ret_services = []
         for service in services:
-            for key, val in six.iteritems(filters):
+            for key, val in filters.items():
                 if service[key] != val:
                     break
             else:
@@ -4268,6 +4345,13 @@ class AggregateAPI(base.Base):
                                                     "delete.start",
                                                     aggregate_payload)
         aggregate = objects.Aggregate.get_by_id(context, aggregate_id)
+
+        compute_utils.notify_about_aggregate_action(
+            context=context,
+            aggregate=aggregate,
+            action=fields_obj.NotificationAction.DELETE,
+            phase=fields_obj.NotificationPhase.START)
+
         if len(aggregate.hosts) > 0:
             msg = _("Host aggregate is not empty")
             raise exception.InvalidAggregateActionDelete(
@@ -4277,6 +4361,11 @@ class AggregateAPI(base.Base):
         compute_utils.notify_about_aggregate_update(context,
                                                     "delete.end",
                                                     aggregate_payload)
+        compute_utils.notify_about_aggregate_action(
+            context=context,
+            aggregate=aggregate,
+            action=fields_obj.NotificationAction.DELETE,
+            phase=fields_obj.NotificationPhase.END)
 
     def is_safe_to_update_az(self, context, metadata, aggregate,
                              hosts=None,

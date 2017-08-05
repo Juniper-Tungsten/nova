@@ -365,6 +365,7 @@ class FlatTestCase(_ImageTestCase, test.NoDBTestCase):
                        return_value=imageutils.QemuImgInfo())
     def test_create_image_extend(self, fake_qemu_img_info):
         fn = self.prepare_mocks()
+        fake_qemu_img_info.return_value.virtual_size = 1024
         fn(target=self.TEMPLATE_PATH, image_id=None)
         imagebackend.libvirt_utils.copy_image(self.TEMPLATE_PATH, self.PATH)
         image = imgmodel.LocalFileImage(self.PATH, imgmodel.FORMAT_RAW)
@@ -735,7 +736,9 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
     @mock.patch('os.path.exists', autospec=True)
     @mock.patch('nova.utils.synchronized', autospec=True)
     @mock.patch.object(imagebackend, 'lvm', autospec=True)
-    def test_cache_ephemeral(self, mock_lvm, mock_synchronized, mock_exists):
+    @mock.patch.object(imagebackend.fileutils, 'ensure_tree', autospec=True)
+    def test_cache_ephemeral(self, mock_ensure, mock_lvm, mock_synchronized,
+                             mock_exists):
         # Ignores its arguments and returns the wrapped function unmodified
         def fake_synchronized(*args, **kwargs):
             def outer(fn):
@@ -772,6 +775,7 @@ class LvmTestCase(_ImageTestCase, test.NoDBTestCase):
         image.cache(fetch_func, self.TEMPLATE,
                     ephemeral_size=size_gb, size=size)
 
+        mock_ensure.assert_called_once_with(self.TEMPLATE_DIR)
         mock_lvm.create_volume.assert_called_once_with(self.VG, self.LV, size,
                                                        sparse=False)
         fetch_func.assert_called_once_with(target=self.PATH,
@@ -1484,7 +1488,7 @@ class RbdTestCase(_ImageTestCase, test.NoDBTestCase):
             self.INSTANCE["uuid"] + "_fake.vm",
             "FakePool",
             "FakeUser",
-            "MTIzNDU2Cg==",
+            b"MTIzNDU2Cg==",
             ["server1:1899", "server2:1920"]),
                          model)
 

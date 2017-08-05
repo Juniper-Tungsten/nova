@@ -60,9 +60,9 @@ def fake_create_security_group(self, context, name, description):
 
 class SecurityGroupsJsonTest(test_servers.ServersSampleBase):
     sample_dir = 'os-security-groups'
+    USE_NEUTRON = True
 
     def setUp(self):
-        self.flags(use_neutron=True)
         self.neutron = fixtures.NeutronFixture(self)
         self.useFixture(self.neutron)
         super(SecurityGroupsJsonTest, self).setUp()
@@ -126,7 +126,7 @@ class SecurityGroupsJsonTest(test_servers.ServersSampleBase):
         uuid = self._post_server()
         response = self._add_group(uuid)
         self.assertEqual(202, response.status_code)
-        self.assertEqual('', response.content)
+        self.assertEqual('', response.text)
 
     def test_security_groups_remove(self):
         self._create_security_group()
@@ -138,4 +138,4 @@ class SecurityGroupsJsonTest(test_servers.ServersSampleBase):
         response = self._do_post('servers/%s/action' % uuid,
                                  'security-group-remove-post-req', subs)
         self.assertEqual(202, response.status_code)
-        self.assertEqual('', response.content)
+        self.assertEqual('', response.text)

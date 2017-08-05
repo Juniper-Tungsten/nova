@@ -132,10 +132,14 @@ class TestSecurityGroupsV21(test.TestCase):
     secgrp_ctl_cls = secgroups_v21.SecurityGroupController
     server_secgrp_ctl_cls = secgroups_v21.ServerSecurityGroupController
     secgrp_act_ctl_cls = secgroups_v21.SecurityGroupActionController
+    # This class is subclassed by Neutron security group API tests so we need
+    # to be able to override this before creating the controller object.
+    use_neutron = False
 
     def setUp(self):
         super(TestSecurityGroupsV21, self).setUp()
-
+        # Neutron security groups are tested in test_neutron_security_groups.py
+        self.flags(use_neutron=self.use_neutron)
         self.controller = self.secgrp_ctl_cls()
         self.server_controller = self.server_secgrp_ctl_cls()
         self.manager = self.secgrp_act_ctl_cls()
@@ -306,7 +310,7 @@ class TestSecurityGroupsV21(test.TestCase):
             self.req.environ['nova.context'])
 
     def test_create_security_group_quota_limit(self):
-        for num in range(1, CONF.quota_security_groups):
+        for num in range(1, CONF.quota.security_groups):
             name = 'test%s' % num
             sg = security_group_request_template(name=name)
             res_dict = self.controller.create(self.req, {'security_group': sg})
@@ -782,10 +786,14 @@ class TestSecurityGroupsV21(test.TestCase):
 
 class TestSecurityGroupRulesV21(test.TestCase):
     secgrp_ctl_cls = secgroups_v21.SecurityGroupRulesController
+    # This class is subclassed by Neutron security group API tests so we need
+    # to be able to override this before creating the controller object.
+    use_neutron = False
 
     def setUp(self):
         super(TestSecurityGroupRulesV21, self).setUp()
-
+        # Neutron security groups are tested in test_neutron_security_groups.py
+        self.flags(use_neutron=self.use_neutron)
         self.controller = self.secgrp_ctl_cls()
         if self.controller.security_group_api.id_is_uuid:
             id1 = '11111111-1111-1111-1111-111111111111'
@@ -1192,7 +1200,7 @@ class TestSecurityGroupRulesV21(test.TestCase):
                           self.req, self.invalid_id)
 
     def test_create_rule_quota_limit(self):
-        for num in range(100, 100 + CONF.quota_security_group_rules):
+        for num in range(100, 100 + CONF.quota.security_group_rules):
             rule = {
                 'ip_protocol': 'tcp', 'from_port': num,
                 'to_port': num, 'parent_group_id': self.sg2['id'],
@@ -1309,6 +1317,8 @@ class SecurityGroupsOutputTestV21(test.TestCase):
 
     def setUp(self):
         super(SecurityGroupsOutputTestV21, self).setUp()
+        # Neutron security groups are tested in test_neutron_security_groups.py
+        self.flags(use_neutron=False)
         fakes.stub_out_nw_api(self)
         self.stubs.Set(compute.api.API, 'get', fake_compute_get)
         self.stubs.Set(compute.api.API, 'get_all', fake_compute_get_all)
@@ -1316,7 +1326,7 @@ class SecurityGroupsOutputTestV21(test.TestCase):
         self.app = self._setup_app()
 
     def _setup_app(self):
-        return fakes.wsgi_app_v21(init_only=('os-security-groups', 'servers'))
+        return fakes.wsgi_app_v21()
 
     def _make_request(self, url, body=None):
         req = fakes.HTTPRequest.blank(url)

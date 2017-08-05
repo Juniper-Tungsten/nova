@@ -35,6 +35,7 @@ from nova.network import linux_net
 from nova.network import model as network_model
 from nova.network import os_vif_util
 from nova import objects
+from nova import profiler
 from nova import utils
 from nova.virt.libvirt import config as vconfig
 from nova.virt.libvirt import designer
@@ -95,6 +96,7 @@ def is_vif_model_valid_for_virt(virt_type, vif_model):
     return vif_model in valid_models[virt_type]
 
 
+@profiler.trace_cls("vif_driver")
 class LibvirtGenericVIFDriver(object):
     """Generic VIF driver for libvirt networking."""
 
@@ -111,7 +113,7 @@ class LibvirtGenericVIFDriver(object):
         return prefix + devname[3:]
 
     def get_base_config(self, instance, mac, image_meta,
-                        inst_type, virt_type):
+                        inst_type, virt_type, vnic_type):
         conf = vconfig.LibvirtConfigGuestInterface()
         # Default to letting libvirt / the hypervisor choose the model
         model = None
@@ -141,7 +143,8 @@ class LibvirtGenericVIFDriver(object):
             raise exception.UnsupportedHardware(model=model,
                                                 virt=virt_type)
         if (virt_type in ('kvm', 'parallels') and
-            model == network_model.VIF_MODEL_VIRTIO):
+            model == network_model.VIF_MODEL_VIRTIO and
+            vnic_type not in network_model.VNIC_TYPES_SRIOV):
             vhost_drv, vhost_queues = self._get_virtio_mq_settings(image_meta,
                                                                    inst_type)
             driver = vhost_drv or driver
@@ -159,7 +162,7 @@ class LibvirtGenericVIFDriver(object):
 
     def _is_multiqueue_enabled(self, image_meta, flavor):
         _, vhost_queues = self._get_virtio_mq_settings(image_meta, flavor)
-        return vhost_queues > 1
+        return vhost_queues > 1 if vhost_queues is not None else False
 
     def _get_virtio_mq_settings(self, image_meta, flavor):
         """A methods to set the number of virtio queues,
@@ -232,7 +235,7 @@ class LibvirtGenericVIFDriver(object):
                           inst_type, virt_type, host):
         """Get VIF configurations for bridge type."""
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         designer.set_vif_host_backend_bridge_config(
             conf, self.get_bridge_name(vif),
@@ -263,7 +266,8 @@ class LibvirtGenericVIFDriver(object):
                                     vif['address'],
                                     image_meta,
                                     inst_type,
-                                    virt_type)
+                                    virt_type,
+                                    vif['vnic_type'])
 
         dev = self.get_vif_devname(vif)
         designer.set_vif_host_backend_ethernet_config(conf, dev)
@@ -288,7 +292,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_802qbg(self, instance, vif, image_meta,
                           inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         params = vif["qbg_params"]
         designer.set_vif_host_backend_802qbg_config(
@@ -305,7 +309,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_802qbh(self, instance, vif, image_meta,
                           inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         profile = vif["profile"]
         vif_details = vif["details"]
@@ -324,7 +328,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_hw_veb(self, instance, vif, image_meta,
                             inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         profile = vif["profile"]
         vif_details = vif["details"]
@@ -347,7 +351,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_macvtap(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         vif_details = vif['details']
         macvtap_src = vif_details.get(network_model.VIF_DETAILS_MACVTAP_SOURCE)
@@ -378,7 +382,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_iovisor(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         dev = self.get_vif_devname(vif)
         designer.set_vif_host_backend_ethernet_config(conf, dev)
@@ -390,7 +394,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_midonet(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         dev = self.get_vif_devname(vif)
         designer.set_vif_host_backend_ethernet_config(conf, dev)
@@ -400,7 +404,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_tap(self, instance, vif, image_meta,
                        inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
 
         dev = self.get_vif_devname(vif)
         designer.set_vif_host_backend_ethernet_config(conf, dev)
@@ -420,7 +424,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_vhostuser(self, instance, vif, image_meta,
                             inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
         mode, sock_path = self._get_vhostuser_settings(vif)
         designer.set_vif_host_backend_vhostuser_config(conf, mode, sock_path)
         # (vladikr) Not setting up driver and queues for vhostuser
@@ -439,7 +443,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config_vrouter(self, instance, vif, image_meta,
                            inst_type, virt_type, host):
         conf = self.get_base_config(instance, vif['address'], image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vif['vnic_type'])
         dev = self.get_vif_devname(vif)
 
         if CONF.contrail.use_userspace_vhost:
@@ -486,14 +490,14 @@ class LibvirtGenericVIFDriver(object):
         profilefunc = "_set_config_" + vif.port_profile.obj_name()
         func = getattr(self, profilefunc, None)
         if not func:
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _("Unsupported VIF port profile type %(obj)s func %(func)s") %
                 {'obj': vif.port_profile.obj_name(), 'func': profilefunc})
 
         func(vif.port_profile, conf)
 
     def _get_config_os_vif(self, instance, vif, image_meta, inst_type,
-                           virt_type, host):
+                           virt_type, host, vnic_type):
         """Get the domain config for a VIF
 
         :param instance: nova.objects.Instance
@@ -502,19 +506,20 @@ class LibvirtGenericVIFDriver(object):
         :param inst_type: nova.objects.Flavor
         :param virt_type: virtualization type
         :param host: nova.virt.libvirt.host.Host
+        :param vnic_type: vnic type
 
         :returns: nova.virt.libvirt.config.LibvirtConfigGuestInterface
         """
 
         # Do the config that's common to all vif types
         conf = self.get_base_config(instance, vif.address, image_meta,
-                                    inst_type, virt_type)
+                                    inst_type, virt_type, vnic_type)
 
         # Do the VIF type specific config
         viffunc = "_set_config_" + vif.obj_name()
         func = getattr(self, viffunc, None)
         if not func:
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _("Unsupported VIF type %(obj)s func %(func)s") %
                 {'obj': vif.obj_name(), 'func': viffunc})
         func(instance, vif, conf, host)
@@ -526,6 +531,7 @@ class LibvirtGenericVIFDriver(object):
     def get_config(self, instance, vif, image_meta,
                    inst_type, virt_type, host):
         vif_type = vif['type']
+        vnic_type = vif['vnic_type']
 
         LOG.debug('vif_type=%(vif_type)s instance=%(instance)s '
                   'vif=%(vif)s virt_type=%(virt_type)s',
@@ -533,7 +539,7 @@ class LibvirtGenericVIFDriver(object):
                    'vif': vif, 'virt_type': virt_type})
 
         if vif_type is None:
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _("vif_type parameter must be present "
                   "for this vif_driver implementation"))
 
@@ -541,13 +547,14 @@ class LibvirtGenericVIFDriver(object):
         vif_obj = os_vif_util.nova_to_osvif_vif(vif)
         if vif_obj is not None:
             return self._get_config_os_vif(instance, vif_obj, image_meta,
-                                           inst_type, virt_type, host)
+                                           inst_type, virt_type, host,
+                                           vnic_type)
 
         # Legacy non-os-vif codepath
         vif_slug = self._normalize_vif_type(vif_type)
         func = getattr(self, 'get_config_%s' % vif_slug, None)
         if not func:
-            raise exception.NovaException(
+            raise exception.InternalError(
                 _("Unexpected vif_type=%s") % vif_type)
         return func(instance, vif, image_meta,
                     inst_type, virt_type, host)
@@ -711,43 +718,8 @@ class LibvirtGenericVIFDriver(object):
         mtu = network.get_meta('mtu') if network else None
         linux_net._set_device_mtu(dev, mtu)
 
-    def plug_vhostuser_fp(self, instance, vif):
-        """Create a fp netdevice interface with a vhostuser socket"""
-        dev = self.get_vif_devname(vif)
-        if linux_net.device_exists(dev):
-            return
-
-        ovs_plug = vif['details'].get(
-                                network_model.VIF_DETAILS_VHOSTUSER_OVS_PLUG,
-                                False)
-        sockmode_qemu, sockpath = self._get_vhostuser_settings(vif)
-        sockmode_port = 'client' if sockmode_qemu == 'server' else 'server'
-
-        try:
-            linux_net.create_fp_dev(dev, sockpath, sockmode_port)
-
-            if ovs_plug:
-                if vif.is_hybrid_plug_enabled():
-                    self.plug_ovs_hybrid(instance, vif)
-                    utils.execute('brctl', 'addif',
-                                  self.get_br_name(vif['id']),
-                                  dev, run_as_root=True)
-                else:
-                    iface_id = self.get_ovs_interfaceid(vif)
-                    mtu = vif['network'].get_meta('mtu')
-                    linux_net.create_ovs_vif_port(self.get_bridge_name(vif),
-                                                  dev, iface_id,
-                                                  vif['address'],
-                                                  instance.uuid, mtu)
-        except processutils.ProcessExecutionError:
-            LOG.exception(_LE("Failed while plugging vif"), instance=instance)
-
     def plug_vhostuser(self, instance, vif):
-        fp_plug = vif['details'].get(
-                                network_model.VIF_DETAILS_VHOSTUSER_FP_PLUG,
-                                False)
-        if fp_plug:
-            self.plug_vhostuser_fp(instance, vif)
+        pass
 
     def plug_vrouter(self, instance, vif):
         """Plug into Contrail's network port
@@ -801,7 +773,7 @@ class LibvirtGenericVIFDriver(object):
         except osv_exception.ExceptionBase as ex:
             msg = (_("Failure running os_vif plugin plug method: %(ex)s")
                    % {'ex': ex})
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
     def plug(self, instance, vif):
         vif_type = vif['type']
@@ -962,31 +934,8 @@ class LibvirtGenericVIFDriver(object):
             LOG.exception(_LE("Failed while unplugging vif"),
                           instance=instance)
 
-    def unplug_vhostuser_fp(self, instance, vif):
-        """Delete a fp netdevice interface with a vhostuser socket"""
-        dev = self.get_vif_devname(vif)
-        ovs_plug = vif['details'].get(
-                        network_model.VIF_DETAILS_VHOSTUSER_OVS_PLUG,
-                        False)
-
-        try:
-            if ovs_plug:
-                if vif.is_hybrid_plug_enabled():
-                    self.unplug_ovs_hybrid(instance, vif)
-                else:
-                    linux_net.delete_ovs_vif_port(self.get_bridge_name(vif),
-                                                  dev, False)
-            linux_net.delete_fp_dev(dev)
-        except processutils.ProcessExecutionError:
-            LOG.exception(_LE("Failed while unplugging vif"),
-                          instance=instance)
-
     def unplug_vhostuser(self, instance, vif):
-        fp_plug = vif['details'].get(
-                        network_model.VIF_DETAILS_VHOSTUSER_FP_PLUG,
-                        False)
-        if fp_plug:
-            self.unplug_vhostuser_fp(instance, vif)
+        pass
 
     def unplug_vrouter(self, instance, vif):
         """Unplug Contrail's network port
@@ -1011,7 +960,7 @@ class LibvirtGenericVIFDriver(object):
         except osv_exception.ExceptionBase as ex:
             msg = (_("Failure running os_vif plugin unplug method: %(ex)s")
                    % {'ex': ex})
-            raise exception.NovaException(msg)
+            raise exception.InternalError(msg)
 
     def unplug(self, instance, vif):
         vif_type = vif['type']
@@ -1022,9 +971,9 @@ class LibvirtGenericVIFDriver(object):
                    'vif': vif})
 
         if vif_type is None:
-            raise exception.NovaException(
-                _("vif_type parameter must be present "
-                  "for this vif_driver implementation"))
+            msg = _("vif_type parameter must be present for this vif_driver "
+                    "implementation")
+            raise exception.InternalError(msg)
 
         # Try os-vif codepath first
         vif_obj = os_vif_util.nova_to_osvif_vif(vif)
@@ -1036,6 +985,6 @@ class LibvirtGenericVIFDriver(object):
         vif_slug = self._normalize_vif_type(vif_type)
         func = getattr(self, 'unplug_%s' % vif_slug, None)
         if not func:
-            raise exception.NovaException(
-                _("Unexpected vif_type=%s") % vif_type)
+            msg = _("Unexpected vif_type=%s") % vif_type
+            raise exception.InternalError(msg)
         func(instance, vif)

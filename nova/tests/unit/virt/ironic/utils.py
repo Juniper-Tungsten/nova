@@ -58,6 +58,24 @@ def get_test_port(**kw):
                 'node_uuid': kw.get('node_uuid', get_test_node().uuid),
                 'address': kw.get('address', 'FF:FF:FF:FF:FF:FF'),
                 'extra': kw.get('extra', {}),
+                'internal_info': kw.get('internal_info', {}),
+                'portgroup_uuid': kw.get('portgroup_uuid'),
+                'created_at': kw.get('created_at'),
+                'updated_at': kw.get('updated_at')})()
+
+
+def get_test_portgroup(**kw):
+    return type('portgroup', (object,),
+               {'uuid': kw.get('uuid', 'deaffeed-1234-5678-9012-fedcbafedcba'),
+                'node_uuid': kw.get('node_uuid', get_test_node().uuid),
+                'address': kw.get('address', 'EE:EE:EE:EE:EE:EE'),
+                'extra': kw.get('extra', {}),
+                'internal_info': kw.get('internal_info', {}),
+                'properties': kw.get('properties', {}),
+                'mode': kw.get('mode', 'active-backup'),
+                'name': kw.get('name'),
+                'standalone_ports_supported': kw.get(
+                    'standalone_ports_supported', True),
                 'created_at': kw.get('created_at'),
                 'updated_at': kw.get('updated_at')})()
 
@@ -109,6 +127,12 @@ class FakePortClient(object):
         pass
 
 
+class FakePortgroupClient(object):
+
+    def list(self, node=None, detail=False):
+        pass
+
+
 class FakeNodeClient(object):
 
     def list(self, detail=False):
@@ -120,10 +144,10 @@ class FakeNodeClient(object):
     def get_by_instance_uuid(self, instance_uuid, fields=None):
         pass
 
-    def list_ports(self, node_uuid):
+    def list_ports(self, node_uuid, detail=False):
         pass
 
-    def set_power_state(self, node_uuid, target):
+    def set_power_state(self, node_uuid, target, soft=False, timeout=None):
         pass
 
     def set_provision_state(self, node_uuid, target):
@@ -135,8 +159,15 @@ class FakeNodeClient(object):
     def validate(self, node_uuid):
         pass
 
+    def vif_attach(self, node_uuid, port_id):
+        pass
+
+    def vif_detach(self, node_uuid, port_id):
+        pass
+
 
 class FakeClient(object):
 
     node = FakeNodeClient()
     port = FakePortClient()
+    portgroup = FakePortgroupClient()

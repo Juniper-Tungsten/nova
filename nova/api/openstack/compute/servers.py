@@ -14,8 +14,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import re
-
+import copy
 from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_utils import strutils
@@ -188,6 +187,8 @@ class ServersController(wsgi.Controller):
             LOG.debug("Did not find any server create schemas")
 
     @extensions.expected_errors((400, 403))
+    @validation.query_schema(schema_servers.query_params_v226, '2.26')
+    @validation.query_schema(schema_servers.query_params_v21, '2.1', '2.25')
     def index(self, req):
         """Returns a list of server names and ids for a given user."""
         context = req.environ['nova.context']
@@ -199,6 +200,8 @@ class ServersController(wsgi.Controller):
         return servers
 
     @extensions.expected_errors((400, 403))
+    @validation.query_schema(schema_servers.query_params_v226, '2.26')
+    @validation.query_schema(schema_servers.query_params_v21, '2.1', '2.25')
     def detail(self, req):
         """Returns a list of server details for a given user."""
         context = req.environ['nova.context']
@@ -218,6 +221,13 @@ class ServersController(wsgi.Controller):
         context = req.environ['nova.context']
         remove_invalid_options(context, search_opts,
                 self._get_server_search_options(req))
+
+        for search_opt in search_opts:
+            if (search_opt in
+                schema_servers.JOINED_TABLE_QUERY_PARAMS_SERVERS.keys() or
+                    search_opt.startswith('_')):
+                msg = _("Invalid filter field: %s.") % search_opt
+                raise exc.HTTPBadRequest(explanation=msg)
 
         # Verify search by 'status' contains a valid status.
         # Convert it to filter by vm_state or task_state for compute_api.
@@ -242,12 +252,8 @@ class ServersController(wsgi.Controller):
                 search_opts['task_state'] = task_state
 
         if 'changes-since' in search_opts:
-            try:
-                parsed = timeutils.parse_isotime(search_opts['changes-since'])
-            except ValueError:
-                msg = _('Invalid changes-since value')
-                raise exc.HTTPBadRequest(explanation=msg)
-            search_opts['changes-since'] = parsed
+            search_opts['changes-since'] = timeutils.parse_isotime(
+                search_opts['changes-since'])
 
         # By default, compute's get_all() will return deleted instances.
         # If an admin hasn't specified a 'deleted' search option, we need
@@ -272,14 +278,6 @@ class ServersController(wsgi.Controller):
             else:
                 msg = _("Only administrators may list deleted instances")
                 raise exc.HTTPForbidden(explanation=msg)
-
-        # Verify the value of the 'name' option is a correct regex.
-        if 'name' in search_opts:
-            try:
-                re.compile(search_opts['name'])
-            except re.error:
-                msg = _("The regex for server name is incorrect")
-                raise exc.HTTPBadRequest(explanation=msg)
 
         if api_version_request.is_supported(req, min_version='2.26'):
             for tag_filter in TAG_SEARCH_FILTERS:
@@ -328,6 +326,9 @@ class ServersController(wsgi.Controller):
 
         limit, marker = common.get_limit_and_marker(req)
         sort_keys, sort_dirs = common.get_sort_params(req.params)
+        sort_keys, sort_dirs = remove_invalid_sort_keys(
+            context, sort_keys, sort_dirs,
+            schema_servers.SERVER_LIST_IGNORE_SORT_KEY, ('host', 'node'))
 
         expected_attrs = ['pci_devices']
         if is_detail:
@@ -651,7 +652,8 @@ class ServersController(wsgi.Controller):
         except UnicodeDecodeError as error:
             msg = "UnicodeError: %s" % error
             raise exc.HTTPBadRequest(explanation=msg)
-        except (exception.ImageNotActive,
+        except (exception.CPUThreadPolicyConfigurationInvalid,
+                exception.ImageNotActive,
                 exception.ImageBadRequest,
                 exception.ImageNotAuthorized,
                 exception.FixedIpNotFoundForAddress,
@@ -683,6 +685,8 @@ class ServersController(wsgi.Controller):
                 exception.InvalidBDMFormat,
                 exception.InvalidBDMSwapSize,
                 exception.AutoDiskConfigDisabledByImage,
+                exception.ImageCPUPinningForbidden,
+                exception.ImageCPUThreadPolicyForbidden,
                 exception.ImageNUMATopologyIncomplete,
                 exception.ImageNUMATopologyForbidden,
                 exception.ImageNUMATopologyAsymmetric,
@@ -692,7 +696,11 @@ class ServersController(wsgi.Controller):
                 exception.ImageNUMATopologyMemoryOutOfRange,
                 exception.InvalidNUMANodesNumber,
                 exception.InstanceGroupNotFound,
+                exception.MemoryPageSizeInvalid,
+                exception.MemoryPageSizeForbidden,
                 exception.PciRequestAliasNotDefined,
+                exception.RealtimeConfigurationInvalid,
+                exception.RealtimeMaskNotFoundOrInvalid,
                 exception.SnapshotNotFound,
                 exception.UnableToAutoAllocateNetwork) as error:
             raise exc.HTTPBadRequest(explanation=error.format_message())
@@ -1199,6 +1207,29 @@ def remove_invalid_options(context, search_options, allowed_search_options):
                   ", ".join(unknown_options))
         for opt in unknown_options:
             search_options.pop(opt, None)
+
+
+def remove_invalid_sort_keys(context, sort_keys, sort_dirs,
+                             blacklist, admin_only_fields):
+    key_list = copy.deepcopy(sort_keys)
+    for key in key_list:
+        # NOTE(Kevin Zheng): We are intend to remove the sort_key
+        # in the blacklist and its' corresponding sort_dir, since
+        # the sort_key and sort_dir are not strict to be provide
+        # in pairs in the current implement, sort_dirs could be
+        # less than sort_keys, in order to avoid IndexError, we
+        # only pop sort_dir when number of sort_dirs is no less
+        # than the sort_key index.
+        if key in blacklist:
+            if len(sort_dirs) > sort_keys.index(key):
+                sort_dirs.pop(sort_keys.index(key))
+            sort_keys.pop(sort_keys.index(key))
+        elif key in admin_only_fields and not context.is_admin:
+            msg = _("Only administrators can sort servers "
+                    "by %s") % key
+            raise exc.HTTPForbidden(explanation=msg)
+
+    return sort_keys, sort_dirs
 
 
 class Servers(extensions.V21APIExtensionBase):

@@ -30,12 +30,16 @@ class InstanceNUMACell(base.NovaObject,
     # Version 1.1: Add pagesize field
     # Version 1.2: Add cpu_pinning_raw and topology fields
     # Version 1.3: Add cpu_policy and cpu_thread_policy fields
-    VERSION = '1.3'
+    # Version 1.4: Add cpuset_reserved field
+    VERSION = '1.4'
 
     def obj_make_compatible(self, primitive, target_version):
         super(InstanceNUMACell, self).obj_make_compatible(primitive,
                                                         target_version)
         target_version = versionutils.convert_version_to_tuple(target_version)
+        if target_version < (1, 4):
+            primitive.pop('cpuset_reserved', None)
+
         if target_version < (1, 3):
             primitive.pop('cpu_policy', None)
             primitive.pop('cpu_thread_policy', None)
@@ -51,6 +55,8 @@ class InstanceNUMACell(base.NovaObject,
         'cpu_policy': obj_fields.CPUAllocationPolicyField(nullable=True),
         'cpu_thread_policy': obj_fields.CPUThreadAllocationPolicyField(
             nullable=True),
+        # These physical CPUs are reserved for use by the hypervisor
+        'cpuset_reserved': obj_fields.SetOfIntegersField(nullable=True),
     }
 
     cpu_pinning = obj_fields.DictProxyField('cpu_pinning_raw')
@@ -72,6 +78,9 @@ class InstanceNUMACell(base.NovaObject,
         if 'cpu_thread_policy' not in kwargs:
             self.cpu_thread_policy = None
             self.obj_reset_changes(['cpu_thread_policy'])
+        if 'cpuset_reserved' not in kwargs:
+            self.cpuset_reserved = None
+            self.obj_reset_changes(['cpuset_reserved'])
 
     def __len__(self):
         return len(self.cpuset)
@@ -140,7 +149,15 @@ class InstanceNUMATopology(base.NovaObject,
     # Version 1.0: Initial version
     # Version 1.1: Takes into account pagesize
     # Version 1.2: InstanceNUMACell 1.2
-    VERSION = '1.2'
+    # Version 1.3: Add emulator threads policy
+    VERSION = '1.3'
+
+    def obj_make_compatible(self, primitive, target_version):
+        super(InstanceNUMATopology, self).obj_make_compatible(primitive,
+                                                        target_version)
+        target_version = versionutils.convert_version_to_tuple(target_version)
+        if target_version < (1, 3):
+            primitive.pop('emulator_threads_policy', None)
 
     fields = {
         # NOTE(danms): The 'id' field is no longer used and should be
@@ -148,6 +165,8 @@ class InstanceNUMATopology(base.NovaObject,
         'id': obj_fields.IntegerField(),
         'instance_uuid': obj_fields.UUIDField(),
         'cells': obj_fields.ListOfObjectsField('InstanceNUMACell'),
+        'emulator_threads_policy': (
+            obj_fields.CPUEmulatorThreadsPolicyField(nullable=True)),
         }
 
     @classmethod
@@ -227,3 +246,10 @@ class InstanceNUMATopology(base.NovaObject,
         for cell in self.cells:
             cell.clear_host_pinning()
         return self
+
+    @property
+    def emulator_threads_isolated(self):
+        """Determines whether emulator threads should be isolated"""
+        return (self.obj_attr_is_set('emulator_threads_policy')
+                and (self.emulator_threads_policy
+                     == obj_fields.CPUEmulatorThreadsPolicy.ISOLATE))
