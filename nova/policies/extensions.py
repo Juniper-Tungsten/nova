@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,11 +22,11 @@ BASE_POLICY_NAME = 'os_compute_api:extensions'
 
 
 extensions_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_OR_OWNER,
-        "Lists available extensions and shows information for an extension "
-        "by alias.",
+        "List available extensions and show information for an extension "
+        "by alias",
         [
             {
                 'method': 'GET',

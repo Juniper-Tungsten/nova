@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,10 +22,10 @@ BASE_POLICY_NAME = 'os_compute_api:os-multinic'
 
 
 multinic_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_OR_OWNER,
-        """Adds or Removes a fixed IP address from a server.
+        """Add or remove a fixed IP address from a server.
 
 These APIs are proxy calls to the Network service. These are all
 deprecated.""",

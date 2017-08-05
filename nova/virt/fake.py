@@ -35,9 +35,9 @@ from nova.compute import task_states
 import nova.conf
 from nova.console import type as ctype
 from nova import exception
-from nova.i18n import _LW
 from nova.objects import diagnostics as diagnostics_obj
 from nova.objects import fields as obj_fields
+from nova.objects import migrate_data
 from nova.virt import driver
 from nova.virt import hardware
 from nova.virt import virtapi
@@ -121,7 +121,11 @@ class FakeDriver(driver.ComputeDriver):
     capabilities = {
         "has_imagecache": True,
         "supports_recreate": True,
-        "supports_migrate_to_same_host": True
+        "supports_migrate_to_same_host": True,
+        "supports_attach_interface": True,
+        "supports_tagged_attach_interface": True,
+        "supports_tagged_attach_volume": True,
+        "supports_extend_volume": True,
         }
 
     # Since we don't have a real hypervisor, pretend we have lots of
@@ -274,7 +278,7 @@ class FakeDriver(driver.ComputeDriver):
                 disk=flavor.root_gb)
             del self.instances[key]
         else:
-            LOG.warning(_LW("Key '%(key)s' not in instances '%(inst)s'"),
+            LOG.warning("Key '%(key)s' not in instances '%(inst)s'",
                         {'key': key,
                          'inst': self.instances}, instance=instance)
 
@@ -305,6 +309,10 @@ class FakeDriver(driver.ComputeDriver):
         if instance_name not in self._mounts:
             self._mounts[instance_name] = {}
         self._mounts[instance_name][mountpoint] = new_connection_info
+
+    def extend_volume(self, connection_info, instance):
+        """Extend the disk attached to the instance."""
+        pass
 
     def attach_interface(self, context, instance, image_meta, vif):
         if vif['id'] in self._interfaces:
@@ -497,11 +505,23 @@ class FakeDriver(driver.ComputeDriver):
                                            src_compute_info, dst_compute_info,
                                            block_migration=False,
                                            disk_over_commit=False):
-        return {}
+        data = migrate_data.LibvirtLiveMigrateData()
+        data.filename = 'fake'
+        data.image_type = CONF.libvirt.images_type
+        data.graphics_listen_addr_vnc = CONF.vnc.vncserver_listen
+        data.graphics_listen_addr_spice = CONF.spice.server_listen
+        data.serial_listen_addr = None
+        data.block_migration = block_migration
+        data.disk_over_commit = disk_over_commit or False  # called with None
+        data.disk_available_mb = 100000
+        data.is_shared_block_storage = True
+        data.is_shared_instance_path = True
+
+        return data
 
     def check_can_live_migrate_source(self, context, instance,
                                       dest_check_data, block_device_info=None):
-        return
+        return dest_check_data
 
     def finish_migration(self, context, migration, instance, disk_info,
                          network_info, image_meta, resize_instance,

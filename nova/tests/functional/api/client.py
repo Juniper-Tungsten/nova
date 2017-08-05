@@ -81,10 +81,6 @@ class OpenStackApiException(Exception):
                         '_body': _body})
 
         super(OpenStackApiException, self).__init__(message)
-        # py35 does not give special meaning to the first arg and store it
-        # as the message variable.
-        if not hasattr(self, 'message'):
-            self.message = message
 
 
 class OpenStackApiAuthenticationException(OpenStackApiException):
@@ -138,7 +134,7 @@ class TestOpenStackClient(object):
         response = requests.request(method, url, data=body, headers=_headers)
         return response
 
-    def _authenticate(self):
+    def _authenticate(self, retry_count=0):
         if self.auth_result:
             return self.auth_result
 
@@ -153,8 +149,15 @@ class TestOpenStackClient(object):
         LOG.debug("%(auth_uri)s => code %(http_status)s",
                   {'auth_uri': auth_uri, 'http_status': http_status})
 
+        # NOTE(cdent): This is a workaround for an issue where the placement
+        # API fixture may respond when a request was supposed to go to the
+        # compute API fixture. Retry a few times, hoping to hit the right
+        # fixture.
         if http_status == 401:
-            raise OpenStackApiAuthenticationException(response=response)
+            if retry_count <= 3:
+                return self._authenticate(retry_count=retry_count + 1)
+            else:
+                raise OpenStackApiAuthenticationException(response=response)
 
         self.auth_result = response.headers
         return self.auth_result
@@ -217,7 +220,7 @@ class TestOpenStackClient(object):
             headers['Content-Type'] = 'application/json'
             kwargs['body'] = jsonutils.dumps(body)
 
-        kwargs.setdefault('check_response_status', [200, 202])
+        kwargs.setdefault('check_response_status', [200, 201, 202])
         return APIResponse(self.api_request(relative_uri, **kwargs))
 
     def api_put(self, relative_uri, body, **kwargs):
@@ -423,3 +426,10 @@ class TestOpenStackClient(object):
 
     def get_services(self):
         return self.api_get('/os-services').body['services']
+
+    def post_keypair(self, keypair):
+        return self.api_post('/os-keypairs', keypair).body['keypair']
+
+    def get_active_migrations(self, server_id):
+        return self.api_get('/servers/%s/migrations' %
+                            server_id).body['migrations']

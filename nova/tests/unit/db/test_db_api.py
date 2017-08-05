@@ -49,6 +49,7 @@ from sqlalchemy import sql
 from sqlalchemy import Table
 
 from nova import block_device
+from nova.compute import rpcapi as compute_rpcapi
 from nova.compute import task_states
 from nova.compute import vm_states
 import nova.conf
@@ -3515,14 +3516,23 @@ class ServiceTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_service_create_disabled(self):
         self.flags(enable_new_services=False)
-        service = self._create_service({})
+        service = self._create_service({'binary': 'nova-compute'})
         self.assertTrue(service['disabled'])
 
     def test_service_create_disabled_reason(self):
         self.flags(enable_new_services=False)
-        service = self._create_service({})
-        msg = "New service disabled due to config option."
+        service = self._create_service({'binary': 'nova-compute'})
+        msg = "New compute service disabled due to config option."
         self.assertEqual(msg, service['disabled_reason'])
+
+    def test_service_create_disabled_non_compute_ignored(self):
+        """Tests that enable_new_services=False has no effect on
+        auto-disabling a new non-nova-compute service.
+        """
+        self.flags(enable_new_services=False)
+        service = self._create_service({'binary': 'nova-scheduler'})
+        self.assertFalse(service['disabled'])
+        self.assertIsNone(service['disabled_reason'])
 
     def test_service_destroy(self):
         service1 = self._create_service({})
@@ -5665,17 +5675,8 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
         non_bulk_ips_for_delete = create_ips(4, 3)
         non_bulk_ips_for_non_delete = create_ips(5, 3)
         non_bulk_ips = non_bulk_ips_for_delete + non_bulk_ips_for_non_delete
-        project_id = 'fake_project'
-        reservations = quota.QUOTAS.reserve(self.ctxt,
-                                      floating_ips=len(non_bulk_ips),
-                                      project_id=project_id)
         for dct in non_bulk_ips:
             self._create_floating_ip(dct)
-        quota.QUOTAS.commit(self.ctxt, reservations, project_id=project_id)
-        self.assertEqual(db.quota_usage_get_all_by_project(
-                            self.ctxt, project_id),
-                            {'project_id': project_id,
-                             'floating_ips': {'in_use': 6, 'reserved': 0}})
         ips_for_delete.extend(non_bulk_ips_for_delete)
         ips_for_non_delete.extend(non_bulk_ips_for_non_delete)
 
@@ -5684,10 +5685,6 @@ class FloatingIpTestCase(test.TestCase, ModelsObjectComparatorMixin):
         expected_addresses = [x['address'] for x in ips_for_non_delete]
         self._assertEqualListsOfPrimitivesAsSets(self._get_existing_ips(),
                                                  expected_addresses)
-        self.assertEqual(db.quota_usage_get_all_by_project(
-                            self.ctxt, project_id),
-                            {'project_id': project_id,
-                             'floating_ips': {'in_use': 3, 'reserved': 0}})
 
     def test_floating_ip_create(self):
         floating_ip = self._create_floating_ip({})
@@ -7836,8 +7833,8 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
         super(ComputeNodeTestCase, self).setUp()
         self.ctxt = context.get_admin_context()
         self.service_dict = dict(host='host1', binary='nova-compute',
-                            topic=CONF.compute_topic, report_count=1,
-                            disabled=False)
+                            topic=compute_rpcapi.RPC_TOPIC,
+                            report_count=1, disabled=False)
         self.service = db.service_create(self.ctxt, self.service_dict)
         self.compute_node_dict = dict(vcpus=2, memory_mb=1024, local_gb=2048,
                                  uuid=uuidutils.generate_uuid(),
@@ -7902,8 +7899,8 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_compute_node_get_all_by_pagination(self):
         service_dict = dict(host='host2', binary='nova-compute',
-                            topic=CONF.compute_topic, report_count=1,
-                            disabled=False)
+                            topic=compute_rpcapi.RPC_TOPIC,
+                            report_count=1, disabled=False)
         service = db.service_create(self.ctxt, service_dict)
         compute_node_dict = dict(vcpus=2, memory_mb=1024, local_gb=2048,
                                  uuid=uuidsentinel.fake_compute_node,
@@ -8160,8 +8157,8 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_compute_node_statistics(self):
         service_dict = dict(host='hostA', binary='nova-compute',
-                            topic=CONF.compute_topic, report_count=1,
-                            disabled=False)
+                            topic=compute_rpcapi.RPC_TOPIC,
+                            report_count=1, disabled=False)
         service = db.service_create(self.ctxt, service_dict)
         # Define the various values for the new compute node
         new_vcpus = 4
@@ -8238,7 +8235,7 @@ class ComputeNodeTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def test_compute_node_statistics_disabled_service(self):
         serv = db.service_get_by_host_and_topic(
-            self.ctxt, 'host1', CONF.compute_topic)
+            self.ctxt, 'host1', compute_rpcapi.RPC_TOPIC)
         db.service_update(self.ctxt, serv['id'], {'disabled': True})
         stats = db.compute_node_statistics(self.ctxt)
         self.assertEqual(stats.pop('count'), 0)
@@ -9774,6 +9771,7 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
 
     def _get_fake_pci_devs(self):
         return {'id': 3353,
+                'uuid': uuidsentinel.pci_device1,
                 'compute_node_id': 1,
                 'address': '0000:0f:08.7',
                 'vendor_id': '8086',
@@ -9788,6 +9786,7 @@ class PciDeviceDBApiTestCase(test.TestCase, ModelsObjectComparatorMixin):
                 'request_id': None,
                 'parent_addr': '0000:0f:00.1',
                 }, {'id': 3356,
+                'uuid': uuidsentinel.pci_device3356,
                 'compute_node_id': 1,
                 'address': '0000:0f:03.7',
                 'parent_addr': '0000:0f:03.0',

@@ -66,6 +66,7 @@ AutoTypedField = fields.AutoTypedField
 BaseEnumField = fields.BaseEnumField
 MACAddressField = fields.MACAddressField
 ListOfIntegersField = fields.ListOfIntegersField
+PCIAddressField = fields.PCIAddressField
 
 
 # NOTE(danms): These are things we need to import for some of our
@@ -1000,14 +1001,6 @@ class AddressBase(FieldType):
         return {'type': ['string'], 'pattern': self.PATTERN}
 
 
-class PCIAddress(AddressBase):
-    PATTERN = '[a-f0-9]{4}:[a-f0-9]{2}:[a-f0-9]{2}.[a-f0-9]'
-
-    @staticmethod
-    def coerce(obj, attr, value):
-        return AddressBase.coerce(PCIAddress, attr, value)
-
-
 class USBAddress(AddressBase):
     PATTERN = '[a-f0-9]+:[a-f0-9]+'
 
@@ -1032,8 +1025,12 @@ class IDEAddress(AddressBase):
         return AddressBase.coerce(IDEAddress, attr, value)
 
 
-class PCIAddressField(AutoTypedField):
-    AUTO_TYPE = PCIAddress()
+class XenAddress(AddressBase):
+    PATTERN = '(00[0-9]{2}00)|[1-9][0-9]+'
+
+    @staticmethod
+    def coerce(obj, attr, value):
+        return AddressBase.coerce(XenAddress, attr, value)
 
 
 class USBAddressField(AutoTypedField):
@@ -1046,6 +1043,10 @@ class SCSIAddressField(AutoTypedField):
 
 class IDEAddressField(AutoTypedField):
     AUTO_TYPE = IDEAddress()
+
+
+class XenAddressField(AutoTypedField):
+    AUTO_TYPE = XenAddress()
 
 
 class ArchitectureField(BaseEnumField):

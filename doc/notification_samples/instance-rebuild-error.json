@@ -5,6 +5,19 @@
         "nova_object.data": {
             "state": "active",
             "availability_zone": "nova",
+            "key_name": "my-key",
+            "block_devices": [{
+                "nova_object.data": {
+                    "boot_index": null,
+                    "delete_on_termination": false,
+                    "device_name": "/dev/sdb",
+                    "tag": null,
+                    "volume_id": "a07f71dc-8151-4e7d-a0cc-cd24a3f11113"
+                },
+                "nova_object.name": "BlockDevicePayload",
+                "nova_object.namespace": "nova",
+                "nova_object.version": "1.0"
+            }],
             "kernel_id": "",
             "host_name": "some-server",
             "progress": 0,
@@ -75,9 +88,10 @@
                 },
                 "nova_object.version": "1.0",
                 "nova_object.namespace": "nova"
-            }
+            },
+            "updated_at": "2012-10-29T13:42:11Z"
         },
-        "nova_object.version":"1.2",
+        "nova_object.version": "1.5",
         "nova_object.namespace": "nova"
     },
     "publisher_id": "nova-compute:compute",

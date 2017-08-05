@@ -165,14 +165,6 @@ def fake_request(testcase, mdinst, relpath, address="127.0.0.1",
     return response
 
 
-class FakeDeviceMetadata(metadata_obj.DeviceMetadata):
-    pass
-
-
-class FakeDeviceBus(metadata_obj.DeviceBus):
-    pass
-
-
 def fake_metadata_objects():
     nic_obj = metadata_obj.NetworkInterfaceMetadata(
         bus=metadata_obj.PCIDeviceBus(address='0000:00:01.0'),
@@ -202,9 +194,9 @@ def fake_metadata_objects():
         path='/dev/sda',
         tags=['baz'],
     )
-    fake_device_obj = FakeDeviceMetadata()
+    fake_device_obj = metadata_obj.DeviceMetadata()
     device_with_fake_bus_obj = metadata_obj.NetworkInterfaceMetadata(
-        bus=FakeDeviceBus(),
+        bus=metadata_obj.DeviceBus(),
         mac='00:00:00:00:00:00',
         tags=['foo']
     )
@@ -396,6 +388,35 @@ class MetadataTestCase(test.TestCase):
         md = fake_InstanceMetadata(self, inst)
         self.assertRaises(base.InvalidMetadataPath,
             md.lookup, "/2009-04-04/meta-data/kernel-id")
+
+    def test_instance_is_sanitized(self):
+        inst = self.instance.obj_clone()
+        # The instance already has some fake device_metadata stored on it,
+        # and we want to test to see it gets lazy-loaded, so save off the
+        # original attribute value and delete the attribute from the instance,
+        # then we can assert it gets loaded up later.
+        original_device_meta = inst.device_metadata
+        delattr(inst, 'device_metadata')
+
+        def fake_obj_load_attr(attrname):
+            if attrname == 'device_metadata':
+                inst.device_metadata = original_device_meta
+            elif attrname == 'ec2_ids':
+                inst.ec2_ids = objects.EC2Ids()
+            else:
+                self.fail('Unexpected instance lazy-load: %s' % attrname)
+
+        inst._will_not_pass = True
+        with mock.patch.object(
+                inst, 'obj_load_attr',
+                side_effect=fake_obj_load_attr) as mock_obj_load_attr:
+            md = fake_InstanceMetadata(self, inst)
+        self.assertFalse(hasattr(md.instance, '_will_not_pass'))
+        self.assertEqual(2, mock_obj_load_attr.call_count)
+        mock_obj_load_attr.assert_has_calls(
+            [mock.call('device_metadata'), mock.call('ec2_ids')],
+            any_order=True)
+        self.assertIs(original_device_meta, inst.device_metadata)
 
     def test_check_version(self):
         inst = self.instance.obj_clone()
@@ -1602,11 +1623,13 @@ class MetadataPasswordTestCase(test.TestCase):
         self.assertRaises(webob.exc.HTTPBadRequest,
                           password.handle_password, request, self.mdinst)
 
+    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
     @mock.patch('nova.objects.Instance.get_by_uuid')
-    def _try_set_password(self, get_by_uuid, val=b'bar'):
+    def _try_set_password(self, get_by_uuid, get_mapping, val=b'bar'):
         request = webob.Request.blank('')
         request.method = 'POST'
         request.body = val
+        get_mapping.return_value = objects.InstanceMapping(cell_mapping=None)
         get_by_uuid.return_value = self.instance
 
         with mock.patch.object(self.instance, 'save') as save:
@@ -1614,6 +1637,7 @@ class MetadataPasswordTestCase(test.TestCase):
             save.assert_called_once_with()
 
         self.assertIn('password_0', self.instance.system_metadata)
+        get_mapping.assert_called_once_with(mock.ANY, self.instance.uuid)
 
     def test_set_password(self):
         self.mdinst.password = ''

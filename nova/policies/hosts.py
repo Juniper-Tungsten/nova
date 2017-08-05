@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,10 +22,10 @@ BASE_POLICY_NAME = 'os_compute_api:os-hosts'
 
 
 hosts_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_API,
-        """List, Show and Manage physical hosts.
+        """List, show and manage physical hosts.
 
 These APIs are all deprecated in favor of os-hypervisors and os-services.""",
         [

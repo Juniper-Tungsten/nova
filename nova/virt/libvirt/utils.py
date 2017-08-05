@@ -27,8 +27,6 @@ from oslo_log import log as logging
 
 import nova.conf
 from nova.i18n import _
-from nova.i18n import _LI
-from nova.i18n import _LW
 from nova.objects import fields as obj_fields
 from nova import utils
 from nova.virt.disk import api as disk
@@ -167,7 +165,7 @@ def pick_disk_driver_name(hypervisor_version, is_block_dev=False):
                     else:
                         return "tap"
                 else:
-                    LOG.info(_LI("tap-ctl check: %s"), out)
+                    LOG.info("tap-ctl check: %s", out)
             except OSError as exc:
                 if exc.errno == errno.ENOENT:
                     LOG.debug("tap-ctl tool is not installed")
@@ -279,8 +277,8 @@ def update_mtime(path):
         # the same base image and using shared storage, so log the exception
         # but don't fail. Ideally we'd know if we were on shared storage and
         # would re-raise the error if we are not on shared storage.
-        LOG.warning(_LW("Failed to update mtime on path %(path)s. "
-                        "Error: %(error)s"),
+        LOG.warning("Failed to update mtime on path %(path)s. "
+                    "Error: %(error)s",
                     {'path': path, "error": exc})
 
 
@@ -551,3 +549,27 @@ def is_mounted(mount_path, source=None):
 
 def is_valid_hostname(hostname):
     return re.match(r"^[\w\-\.:]+$", hostname)
+
+
+def last_bytes(file_like_object, num):
+    """Return num bytes from the end of the file, and remaining byte count.
+
+    :param file_like_object: The file to read
+    :param num: The number of bytes to return
+
+    :returns: (data, remaining)
+    """
+
+    try:
+        file_like_object.seek(-num, os.SEEK_END)
+    except IOError as e:
+        # seek() fails with EINVAL when trying to go before the start of
+        # the file. It means that num is larger than the file size, so
+        # just go to the start.
+        if e.errno == errno.EINVAL:
+            file_like_object.seek(0, os.SEEK_SET)
+        else:
+            raise
+
+    remaining = file_like_object.tell()
+    return (file_like_object.read(), remaining)

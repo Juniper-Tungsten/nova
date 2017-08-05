@@ -227,6 +227,16 @@ user documentation.
   A user can create, update, delete or check existence of simple string tags
   for servers by the os-server-tags plugin.
 
+  Tags have the following schema restrictions:
+
+  * Tag is a Unicode bytestring no longer than 60 characters.
+  * Tag is a non-empty string.
+  * '/' is not allowed to be in a tag name
+  * Comma is not allowed to be in a tag name in order to simplify requests that
+    specify lists of tags
+  * All other characters are allowed to be in a tag name
+  * Each server can have up to 50 tags.
+
   The resource point for these operations is /servers/<server_id>/tags
 
   A user can add a single tag to the server by sending PUT request to the
@@ -564,3 +574,112 @@ user documentation.
   standardized. It has a set of fields which each hypervisor will try to fill.
   If a hypervisor driver is unable to provide a specific field then this field
   will be reported as 'None'.
+
+2.49
+----
+
+  Continuing from device role tagging at server create time introduced in
+  version 2.32 and later fixed in 2.42, microversion 2.49 allows the attachment
+  of network interfaces and volumes with an optional ``tag`` parameter. This tag
+  is used to identify the virtual devices in the guest and is exposed in the
+  metadata API. Because the config drive cannot be updated while the guest is
+  running, it will only contain metadata of devices that were tagged at boot
+  time. Any changes made to devices while the instance is running - be it
+  detaching a tagged device or performing a tagged device attachment - will not
+  be reflected in the config drive.
+
+  Tagged volume attachment is not supported for shelved-offloaded instances.
+
+2.50
+----
+
+  The ``server_groups`` and ``server_group_members`` keys are exposed in GET & PUT
+  ``os-quota-class-sets`` APIs Response body.
+  Networks related quotas have been filtered out from os-quota-class. Below quotas
+  are filtered out and not available in ``os-quota-class-sets`` APIs from this
+  microversion onwards.
+
+  - "fixed_ips"
+  - "floating_ips"
+  - "networks",
+  - "security_group_rules"
+  - "security_groups"
+
+2.51
+----
+
+  There are two changes for the 2.51 microversion:
+
+  * Add ``volume-extended`` event name to the ``os-server-external-events``
+    API. This will be used by the Block Storage service when extending the size
+    of an attached volume. This signals the Compute service to perform any
+    necessary actions on the compute host or hypervisor to adjust for the new
+    volume block device size.
+  * Expose the ``events`` field in the response body for the
+    ``GET /servers/{server_id}/os-instance-actions/{request_id}`` API. This is
+    useful for API users to monitor when a volume extend operation completes
+    for the given server instance. By default only users with the administrator
+    role will be able to see event ``traceback`` details.
+
+2.52
+----
+
+  Adds support for applying tags when creating a server. The tag schema is
+  the same as in the `2.26`_ microversion.
+
+2.53
+----
+
+  **os-services**
+
+  Services are now identified by uuid instead of database id to ensure
+  uniqueness across cells. This microversion brings the following changes:
+
+  * ``GET /os-services`` returns a uuid in the ``id`` field of the response
+  * ``DELETE /os-services/{service_uuid}`` requires a service uuid in the path
+  * The following APIs have been superseded by
+    ``PUT /os-services/{service_uuid}/``:
+
+    * ``PUT /os-services/disable``
+    * ``PUT /os-services/disable-log-reason``
+    * ``PUT /os-services/enable``
+    * ``PUT /os-services/force-down``
+
+    ``PUT /os-services/{service_uuid}`` takes the following fields in the body:
+
+    * ``status`` - can be either "enabled" or "disabled" to enable or disable
+      the given service
+    * ``disabled_reason`` - specify with status="disabled" to log a reason for
+      why the service is disabled
+    * ``forced_down`` - boolean indicating if the service was forced down by
+      an external service
+
+  * ``PUT /os-services/{service_uuid}`` will now return a full service resource
+    representation like in a ``GET`` response
+
+  **os-hypervisors**
+
+  Hypervisors are now identified by uuid instead of database id to ensure
+  uniqueness across cells. This microversion brings the following changes:
+
+  * ``GET /os-hypervisors/{hypervisor_hostname_pattern}/search`` is deprecated
+    and replaced with the ``hypervisor_hostname_pattern`` query parameter on
+    the ``GET /os-hypervisors`` and ``GET /os-hypervisors/detail`` APIs.
+    Paging with ``hypervisor_hostname_pattern`` is not supported.
+  * ``GET /os-hypervisors/{hypervisor_hostname_pattern}/servers`` is deprecated
+    and replaced with the ``with_servers`` query parameter on the
+    ``GET /os-hypervisors`` and ``GET /os-hypervisors/detail`` APIs.
+  * ``GET /os-hypervisors/{hypervisor_id}`` supports the ``with_servers`` query
+    parameter to include hosted server details in the response.
+  * ``GET /os-hypervisors/{hypervisor_id}`` and
+    ``GET /os-hypervisors/{hypervisor_id}/uptime`` APIs now take a uuid value
+    for the ``{hypervisor_id}`` path parameter.
+  * The ``GET /os-hypervisors`` and ``GET /os-hypervisors/detail`` APIs will
+    now use a uuid marker for paging across cells.
+  * The following APIs will now return a uuid value for the hypervisor id and
+    optionally service id fields in the response:
+
+    * ``GET /os-hypervisors``
+    * ``GET /os-hypervisors/detail``
+    * ``GET /os-hypervisors/{hypervisor_id}``
+    * ``GET /os-hypervisors/{hypervisor_id}/uptime``

@@ -66,7 +66,6 @@ import nova.context
 from nova.db.sqlalchemy import models
 from nova import exception
 from nova.i18n import _, _LI, _LE, _LW
-from nova import quota
 from nova import safe_utils
 
 profiler_sqlalchemy = importutils.try_import('osprofiler.sqlalchemy')
@@ -585,8 +584,13 @@ def service_get_by_compute_host(context, host):
 def service_create(context, values):
     service_ref = models.Service()
     service_ref.update(values)
-    if not CONF.enable_new_services:
-        msg = _("New service disabled due to config option.")
+    # We only auto-disable nova-compute services since those are the only
+    # ones that can be enabled using the os-services REST API and they are
+    # the only ones where being disabled means anything. It does
+    # not make sense to be able to disable non-compute services like
+    # nova-scheduler or nova-osapi_compute since that does nothing.
+    if not CONF.enable_new_services and values.get('binary') == 'nova-compute':
+        msg = _("New compute service disabled due to config option.")
         service_ref.disabled = True
         service_ref.disabled_reason = msg
     try:
@@ -1000,20 +1004,6 @@ def floating_ip_bulk_destroy(context, ips):
         model_query(context, models.FloatingIp).\
             filter(models.FloatingIp.address.in_(ip_block)).\
             soft_delete(synchronize_session='fetch')
-
-    # Delete the quotas, if needed.
-    # Quota update happens in a separate transaction, so previous must have
-    # been committed first.
-    for project_id, count in project_id_to_quota_count.items():
-        try:
-            reservations = quota.QUOTAS.reserve(context,
-                                                project_id=project_id,
-                                                floating_ips=count)
-            quota.QUOTAS.commit(context, reservations, project_id=project_id)
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.exception(_LE("Failed to update usages bulk "
-                                  "deallocating floating IP"))
 
 
 @require_context
@@ -4935,7 +4925,7 @@ def console_get(context, console_id, instance_uuid=None):
     if not result:
         if instance_uuid:
             raise exception.ConsoleNotFoundForInstance(
-                    console_id=console_id, instance_uuid=instance_uuid)
+                    instance_uuid=instance_uuid)
         else:
             raise exception.ConsoleNotFound(console_id=console_id)
 

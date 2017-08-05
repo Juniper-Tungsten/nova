@@ -1053,28 +1053,6 @@ Related options:
 """)
 ]
 
-rpcapi_opts = [
-    cfg.StrOpt("compute_topic",
-        default="compute",
-        deprecated_for_removal=True,
-        deprecated_since="15.0.0",
-        deprecated_reason="""
-There is no need to let users choose the RPC topic for all services - there
-is little gain from this. Furthermore, it makes it really easy to break Nova
-by using this option.
-""",
-        help="""
-This is the message queue topic that the compute service 'listens' on. It is
-used when the compute service is started up to configure the queue, and
-whenever an RPC call to the compute service is made.
-
-Possible values:
-
-* Any string, but there is almost never any reason to ever change this value
-  from its default of 'compute'.
-"""),
-]
-
 db_opts = [
     cfg.StrOpt('osapi_compute_unique_server_name_scope',
         default='',
@@ -1101,19 +1079,21 @@ Possible values:
     cfg.BoolOpt('enable_new_services',
         default=True,
         help="""
-Enable new services on this host automatically.
+Enable new nova-compute services on this host automatically.
 
-When a new service (for example "nova-compute") starts up, it gets
+When a new nova-compute service starts up, it gets
 registered in the database as an enabled service. Sometimes it can be useful
-to register new services in disabled state and then enabled them at a later
-point in time. This option can set this behavior for all services per host.
+to register new compute services in disabled state and then enabled them at a
+later point in time. This option only sets this behavior for nova-compute
+services, it does not auto-disable other services like nova-conductor,
+nova-scheduler, nova-consoleauth, or nova-osapi_compute.
 
 Possible values:
 
-* ``True``: Each new service is enabled as soon as it registers itself.
-* ``False``: Services must be enabled via a REST API call or with the CLI
-  with ``nova service-enable <hostname> <binary>``, otherwise they are not
-  ready to use.
+* ``True``: Each new compute service is enabled as soon as it registers itself.
+* ``False``: Compute services must be enabled via an os-services REST API call
+  or with the CLI with ``nova service-enable <hostname> <binary>``, otherwise
+  they are not ready to use.
 """),
     cfg.StrOpt('instance_name_template',
          default='instance-%08x',
@@ -1150,7 +1130,6 @@ ALL_OPTS = (compute_opts +
             timeout_opts +
             running_deleted_opts +
             instance_cleaning_opts +
-            rpcapi_opts +
             db_opts)
 
 

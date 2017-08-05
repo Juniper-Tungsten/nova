@@ -17,6 +17,7 @@ from oslo_utils import uuidutils
 from oslo_utils import versionutils
 
 from nova import availability_zones
+from nova import context as nova_context
 from nova import db
 from nova import exception
 from nova.i18n import _LW
@@ -31,7 +32,7 @@ LOG = logging.getLogger(__name__)
 
 
 # NOTE(danms): This is the global service version counter
-SERVICE_VERSION = 18
+SERVICE_VERSION = 21
 
 
 # NOTE(danms): This is our SERVICE_VERSION history. The idea is that any
@@ -103,6 +104,12 @@ SERVICE_VERSION_HISTORY = (
     {'compute_rpc': '4.13'},
     # Version 18: Compute RPC version 4.14
     {'compute_rpc': '4.14'},
+    # Version 19: Compute RPC version 4.15
+    {'compute_rpc': '4.15'},
+    # Version 20: Compute RPC version 4.16
+    {'compute_rpc': '4.16'},
+    # Version 21: Compute RPC version 4.17
+    {'compute_rpc': '4.17'},
 )
 
 
@@ -425,6 +432,19 @@ class Service(base.NovaPersistentObject, base.NovaObject,
     def get_minimum_version(cls, context, binary, use_slave=False):
         return cls.get_minimum_version_multi(context, [binary],
                                              use_slave=use_slave)
+
+
+def get_minimum_version_all_cells(context, binaries):
+    """Get the minimum service version, checking all cells"""
+
+    cells = objects.CellMappingList.get_all(context)
+    min_version = None
+    for cell in cells:
+        with nova_context.target_cell(context, cell) as cctxt:
+            version = objects.Service.get_minimum_version_multi(
+                cctxt, binaries)
+        min_version = min(min_version, version) if min_version else version
+    return min_version
 
 
 @base.NovaObjectRegistry.register

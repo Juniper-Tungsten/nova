@@ -16,6 +16,7 @@
 
 import collections
 import datetime
+import ddt
 import uuid
 
 import fixtures
@@ -40,7 +41,6 @@ from nova.api.openstack.compute import extension_info
 from nova.api.openstack.compute import ips
 from nova.api.openstack.compute import servers
 from nova.api.openstack.compute import views
-from nova.api.openstack import extensions
 from nova.api.openstack import wsgi as os_wsgi
 from nova import availability_zones
 from nova.compute import api as compute_api
@@ -50,12 +50,14 @@ from nova.compute import vm_states
 import nova.conf
 from nova import context
 from nova import db
+from nova.db.sqlalchemy import api as db_api
 from nova.db.sqlalchemy import models
 from nova import exception
 from nova.image import glance
 from nova.network import manager
 from nova import objects
 from nova.objects import instance as instance_obj
+from nova.objects import tag
 from nova.policies import servers as server_policies
 from nova import policy
 from nova import test
@@ -3229,8 +3231,27 @@ class ServersControllerCreateTest(test.TestCase):
 
         self.assertEqual(encodeutils.safe_decode(robj['Location']), selfhref)
 
-    def _do_test_create_instance_above_quota(self, resource, allowed, quota,
-                                             expected_msg):
+    @mock.patch('nova.objects.Quotas.get_all_by_project')
+    @mock.patch('nova.objects.Quotas.get_all_by_project_and_user')
+    @mock.patch('nova.objects.Quotas.count_as_dict')
+    def _do_test_create_instance_above_quota(self, resource, allowed,
+                quota, expected_msg, mock_count, mock_get_all_pu,
+                mock_get_all_p):
+        count = {'project': {}, 'user': {}}
+        for res in ('instances', 'ram', 'cores'):
+            if res == resource:
+                value = quota - allowed
+                count['project'][res] = count['user'][res] = value
+            else:
+                count['project'][res] = count['user'][res] = 0
+        mock_count.return_value = count
+        mock_get_all_p.return_value = {'project_id': 'fake'}
+        mock_get_all_pu.return_value = {'project_id': 'fake',
+                                        'user_id': 'fake_user'}
+        if resource in db_api.PER_PROJECT_QUOTAS:
+            mock_get_all_p.return_value[resource] = quota
+        else:
+            mock_get_all_pu.return_value[resource] = quota
         fakes.stub_out_instance_quota(self, allowed, quota, resource)
         self.body['server']['flavorRef'] = 3
         self.req.body = jsonutils.dump_as_bytes(self.body)
@@ -3262,12 +3283,16 @@ class ServersControllerCreateTest(test.TestCase):
         fake_group.user_id = ctxt.user_id
         fake_group.create()
 
+        real_count = fakes.QUOTAS.count_as_dict
+
         def fake_count(context, name, group, user_id):
-            self.assertEqual(name, "server_group_members")
-            self.assertEqual(group.uuid, fake_group.uuid)
-            self.assertEqual(user_id,
-                             self.req.environ['nova.context'].user_id)
-            return {'user': {'server_group_members': 10}}
+            if name == 'server_group_members':
+                self.assertEqual(group.uuid, fake_group.uuid)
+                self.assertEqual(user_id,
+                                 self.req.environ['nova.context'].user_id)
+                return {'user': {'server_group_members': 10}}
+            else:
+                return real_count(context, name, group, user_id)
 
         def fake_limit_check(context, **kwargs):
             if 'server_group_members' in kwargs:
@@ -3680,8 +3705,8 @@ class ServersControllerCreateTestV232(test.NoDBTestCase):
 
     def test_create_server_no_tags_old_compute(self):
         with test.nested(
-            mock.patch.object(objects.Service, 'get_minimum_version',
-                              return_value=13),
+            mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                       return_value=13),
             mock.patch.object(nova.compute.flavors, 'get_flavor_by_flavor_id',
                               return_value=objects.Flavor()),
             mock.patch.object(
@@ -3692,22 +3717,22 @@ class ServersControllerCreateTestV232(test.NoDBTestCase):
         ):
             self._create_server()
 
-    @mock.patch.object(objects.Service, 'get_minimum_version',
-                       return_value=13)
+    @mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                return_value=13)
     def test_create_server_tagged_nic_old_compute_fails(self, get_min_ver):
         self.body['server']['networks'][0]['tag'] = 'foo'
         self.assertRaises(webob.exc.HTTPBadRequest, self._create_server)
 
-    @mock.patch.object(objects.Service, 'get_minimum_version',
-                       return_value=13)
+    @mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                return_value=13)
     def test_create_server_tagged_bdm_old_compute_fails(self, get_min_ver):
         self.body['server']['block_device_mapping_v2'][0]['tag'] = 'foo'
         self.assertRaises(webob.exc.HTTPBadRequest, self._create_server)
 
     def test_create_server_tagged_nic_new_compute(self):
         with test.nested(
-            mock.patch.object(objects.Service, 'get_minimum_version',
-                              return_value=14),
+            mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                       return_value=14),
             mock.patch.object(nova.compute.flavors, 'get_flavor_by_flavor_id',
                               return_value=objects.Flavor()),
             mock.patch.object(
@@ -3721,8 +3746,8 @@ class ServersControllerCreateTestV232(test.NoDBTestCase):
 
     def test_create_server_tagged_bdm_new_compute(self):
         with test.nested(
-            mock.patch.object(objects.Service, 'get_minimum_version',
-                              return_value=14),
+            mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                       return_value=14),
             mock.patch.object(nova.compute.flavors, 'get_flavor_by_flavor_id',
                               return_value=objects.Flavor()),
             mock.patch.object(
@@ -3798,8 +3823,8 @@ class ServersControllerCreateTestV237(test.NoDBTestCase):
         when networks is 'none' which means no network will be allocated.
         """
         with test.nested(
-            mock.patch.object(objects.Service, 'get_minimum_version',
-                              return_value=14),
+            mock.patch('nova.objects.service.get_minimum_version_all_cells',
+                       return_value=14),
             mock.patch.object(nova.compute.flavors, 'get_flavor_by_flavor_id',
                               return_value=objects.Flavor()),
             mock.patch.object(
@@ -3812,7 +3837,7 @@ class ServersControllerCreateTestV237(test.NoDBTestCase):
             self._create_server('none')
             call_list = [c for c in context_can.call_args_list
                          if c[0][0] == network_policy]
-            self.assertTrue(len(call_list) == 0)
+            self.assertEqual(0, len(call_list))
 
     @mock.patch.object(objects.Flavor, 'get_by_flavor_id',
                        side_effect=exception.FlavorNotFound(flavor_id='2'))
@@ -3860,6 +3885,54 @@ class ServersControllerCreateTestV237(test.NoDBTestCase):
         uuid = 'br-00000000-0000-0000-0000-000000000000'
         self.assertRaises(exception.ValidationError, self._create_server,
                           [{'uuid': uuid}])
+
+
+@ddt.ddt
+class ServersControllerCreateTestV252(test.NoDBTestCase):
+    def setUp(self):
+        super(ServersControllerCreateTestV252, self).setUp()
+        self.controller = servers.ServersController()
+
+        self.body = {
+            'server': {
+                'name': 'device-tagging-server',
+                'imageRef': '6b0edabb-8cde-4684-a3f4-978960a51378',
+                'flavorRef': '2',
+                'networks': [{
+                    'uuid': 'ff608d40-75e9-48cb-b745-77bb55b5eaf2'
+                }]
+            }
+        }
+
+        self.req = fakes.HTTPRequestV21.blank('/fake/servers', version='2.52')
+        self.req.method = 'POST'
+        self.req.headers['content-type'] = 'application/json'
+
+    def _create_server(self, tags):
+        self.body['server']['tags'] = tags
+        self.req.body = jsonutils.dump_as_bytes(self.body)
+        return self.controller.create(self.req, body=self.body).obj['server']
+
+    def test_create_server_with_tags_pre_2_52_fails(self):
+        """Negative test to make sure you can't pass 'tags' before 2.52"""
+        self.req.api_version_request = \
+            api_version_request.APIVersionRequest('2.51')
+        self.assertRaises(
+            exception.ValidationError, self._create_server, ['tag1'])
+
+    @ddt.data([','],
+              ['/'],
+              ['a' * (tag.MAX_TAG_LENGTH + 1)],
+              ['a'] * (instance_obj.MAX_TAG_COUNT + 1),
+              [''],
+              [1, 2, 3],
+              {'tag': 'tag'})
+    def test_create_server_with_tags_incorrect_tags(self, tags):
+        """Negative test to incorrect tags are not allowed"""
+        self.req.api_version_request = \
+            api_version_request.APIVersionRequest('2.52')
+        self.assertRaises(
+            exception.ValidationError, self._create_server, tags)
 
 
 class ServersControllerCreateTestWithMock(test.TestCase):
@@ -4561,32 +4634,6 @@ class ServersInvalidRequestTestCase(test.TestCase):
     def test_create_update_malformed_entity(self):
         body = {'server': 'string'}
         self._invalid_server_create(body=body)
-
-
-class FakeExt(extensions.V21APIExtensionBase):
-    name = "DiskConfig"
-    alias = 'os-disk-config'
-    version = 1
-    fake_schema = {'fake_ext_attr': {'type': 'string'}}
-
-    def fake_extension_point(self, *args, **kwargs):
-        pass
-
-    def fake_schema_extension_point(self, version):
-        if version in ('2.1', '2.19', '2.32', '2.37'):
-            return self.fake_schema
-        elif version == '2.0':
-            return {}
-        # This fake method should return the schema for expected version
-        # Return None will make the tests failed, that means there is something
-        # in the code.
-        return None
-
-    def get_controller_extensions(self):
-        return []
-
-    def get_resources(self):
-        return []
 
 
 # TODO(alex_xu): There isn't specified file for ips extension. Most of

@@ -20,7 +20,6 @@
 import contextlib
 import copy
 import datetime
-import errno
 import functools
 import hashlib
 import inspect
@@ -33,7 +32,6 @@ import socket
 import struct
 import sys
 import tempfile
-import textwrap
 import time
 
 import eventlet
@@ -838,30 +836,6 @@ def mkfs(fs, path, label=None, run_as_root=False):
     execute(*args, run_as_root=run_as_root)
 
 
-def last_bytes(file_like_object, num):
-    """Return num bytes from the end of the file, and remaining byte count.
-
-    :param file_like_object: The file to read
-    :param num: The number of bytes to return
-
-    :returns: (data, remaining)
-    """
-
-    try:
-        file_like_object.seek(-num, os.SEEK_END)
-    except IOError as e:
-        # seek() fails with EINVAL when trying to go before the start of the
-        # file. It means that num is larger than the file size, so just
-        # go to the start.
-        if e.errno == errno.EINVAL:
-            file_like_object.seek(0, os.SEEK_SET)
-        else:
-            raise
-
-    remaining = file_like_object.tell()
-    return (file_like_object.read(), remaining)
-
-
 def metadata_to_dict(metadata, include_deleted=False):
     result = {}
     for item in metadata:
@@ -1385,7 +1359,7 @@ def strtime(at):
     return at.strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 
-def print_dict(dct, dict_property="Property", wrap=0, dict_value='Value'):
+def print_dict(dct, dict_property="Property", dict_value='Value'):
     """Print a `dict` as a table of two columns.
 
     :param dct: `dict` to print
@@ -1399,8 +1373,6 @@ def print_dict(dct, dict_property="Property", wrap=0, dict_value='Value'):
         # convert dict to str to check length
         if isinstance(v, dict):
             v = six.text_type(v)
-        if wrap > 0:
-            v = textwrap.fill(six.text_type(v), wrap)
         # if value has a newline, add in multiple rows
         # e.g. fault with stacktrace
         if v and isinstance(v, six.string_types) and r'\n' in v:

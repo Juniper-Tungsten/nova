@@ -2896,8 +2896,7 @@ class XenAPIDom0IptablesFirewallTestCase(stubs.XenAPITestBase):
 
         network_model = fake_network.fake_get_instance_nw_info(self, 1)
 
-        from nova.compute import utils as compute_utils  # noqa
-        self.stubs.Set(compute_utils, 'get_nw_info_for_instance',
+        self.stubs.Set(objects.Instance, 'get_network_info',
                        lambda instance: network_model)
 
         self.fw.prepare_instance_filter(instance_ref, network_model)
@@ -3402,7 +3401,7 @@ class HypervisorPoolTestCase(test.NoDBTestCase):
 
         self.assertIn(
             (slave.compute_rpcapi.add_aggregate_host,
-            "CONTEXT", "slave", jsonutils.to_primitive(self.fake_aggregate),
+            "CONTEXT", "slave", self.fake_aggregate,
             "master", "SLAVE_INFO"),
             slave.compute_rpcapi._mock_calls)
 
@@ -3477,7 +3476,8 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
             self.assertTrue(result)
             pre.assert_called_with("ctx", "inst", "bdi", "nw", "di", "data")
 
-    def test_post_live_migration_at_destination(self):
+    @mock.patch.object(vmops.VMOps, '_post_start_actions')
+    def test_post_live_migration_at_destination(self, mock_post_action):
         # ensure method is present
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(fake.FakeVirtAPI(), False)
@@ -3521,6 +3521,7 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBaseNoDB):
         self.assertEqual(fake_fw.call_count, 3)
         self.assertTrue(fake_get_vm_opaque_ref.called)
         self.assertTrue(fake_strip_base_mirror_from_vdis.called)
+        mock_post_action.assert_called_once_with(fake_instance)
 
     def test_check_can_live_migrate_destination_with_block_migration(self):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)

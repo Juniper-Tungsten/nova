@@ -10,6 +10,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
+
 from keystoneauth1 import exceptions as ks_exc
 import mock
 import six
@@ -19,6 +21,7 @@ import nova.conf
 from nova import context
 from nova import exception
 from nova import objects
+from nova.objects import fields
 from nova.scheduler.client import report
 from nova import test
 from nova.tests import uuidsentinel as uuids
@@ -187,9 +190,34 @@ class TestPutAllocations(SchedulerReportClientTestCase):
         consumer_uuid = mock.sentinel.consumer
         data = {"MEMORY_MB": 1024}
         expected_url = "/allocations/%s" % consumer_uuid
-        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data)
+        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data,
+                                           mock.sentinel.project_id,
+                                           mock.sentinel.user_id)
         self.assertTrue(resp)
-        mock_put.assert_called_once_with(expected_url, mock.ANY)
+        mock_put.assert_called_once_with(expected_url, mock.ANY, version='1.8')
+
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.put')
+    def test_put_allocations_fail_fallback_succeeds(self, mock_put):
+        not_acceptable = mock.Mock()
+        not_acceptable.status_code = 406
+        not_acceptable.text = 'microversion not supported'
+        ok_request = mock.Mock()
+        ok_request.status_code = 204
+        ok_request.text = 'cool'
+        mock_put.side_effect = [not_acceptable, ok_request]
+        rp_uuid = mock.sentinel.rp
+        consumer_uuid = mock.sentinel.consumer
+        data = {"MEMORY_MB": 1024}
+        expected_url = "/allocations/%s" % consumer_uuid
+        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data,
+                                           mock.sentinel.project_id,
+                                           mock.sentinel.user_id)
+        self.assertTrue(resp)
+        # Should fall back to earlier way if 1.8 fails.
+        call1 = mock.call(expected_url, mock.ANY, version='1.8')
+        call2 = mock.call(expected_url, mock.ANY)
+        self.assertEqual(2, mock_put.call_count)
+        mock_put.assert_has_calls([call1, call2])
 
     @mock.patch.object(report.LOG, 'warning')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.put')
@@ -200,11 +228,343 @@ class TestPutAllocations(SchedulerReportClientTestCase):
         consumer_uuid = mock.sentinel.consumer
         data = {"MEMORY_MB": 1024}
         expected_url = "/allocations/%s" % consumer_uuid
-        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data)
+        resp = self.client.put_allocations(rp_uuid, consumer_uuid, data,
+                                           mock.sentinel.project_id,
+                                           mock.sentinel.user_id)
         self.assertFalse(resp)
-        mock_put.assert_called_once_with(expected_url, mock.ANY)
+        mock_put.assert_called_once_with(expected_url, mock.ANY, version='1.8')
         log_msg = mock_warn.call_args[0][0]
         self.assertIn("Unable to submit allocation for instance", log_msg)
+
+    def test_claim_resources_success(self):
+        get_resp_mock = mock.Mock(status_code=200)
+        get_resp_mock.json.return_value = {
+            'allocations': [],  # build instance, not move
+        }
+        self.ks_sess_mock.get.return_value = get_resp_mock
+        resp_mock = mock.Mock(status_code=204)
+        self.ks_sess_mock.put.return_value = resp_mock
+        consumer_uuid = uuids.consumer_uuid
+        alloc_req = {
+            'allocations': {
+                'resource_provider': {
+                    'uuid': uuids.cn1,
+                },
+                'resources': {
+                    'VCPU': 1,
+                    'MEMORY_MB': 1024,
+                },
+            },
+        }
+
+        project_id = uuids.project_id
+        user_id = uuids.user_id
+        res = self.client.claim_resources(consumer_uuid, alloc_req, project_id,
+            user_id)
+
+        expected_url = "/allocations/%s" % consumer_uuid
+        expected_payload = copy.deepcopy(alloc_req)
+        expected_payload['project_id'] = project_id
+        expected_payload['user_id'] = user_id
+        self.ks_sess_mock.put.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY,
+            headers={'OpenStack-API-Version': 'placement 1.10'},
+            json=expected_payload, raise_exc=False)
+
+        self.assertTrue(res)
+
+    def test_claim_resources_success_move_operation_no_shared(self):
+        """Tests that when a move operation is detected (existing allocations
+        for the same instance UUID) that we end up constructing an appropriate
+        allocation that contains the original resources on the source host
+        as well as the resources on the destination host.
+        """
+        get_resp_mock = mock.Mock(status_code=200)
+        get_resp_mock.json.return_value = {
+            'allocations': {
+                uuids.source: {
+                    'resource_provider_generation': 42,
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            },
+        }
+
+        self.ks_sess_mock.get.return_value = get_resp_mock
+        resp_mock = mock.Mock(status_code=204)
+        self.ks_sess_mock.put.return_value = resp_mock
+        consumer_uuid = uuids.consumer_uuid
+        alloc_req = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.destination,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            ],
+        }
+
+        project_id = uuids.project_id
+        user_id = uuids.user_id
+        res = self.client.claim_resources(consumer_uuid, alloc_req, project_id,
+            user_id)
+
+        expected_url = "/allocations/%s" % consumer_uuid
+        # New allocation should include resources claimed on both the source
+        # and destination hosts
+        expected_payload = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.source,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+                {
+                    'resource_provider': {
+                        'uuid': uuids.destination,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            ],
+        }
+        expected_payload['project_id'] = project_id
+        expected_payload['user_id'] = user_id
+        self.ks_sess_mock.put.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY,
+            headers={'OpenStack-API-Version': 'placement 1.10'},
+            json=mock.ANY, raise_exc=False)
+        # We have to pull the json body from the mock call_args to validate
+        # it separately otherwise hash seed issues get in the way.
+        actual_payload = self.ks_sess_mock.put.call_args[1]['json']
+        sort_by_uuid = lambda x: x['resource_provider']['uuid']
+        expected_allocations = sorted(expected_payload['allocations'],
+                                      key=sort_by_uuid)
+        actual_allocations = sorted(actual_payload['allocations'],
+                                    key=sort_by_uuid)
+        self.assertEqual(expected_allocations, actual_allocations)
+
+        self.assertTrue(res)
+
+    def test_claim_resources_success_move_operation_with_shared(self):
+        """Tests that when a move operation is detected (existing allocations
+        for the same instance UUID) that we end up constructing an appropriate
+        allocation that contains the original resources on the source host
+        as well as the resources on the destination host but that when a shared
+        storage provider is claimed against in both the original allocation as
+        well as the new allocation request, we don't double that allocation
+        resource request up.
+        """
+        get_resp_mock = mock.Mock(status_code=200)
+        get_resp_mock.json.return_value = {
+            'allocations': {
+                uuids.source: {
+                    'resource_provider_generation': 42,
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+                uuids.shared_storage: {
+                    'resource_provider_generation': 42,
+                    'resources': {
+                        'DISK_GB': 100,
+                    },
+                },
+            },
+        }
+
+        self.ks_sess_mock.get.return_value = get_resp_mock
+        resp_mock = mock.Mock(status_code=204)
+        self.ks_sess_mock.put.return_value = resp_mock
+        consumer_uuid = uuids.consumer_uuid
+        alloc_req = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.destination,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+                {
+                    'resource_provider': {
+                        'uuid': uuids.shared_storage,
+                    },
+                    'resources': {
+                        'DISK_GB': 100,
+                    },
+                },
+            ],
+        }
+
+        project_id = uuids.project_id
+        user_id = uuids.user_id
+        res = self.client.claim_resources(consumer_uuid, alloc_req, project_id,
+            user_id)
+
+        expected_url = "/allocations/%s" % consumer_uuid
+        # New allocation should include resources claimed on both the source
+        # and destination hosts but not have a doubled-up request for the disk
+        # resources on the shared provider
+        expected_payload = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.source,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+                {
+                    'resource_provider': {
+                        'uuid': uuids.shared_storage,
+                    },
+                    'resources': {
+                        'DISK_GB': 100,
+                    },
+                },
+                {
+                    'resource_provider': {
+                        'uuid': uuids.destination,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            ],
+        }
+        expected_payload['project_id'] = project_id
+        expected_payload['user_id'] = user_id
+        self.ks_sess_mock.put.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY,
+            headers={'OpenStack-API-Version': 'placement 1.10'},
+            json=mock.ANY, raise_exc=False)
+        # We have to pull the allocations from the json body from the
+        # mock call_args to validate it separately otherwise hash seed
+        # issues get in the way.
+        actual_payload = self.ks_sess_mock.put.call_args[1]['json']
+        sort_by_uuid = lambda x: x['resource_provider']['uuid']
+        expected_allocations = sorted(expected_payload['allocations'],
+                                      key=sort_by_uuid)
+        actual_allocations = sorted(actual_payload['allocations'],
+                                    key=sort_by_uuid)
+        self.assertEqual(expected_allocations, actual_allocations)
+
+        self.assertTrue(res)
+
+    def test_claim_resources_fail_retry_success(self):
+        get_resp_mock = mock.Mock(status_code=200)
+        get_resp_mock.json.return_value = {
+            'allocations': [],  # build instance, not move
+        }
+        self.ks_sess_mock.get.return_value = get_resp_mock
+        resp_mocks = [
+            mock.Mock(
+                status_code=409,
+                text='Inventory changed while attempting to allocate: '
+                     'Another thread concurrently updated the data. '
+                     'Please retry your update'),
+            mock.Mock(status_code=204),
+        ]
+        self.ks_sess_mock.put.side_effect = resp_mocks
+        consumer_uuid = uuids.consumer_uuid
+        alloc_req = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.cn1,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            ],
+        }
+
+        project_id = uuids.project_id
+        user_id = uuids.user_id
+        res = self.client.claim_resources(consumer_uuid, alloc_req, project_id,
+            user_id)
+
+        expected_url = "/allocations/%s" % consumer_uuid
+        expected_payload = copy.deepcopy(alloc_req)
+        expected_payload['project_id'] = project_id
+        expected_payload['user_id'] = user_id
+        # We should have exactly two calls to the placement API that look
+        # identical since we're retrying the same HTTP request
+        expected_calls = [
+            mock.call(expected_url, endpoint_filter=mock.ANY,
+                headers={'OpenStack-API-Version': 'placement 1.10'},
+                json=expected_payload, raise_exc=False),
+            mock.call(expected_url, endpoint_filter=mock.ANY,
+                headers={'OpenStack-API-Version': 'placement 1.10'},
+                json=expected_payload, raise_exc=False),
+        ]
+        self.assertEqual(len(expected_calls),
+                         self.ks_sess_mock.put.call_count)
+        self.ks_sess_mock.put.assert_has_calls(expected_calls)
+
+        self.assertTrue(res)
+
+    @mock.patch.object(report.LOG, 'warning')
+    def test_claim_resources_failure(self, mock_log):
+        get_resp_mock = mock.Mock(status_code=200)
+        get_resp_mock.json.return_value = {
+            'allocations': [],  # build instance, not move
+        }
+        self.ks_sess_mock.get.return_value = get_resp_mock
+        resp_mock = mock.Mock(status_code=409)
+        self.ks_sess_mock.put.return_value = resp_mock
+        consumer_uuid = uuids.consumer_uuid
+        alloc_req = {
+            'allocations': [
+                {
+                    'resource_provider': {
+                        'uuid': uuids.cn1,
+                    },
+                    'resources': {
+                        'VCPU': 1,
+                        'MEMORY_MB': 1024,
+                    },
+                },
+            ],
+        }
+
+        project_id = uuids.project_id
+        user_id = uuids.user_id
+        res = self.client.claim_resources(consumer_uuid, alloc_req, project_id,
+            user_id, attempt=3)  # attempt=3 prevents falling into retry loop
+
+        expected_url = "/allocations/%s" % consumer_uuid
+        expected_payload = copy.deepcopy(alloc_req)
+        expected_payload['project_id'] = project_id
+        expected_payload['user_id'] = user_id
+        self.ks_sess_mock.put.assert_called_once_with(
+            expected_url, endpoint_filter=mock.ANY,
+            headers={'OpenStack-API-Version': 'placement 1.10'},
+            json=expected_payload, raise_exc=False)
+
+        self.assertFalse(res)
+        self.assertTrue(mock_log.called)
 
 
 class TestProviderOperations(SchedulerReportClientTestCase):
@@ -325,47 +685,40 @@ class TestProviderOperations(SchedulerReportClientTestCase):
                 mock.sentinel.name,
         )
 
-    def test_get_filtered_resource_providers(self):
-        uuid = uuids.compute_node
+    def test_get_allocation_candidates(self):
         resp_mock = mock.Mock(status_code=200)
         json_data = {
-            'resource_providers': [
-                {'uuid': uuid,
-                 'name': uuid,
-                 'generation': 42}
-            ],
+            'allocation_requests': mock.sentinel.alloc_reqs,
+            'provider_summaries': mock.sentinel.p_sums,
         }
-        filters = {'resources': {'VCPU': 1, 'MEMORY_MB': 1024}}
+        resources = {'VCPU': 1, 'MEMORY_MB': 1024}
         resp_mock.json.return_value = json_data
         self.ks_sess_mock.get.return_value = resp_mock
 
-        result = self.client.get_filtered_resource_providers(filters)
+        alloc_reqs, p_sums = self.client.get_allocation_candidates(resources)
 
-        expected_provider_dict = dict(
-                uuid=uuid,
-                name=uuid,
-                generation=42,
-        )
-        expected_url = '/resource_providers?%s' % parse.urlencode(
+        expected_url = '/allocation_candidates?%s' % parse.urlencode(
             {'resources': 'MEMORY_MB:1024,VCPU:1'})
         self.ks_sess_mock.get.assert_called_once_with(
             expected_url, endpoint_filter=mock.ANY, raise_exc=False,
-            headers={'OpenStack-API-Version': 'placement 1.4'})
-        self.assertEqual(expected_provider_dict, result[0])
+            headers={'OpenStack-API-Version': 'placement 1.10'})
+        self.assertEqual(mock.sentinel.alloc_reqs, alloc_reqs)
+        self.assertEqual(mock.sentinel.p_sums, p_sums)
 
-    def test_get_filtered_resource_providers_not_found(self):
+    def test_get_allocation_candidates_not_found(self):
         # Ensure _get_resource_provider() just returns None when the placement
         # API doesn't find a resource provider matching a UUID
         resp_mock = mock.Mock(status_code=404)
         self.ks_sess_mock.get.return_value = resp_mock
 
-        result = self.client.get_filtered_resource_providers({'foo': 'bar'})
+        res = self.client.get_allocation_candidates({'foo': 'bar'})
 
-        expected_url = '/resource_providers?foo=bar'
+        expected_url = '/allocation_candidates?resources=foo%3Abar'
         self.ks_sess_mock.get.assert_called_once_with(
             expected_url, endpoint_filter=mock.ANY, raise_exc=False,
-            headers={'OpenStack-API-Version': 'placement 1.4'})
-        self.assertIsNone(result)
+            headers={'OpenStack-API-Version': 'placement 1.10'})
+        self.assertIsNone(res[0])
+        self.assertIsNone(res[0])
 
     def test_get_resource_provider_found(self):
         # Ensure _get_resource_provider() returns a dict of resource provider
@@ -731,12 +1084,42 @@ class TestInventory(SchedulerReportClientTestCase):
         mock_delete.assert_called_once_with(cn.uuid)
         self.assertFalse(mock_ui.called)
 
-    @mock.patch('nova.scheduler.client.report._extract_inventory_in_use')
+    @mock.patch.object(report.LOG, 'info')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'put')
+    @mock.patch.object(report.LOG, 'info')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'get')
-    def test_delete_inventory_already_no_inventory(self, mock_get, mock_put,
+    def test_delete_inventory(self, mock_get, mock_delete, mock_debug,
+                              mock_put, mock_info):
+        cn = self.compute_node
+        rp = dict(uuid=cn.uuid, generation=42)
+        # Make sure the resource provider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+                'VCPU': {'total': 16},
+            }
+        }
+        mock_delete.return_value.status_code = 204
+        mock_delete.return_value.headers = {'openstack-request-id':
+                                            uuids.request_id}
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertFalse(mock_put.called)
+        self.assertEqual(uuids.request_id,
+                         mock_info.call_args[0][1]['placement_req_id'])
+
+    @mock.patch('nova.scheduler.client.report._extract_inventory_in_use')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_already_no_inventory(self, mock_get, mock_delete,
             mock_extract):
         cn = self.compute_node
         rp = dict(uuid=cn.uuid, generation=42)
@@ -750,19 +1133,21 @@ class TestInventory(SchedulerReportClientTestCase):
         }
         result = self.client._delete_inventory(cn.uuid)
         self.assertIsNone(result)
-        self.assertFalse(mock_put.called)
+        self.assertFalse(mock_delete.called)
         self.assertFalse(mock_extract.called)
         new_gen = self.client._resource_providers[cn.uuid]['generation']
         self.assertEqual(1, new_gen)
 
     @mock.patch.object(report.LOG, 'info')
-    @mock.patch('nova.scheduler.client.report._extract_inventory_in_use')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'put')
+    @mock.patch.object(report.LOG, 'debug')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'get')
-    def test_delete_inventory(self, mock_get, mock_put, mock_extract,
-                              mock_info):
+    def test_delete_inventory_put(self, mock_get, mock_delete, mock_debug,
+                                  mock_put, mock_info):
         cn = self.compute_node
         rp = dict(uuid=cn.uuid, generation=42)
         # Make sure the resource provider exists for preventing to call the API
@@ -771,11 +1156,10 @@ class TestInventory(SchedulerReportClientTestCase):
         mock_get.return_value.json.return_value = {
             'resource_provider_generation': 1,
             'inventories': {
-                'VCPU': {'total': 16},
-                'MEMORY_MB': {'total': 1024},
                 'DISK_GB': {'total': 10},
             }
         }
+        mock_delete.return_value.status_code = 406
         mock_put.return_value.status_code = 200
         mock_put.return_value.json.return_value = {
             'resource_provider_generation': 44,
@@ -786,19 +1170,88 @@ class TestInventory(SchedulerReportClientTestCase):
                                          uuids.request_id}
         result = self.client._delete_inventory(cn.uuid)
         self.assertIsNone(result)
-        self.assertFalse(mock_extract.called)
+        self.assertTrue(mock_debug.called)
+        self.assertTrue(mock_put.called)
         new_gen = self.client._resource_providers[cn.uuid]['generation']
         self.assertEqual(44, new_gen)
         self.assertTrue(mock_info.called)
         self.assertEqual(uuids.request_id,
                          mock_info.call_args[0][1]['placement_req_id'])
 
-    @mock.patch.object(report.LOG, 'warning')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'put')
+    @mock.patch.object(report.LOG, 'debug')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'get')
-    def test_delete_inventory_inventory_in_use(self, mock_get, mock_put,
+    def test_delete_inventory_put_failover(self, mock_get, mock_delete,
+                                           mock_debug, mock_put):
+        cn = self.compute_node
+        rp = dict(uuid=cn.uuid, generation=42)
+        # Make sure the resource provider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 42,
+            'inventories': {
+                'DISK_GB': {'total': 10},
+            }
+        }
+        mock_delete.return_value.status_code = 406
+        mock_put.return_value.status_code = 200
+        self.client._delete_inventory(cn.uuid)
+        self.assertTrue(mock_debug.called)
+        exp_url = '/resource_providers/%s/inventories' % rp['uuid']
+        payload = {
+            'resource_provider_generation': 42,
+            'inventories': {},
+        }
+        mock_put.assert_called_once_with(exp_url, payload)
+
+    @mock.patch.object(report.LOG, 'error')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'put')
+    @mock.patch.object(report.LOG, 'debug')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
+    def test_delete_inventory_put_failover_in_use(self, mock_delete,
+                                                  mock_debug, mock_put,
+                                                  mock_error):
+        cn = self.compute_node
+        rp = dict(uuid=cn.uuid, generation=42)
+        # Make sure the resource provider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+        mock_delete.return_value.status_code = 406
+        mock_put.return_value.status_code = 409
+        mock_put.return_value.text = (
+            'There was a *fake* failure: inventory in use'
+        )
+        mock_put.return_value.json.return_value = {
+            'resource_provider_generation': 44,
+            'inventories': {
+            }
+        }
+        mock_put.return_value.headers = {'openstack-request-id':
+                                         uuids.request_id}
+        self.client._delete_inventory(cn.uuid)
+        self.assertTrue(mock_debug.called)
+        exp_url = '/resource_providers/%s/inventories' % cn.uuid
+        payload = {
+            'resource_provider_generation': rp['generation'],
+            'inventories': {},
+        }
+        mock_put.assert_called_once_with(exp_url, payload)
+        self.assertTrue(mock_error.called)
+        self.assertEqual(uuids.request_id,
+                         mock_error.call_args[0][1]['placement_req_id'])
+
+    @mock.patch.object(report.LOG, 'warning')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_inventory_in_use(self, mock_get, mock_delete,
             mock_warn):
         cn = self.compute_node
         rp = dict(uuid=cn.uuid, generation=42)
@@ -813,8 +1266,8 @@ class TestInventory(SchedulerReportClientTestCase):
                 'DISK_GB': {'total': 10},
             }
         }
-        mock_put.return_value.status_code = 409
-        mock_put.return_value.headers = {'openstack-request-id':
+        mock_delete.return_value.status_code = 409
+        mock_delete.return_value.headers = {'openstack-request-id':
                                          uuids.request_id}
         rc_str = "VCPU, MEMORY_MB"
         in_use_exc = exception.InventoryInUse(
@@ -828,8 +1281,8 @@ There was a conflict when trying to complete your request.
 
  update conflict: %s
  """ % six.text_type(in_use_exc)
-        mock_put.return_value.text = fault_text
-        mock_put.return_value.json.return_value = {
+        mock_delete.return_value.text = fault_text
+        mock_delete.return_value.json.return_value = {
             'resource_provider_generation': 44,
             'inventories': {
             }
@@ -840,13 +1293,50 @@ There was a conflict when trying to complete your request.
         self.assertEqual(uuids.request_id,
                          mock_warn.call_args[0][1]['placement_req_id'])
 
+    @mock.patch.object(report.LOG, 'debug')
+    @mock.patch.object(report.LOG, 'info')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'delete')
+    @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
+                'get')
+    def test_delete_inventory_inventory_404(self, mock_get, mock_delete,
+                                            mock_info, mock_debug):
+        """Test that when we attempt to delete all the inventory for a resource
+        provider but another thread has already deleted that resource provider,
+        that we simply remove the resource provider from our local cache and
+        return.
+        """
+        cn = self.compute_node
+        rp = dict(uuid=cn.uuid, generation=42)
+        # Make sure the resource provider exists for preventing to call the API
+        self.client._resource_providers[cn.uuid] = rp
+
+        mock_get.return_value.json.return_value = {
+            'resource_provider_generation': 1,
+            'inventories': {
+                'VCPU': {'total': 16},
+                'MEMORY_MB': {'total': 1024},
+                'DISK_GB': {'total': 10},
+            }
+        }
+        mock_delete.return_value.status_code = 404
+        mock_delete.return_value.headers = {'openstack-request-id':
+                                            uuids.request_id}
+        result = self.client._delete_inventory(cn.uuid)
+        self.assertIsNone(result)
+        self.assertNotIn(cn.uuid, self.client._resource_providers)
+        self.assertTrue(mock_debug.called)
+        self.assertIn('deleted by another thread', mock_debug.call_args[0][0])
+        self.assertEqual(uuids.request_id,
+                         mock_debug.call_args[0][1]['placement_req_id'])
+
     @mock.patch.object(report.LOG, 'error')
     @mock.patch.object(report.LOG, 'warning')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
-                'put')
+                'delete')
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
                 'get')
-    def test_delete_inventory_inventory_error(self, mock_get, mock_put,
+    def test_delete_inventory_inventory_error(self, mock_get, mock_delete,
             mock_warn, mock_error):
         cn = self.compute_node
         rp = dict(uuid=cn.uuid, generation=42)
@@ -861,16 +1351,16 @@ There was a conflict when trying to complete your request.
                 'DISK_GB': {'total': 10},
             }
         }
-        mock_put.return_value.status_code = 409
-        mock_put.return_value.text = (
+        mock_delete.return_value.status_code = 409
+        mock_delete.return_value.text = (
             'There was a failure'
         )
-        mock_put.return_value.json.return_value = {
+        mock_delete.return_value.json.return_value = {
             'resource_provider_generation': 44,
             'inventories': {
             }
         }
-        mock_put.return_value.headers = {'openstack-request-id':
+        mock_delete.return_value.headers = {'openstack-request-id':
                                          uuids.request_id}
         result = self.client._delete_inventory(cn.uuid)
         self.assertIsNone(result)
@@ -1374,12 +1864,46 @@ class TestAllocations(SchedulerReportClientTestCase):
                                   swap=1023,
                                   ephemeral_gb=100,
                                   memory_mb=1024,
-                                  vcpus=2))
+                                  vcpus=2,
+                                  extra_specs={}))
         result = report._instance_to_allocations_dict(inst)
         expected = {
             'MEMORY_MB': 1024,
             'VCPU': 2,
             'DISK_GB': 111,
+        }
+        self.assertEqual(expected, result)
+
+    @mock.patch('nova.compute.utils.is_volume_backed_instance')
+    def test_instance_to_allocations_dict_overrides(self, mock_vbi):
+        """Test that resource overrides in an instance's flavor extra_specs
+        are reported to placement.
+        """
+
+        mock_vbi.return_value = False
+        specs = {
+            'resources:CUSTOM_DAN': '123',
+            'resources:%s' % fields.ResourceClass.VCPU: '4',
+            'resources:NOTATHING': '456',
+            'resources:NOTEVENANUMBER': 'catfood',
+            'resources:': '7',
+            'resources:ferret:weasel': 'smelly',
+            'foo': 'bar',
+        }
+        inst = objects.Instance(
+            uuid=uuids.inst,
+            flavor=objects.Flavor(root_gb=10,
+                                  swap=1023,
+                                  ephemeral_gb=100,
+                                  memory_mb=1024,
+                                  vcpus=2,
+                                  extra_specs=specs))
+        result = report._instance_to_allocations_dict(inst)
+        expected = {
+            'MEMORY_MB': 1024,
+            'VCPU': 4,
+            'DISK_GB': 111,
+            'CUSTOM_DAN': 123,
         }
         self.assertEqual(expected, result)
 
@@ -1392,7 +1916,8 @@ class TestAllocations(SchedulerReportClientTestCase):
                                   swap=1,
                                   ephemeral_gb=100,
                                   memory_mb=1024,
-                                  vcpus=2))
+                                  vcpus=2,
+                                  extra_specs={}))
         result = report._instance_to_allocations_dict(inst)
         expected = {
             'MEMORY_MB': 1024,
@@ -1410,7 +1935,8 @@ class TestAllocations(SchedulerReportClientTestCase):
                                   swap=0,
                                   ephemeral_gb=0,
                                   memory_mb=1024,
-                                  vcpus=2))
+                                  vcpus=2,
+                                  extra_specs={}))
         result = report._instance_to_allocations_dict(inst)
         expected = {
             'MEMORY_MB': 1024,
@@ -1427,17 +1953,20 @@ class TestAllocations(SchedulerReportClientTestCase):
     def test_update_instance_allocation_new(self, mock_a, mock_get,
                                             mock_put):
         cn = objects.ComputeNode(uuid=uuids.cn)
-        inst = objects.Instance(uuid=uuids.inst)
+        inst = objects.Instance(uuid=uuids.inst, project_id=uuids.project,
+                                user_id=uuids.user)
         mock_get.return_value.json.return_value = {'allocations': {}}
         expected = {
             'allocations': [
                 {'resource_provider': {'uuid': cn.uuid},
-                 'resources': mock_a.return_value}]
+                 'resources': mock_a.return_value}],
+            'project_id': inst.project_id,
+            'user_id': inst.user_id,
         }
         self.client.update_instance_allocation(cn, inst, 1)
         mock_put.assert_called_once_with(
             '/allocations/%s' % inst.uuid,
-            expected)
+            expected, version='1.8')
         self.assertTrue(mock_get.called)
 
     @mock.patch('nova.scheduler.client.report.SchedulerReportClient.'
@@ -1478,7 +2007,8 @@ class TestAllocations(SchedulerReportClientTestCase):
     def test_update_instance_allocation_new_failed(self, mock_warn, mock_a,
                                                    mock_put, mock_get):
         cn = objects.ComputeNode(uuid=uuids.cn)
-        inst = objects.Instance(uuid=uuids.inst)
+        inst = objects.Instance(uuid=uuids.inst, project_id=uuids.project,
+                                user_id=uuids.user)
         try:
             mock_put.return_value.__nonzero__.return_value = False
         except AttributeError:

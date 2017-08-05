@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,13 +22,13 @@ BASE_POLICY_NAME = 'os_compute_api:os-services'
 
 
 services_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_API,
-        """Lists all running Compute services in a region, enables \
-or disables scheduling for a Compute service, logs disabled Compute service \
-information, set or unset forced_down flag for the compute service and \
-deletes a Compute service.""",
+        "List all running Compute services in a region, enables or disable "
+        "scheduling for a Compute service, logs disabled Compute service "
+        "information, set or unset forced_down flag for the compute service "
+        "and delete a Compute service",
         [
             {
                 'method': 'GET',
@@ -47,6 +49,11 @@ deletes a Compute service.""",
             {
                 'method': 'PUT',
                 'path': '/os-services/force-down'
+            },
+            {
+                # Added in microversion 2.53.
+                'method': 'PUT',
+                'path': '/os-services/{service_id}'
             },
             {
                 'method': 'DELETE',

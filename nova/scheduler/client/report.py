@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
 import functools
 import math
 import re
@@ -157,8 +158,63 @@ def _instance_to_allocations_dict(instance):
         VCPU: instance.flavor.vcpus,
         DISK_GB: disk,
     }
+
+    # Pull out any resource overrides, which are in the format
+    # "resources:FOO" and generate a dict of FOO=value candidates
+    # for overriding the resources in the allocation.
+    overrides = {k.split(':', 1)[1]: v for k, v in
+                 instance.flavor.extra_specs.items()
+                 if k.startswith('resources:')}
+
+    # Any resource overrides which are properly namespaced as custom,
+    # or are standard resource class values override the alloc_dict
+    # already constructed from the base flavor values above. Since
+    # extra_specs are string values and resource counts are always
+    # integers, we convert them here too for any that we find.
+    overrides = {k: int(v) for k, v in overrides.items()
+            if (k.startswith(objects.ResourceClass.CUSTOM_NAMESPACE) or
+                k in fields.ResourceClass.STANDARD)}
+
+    alloc_dict.update(overrides)
+
     # Remove any zero allocations.
     return {key: val for key, val in alloc_dict.items() if val}
+
+
+def _move_operation_alloc_request(source_allocs, dest_alloc_req):
+    """Given existing allocations for a source host and a new allocation
+    request for a destination host, return a new allocation request that
+    contains resources claimed against both source and destination, accounting
+    for shared providers.
+
+    :param source_allocs: Dict, keyed by resource provider UUID, of resources
+                          allocated on the source host
+    :param dest_alloc_request: The allocation request for resources against the
+                               destination host
+    """
+    LOG.debug("Doubling-up allocation request for move operation.")
+    # Remove any allocations against resource providers that are
+    # already allocated against on the source host (like shared storage
+    # providers)
+    cur_rp_uuids = set(source_allocs.keys())
+    new_rp_uuids = set(a['resource_provider']['uuid']
+                       for a in dest_alloc_req['allocations']) - cur_rp_uuids
+
+    current_allocs = [
+        {
+            'resource_provider': {
+                'uuid': cur_rp_uuid,
+            },
+            'resources': alloc['resources'],
+        } for cur_rp_uuid, alloc in source_allocs.items()
+    ]
+    new_alloc_req = {'allocations': current_allocs}
+    for alloc in dest_alloc_req['allocations']:
+        if alloc['resource_provider']['uuid'] in new_rp_uuids:
+            new_alloc_req['allocations'].append(alloc)
+    LOG.debug("New allocation request containing both source and "
+              "destination hosts in move operation: %s", new_alloc_req)
+    return new_alloc_req
 
 
 def _extract_inventory_in_use(body):
@@ -251,42 +307,60 @@ class SchedulerReportClient(object):
             url, endpoint_filter=self.ks_filter, raise_exc=False,
             **kwargs)
 
-    def delete(self, url):
+    def delete(self, url, version=None):
+        kwargs = {}
+        if version is not None:
+            # TODO(mriedem): Perform some version discovery at some point.
+            kwargs = {
+                'headers': {
+                    'OpenStack-API-Version': 'placement %s' % version
+                },
+            }
         return self._client.delete(
             url,
-            endpoint_filter=self.ks_filter, raise_exc=False)
+            endpoint_filter=self.ks_filter, raise_exc=False, **kwargs)
 
-    # TODO(sbauza): Change that poor interface into passing a rich versioned
-    # object that would provide the ResourceProvider requirements.
     @safe_connect
-    def get_filtered_resource_providers(self, filters):
-        """Returns a list of ResourceProviders matching the requirements
-        expressed by the filters argument, which can include a dict named
-        'resources' where amounts are keyed by resource class names.
+    def get_allocation_candidates(self, resources):
+        """Returns a tuple of (allocation_requests, provider_summaries).
 
-        eg. filters = {'resources': {'VCPU': 1}}
+        The allocation requests are a collection of potential JSON objects that
+        can be passed to the PUT /allocations/{consumer_uuid} Placement REST
+        API to claim resources against one or more resource providers that meet
+        the requested resource constraints.
+
+        The provider summaries is a dict, keyed by resource provider UUID, of
+        inventory and capacity information for any resource provider involved
+        in the allocation requests.
+
+        :returns: A tuple with a list of allocation request dicts and a dict of
+                  provider information or (None, None) if the request failed
+
+        :param resources: A dict, keyed by resource class name, of requested
+                          amounts of those resources
         """
-        resources = filters.pop("resources", None)
-        if resources:
-            resource_query = ",".join(sorted("%s:%s" % (rc, amount)
-                                      for (rc, amount) in resources.items()))
-            filters['resources'] = resource_query
-        resp = self.get("/resource_providers?%s" % parse.urlencode(filters),
-                        version='1.4')
+        resource_query = ",".join(
+            sorted("%s:%s" % (rc, amount)
+            for (rc, amount) in resources.items()))
+        qs_params = {
+            'resources': resource_query,
+        }
+
+        url = "/allocation_candidates?%s" % parse.urlencode(qs_params)
+        resp = self.get(url, version='1.10')
         if resp.status_code == 200:
             data = resp.json()
-            return data.get('resource_providers', [])
-        else:
-            msg = _LE("Failed to retrieve filtered list of resource providers "
-                      "from placement API for filters %(filters)s. "
-                      "Got %(status_code)d: %(err_text)s.")
-            args = {
-                'filters': filters,
-                'status_code': resp.status_code,
-                'err_text': resp.text,
-            }
-            LOG.error(msg, args)
-            return None
+            return data['allocation_requests'], data['provider_summaries']
+
+        msg = ("Failed to retrieve allocation candidates from placement API "
+               "for filters %(resources)s. Got %(status_code)d: %(err_text)s.")
+        args = {
+            'resources': resources,
+            'status_code': resp.status_code,
+            'err_text': resp.text,
+        }
+        LOG.error(msg, args)
+        return None, None
 
     @safe_connect
     def _get_provider_aggregates(self, rp_uuid):
@@ -612,6 +686,9 @@ class SchedulerReportClient(object):
     def _delete_inventory(self, rp_uuid):
         """Deletes all inventory records for a resource provider with the
         supplied UUID.
+
+        First attempt to DELETE the inventory using microversion 1.5. If
+        this results in a 406, fail over to a PUT.
         """
         curr = self._get_inventory_and_update_provider_generation(rp_uuid)
 
@@ -627,28 +704,55 @@ class SchedulerReportClient(object):
         LOG.info(msg, rp_uuid)
 
         url = '/resource_providers/%s/inventories' % rp_uuid
-        cur_rp_gen = self._resource_providers[rp_uuid]['generation']
-        payload = {
-            'resource_provider_generation': cur_rp_gen,
-            'inventories': {},
-        }
-        r = self.put(url, payload)
+        r = self.delete(url, version="1.5")
         placement_req_id = get_placement_request_id(r)
-        if r.status_code == 200:
-            # Update our view of the generation for next time
-            updated_inv = r.json()
-            new_gen = updated_inv['resource_provider_generation']
-
-            self._resource_providers[rp_uuid]['generation'] = new_gen
-            msg_args = {
-                'rp_uuid': rp_uuid,
-                'generation': new_gen,
-                'placement_req_id': placement_req_id,
+        cur_rp_gen = self._resource_providers[rp_uuid]['generation']
+        msg_args = {
+            'rp_uuid': rp_uuid,
+            'placement_req_id': placement_req_id,
+        }
+        if r.status_code == 406:
+            # microversion 1.5 not available so try the earlier way
+            # TODO(cdent): When we're happy that all placement
+            # servers support microversion 1.5 we can remove this
+            # call and the associated code.
+            LOG.debug('Falling back to placement API microversion 1.0 '
+                      'for deleting all inventory for a resource provider.')
+            payload = {
+                'resource_provider_generation': cur_rp_gen,
+                'inventories': {},
             }
-            LOG.info(_LI('[%(placement_req_id)s] Deleted all inventory for '
-                         'resource provider %(rp_uuid)s at generation '
-                         '%(generation)i'),
+            r = self.put(url, payload)
+            placement_req_id = get_placement_request_id(r)
+            msg_args['placement_req_id'] = placement_req_id
+            if r.status_code == 200:
+                # Update our view of the generation for next time
+                updated_inv = r.json()
+                new_gen = updated_inv['resource_provider_generation']
+
+                self._resource_providers[rp_uuid]['generation'] = new_gen
+                msg_args['generation'] = new_gen
+                LOG.info(_LI("[%(placement_req_id)s] Deleted all inventory "
+                             "for resource provider %(rp_uuid)s at generation "
+                             "%(generation)i."),
+                         msg_args)
+                return
+
+        if r.status_code == 204:
+            self._resource_providers[rp_uuid]['generation'] = cur_rp_gen + 1
+            LOG.info(_LI("[%(placement_req_id)s] Deleted all inventory for "
+                         "resource provider %(rp_uuid)s."),
                      msg_args)
+            return
+        elif r.status_code == 404:
+            # This can occur if another thread deleted the inventory and the
+            # resource provider already
+            LOG.debug("[%(placement_req_id)s] Resource provider %(rp_uuid)s "
+                      "deleted by another thread when trying to delete "
+                      "inventory. Ignoring.",
+                      msg_args)
+            self._resource_providers.pop(rp_uuid, None)
+            self._provider_aggregate_map.pop(rp_uuid, None)
             return
         elif r.status_code == 409:
             rc_str = _extract_inventory_in_use(r.text)
@@ -656,21 +760,14 @@ class SchedulerReportClient(object):
                 msg = _LW("[%(placement_req_id)s] We cannot delete inventory "
                           "%(rc_str)s for resource provider %(rp_uuid)s "
                           "because the inventory is in use.")
-                msg_args = {
-                    'rp_uuid': rp_uuid,
-                    'rc_str': rc_str,
-                    'placement_req_id': placement_req_id,
-                }
+                msg_args['rc_str'] = rc_str
                 LOG.warning(msg, msg_args)
                 return
 
         msg = _LE("[%(placement_req_id)s] Failed to delete inventory for "
-                  "resource provider %(rp_uuid)s. Got error response: %(err)s")
-        msg_args = {
-            'rp_uuid': rp_uuid,
-            'err': r.text,
-            'placement_req_id': placement_req_id,
-        }
+                  "resource provider %(rp_uuid)s. Got error response: "
+                  "%(err)s.")
+        msg_args['err'] = r.text
         LOG.error(msg, msg_args)
 
     def set_inventory_for_provider(self, rp_uuid, rp_name, inv_data):
@@ -839,13 +936,87 @@ class SchedulerReportClient(object):
         LOG.debug('Sending allocation for instance %s',
                   my_allocations,
                   instance=instance)
-        res = self.put_allocations(rp_uuid, instance.uuid, my_allocations)
+        res = self.put_allocations(rp_uuid, instance.uuid, my_allocations,
+                                   instance.project_id, instance.user_id)
         if res:
             LOG.info(_LI('Submitted allocation for instance'),
                      instance=instance)
 
+    # NOTE(jaypipes): Currently, this method is ONLY used by the scheduler to
+    # allocate resources on the selected destination hosts. This method should
+    # not be called by the resource tracker; instead, the
+    # _allocate_for_instance() method is used which does not perform any
+    # checking that a move operation is in place.
     @safe_connect
-    def put_allocations(self, rp_uuid, consumer_uuid, alloc_data):
+    def claim_resources(self, consumer_uuid, alloc_request, project_id,
+                        user_id, attempt=0):
+        """Creates allocation records for the supplied instance UUID against
+        the supplied resource providers.
+
+        We check to see if resources have already been claimed for this
+        consumer. If so, we assume that a move operation is underway and the
+        scheduler is attempting to claim resources against the new (destination
+        host). In order to prevent compute nodes currently performing move
+        operations from being scheduled to improperly, we create a "doubled-up"
+        allocation that consumes resources on *both* the source and the
+        destination host during the move operation. When the move operation
+        completes, the destination host (via _allocate_for_instance()) will
+        end up setting allocations for the instance only on the destination
+        host thereby freeing up resources on the source host appropriately.
+
+        :note: This method will attempt to retry a claim that fails with a
+        concurrent update up to 3 times
+
+        :param consumer_uuid: The instance's UUID.
+        :param alloc_request: The JSON body of the request to make to the
+                              placement's PUT /allocations API
+        :param project_id: The project_id associated with the allocations.
+        :param user_id: The user_id associated with the allocations.
+        :param attempt: The attempt at claiming this allocation request (used
+                        in recursive retries)
+        :returns: True if the allocations were created, False otherwise.
+        """
+        # Ensure we don't change the supplied alloc request since it's used in
+        # a loop within the scheduler against multiple instance claims
+        ar = copy.deepcopy(alloc_request)
+        url = '/allocations/%s' % consumer_uuid
+
+        payload = ar
+
+        # We first need to determine if this is a move operation and if so
+        # create the "doubled-up" allocation that exists for the duration of
+        # the move operation against both the source and destination hosts
+        r = self.get(url)
+        if r.status_code == 200:
+            current_allocs = r.json()['allocations']
+            if current_allocs:
+                payload = _move_operation_alloc_request(current_allocs, ar)
+
+        payload['project_id'] = project_id
+        payload['user_id'] = user_id
+        r = self.put(url, payload, version='1.10')
+        if r.status_code != 204:
+            # NOTE(jaypipes): Yes, it sucks doing string comparison like this
+            # but we have no error codes, only error messages.
+            if attempt < 3 and 'concurrently updated' in r.text:
+                # Another thread updated one or more of the resource providers
+                # involved in the claim. It's safe to retry the claim
+                # transaction.
+                LOG.debug("Another process changed the resource providers "
+                          "involved in our claim attempt. Retrying claim.")
+                return self.claim_resources(consumer_uuid, alloc_request,
+                    project_id, user_id, attempt=(attempt + 1))
+            LOG.warning(
+                'Unable to submit allocation for instance '
+                '%(uuid)s (%(code)i %(text)s)',
+                {'uuid': consumer_uuid,
+                 'code': r.status_code,
+                 'text': r.text})
+        return r.status_code == 204
+
+    @safe_connect
+    def put_allocations(self, rp_uuid, consumer_uuid, alloc_data, project_id,
+                        user_id):
         """Creates allocation records for the supplied instance UUID against
         the supplied resource provider.
 
@@ -857,6 +1028,8 @@ class SchedulerReportClient(object):
         :param consumer_uuid: The instance's UUID.
         :param alloc_data: Dict, keyed by resource class, of amounts to
                            consume.
+        :param project_id: The project_id associated with the allocations.
+        :param user_id: The user_id associated with the allocations.
         :returns: True if the allocations were created, False otherwise.
         """
         payload = {
@@ -868,9 +1041,18 @@ class SchedulerReportClient(object):
                     'resources': alloc_data,
                 },
             ],
+            'project_id': project_id,
+            'user_id': user_id,
         }
         url = '/allocations/%s' % consumer_uuid
-        r = self.put(url, payload)
+        r = self.put(url, payload, version='1.8')
+        if r.status_code == 406:
+            # microversion 1.8 not available so try the earlier way
+            # TODO(melwitt): Remove this when we can be sure all placement
+            # servers support version 1.8.
+            payload.pop('project_id')
+            payload.pop('user_id')
+            r = self.put(url, payload)
         if r.status_code != 204:
             LOG.warning(
                 'Unable to submit allocation for instance '

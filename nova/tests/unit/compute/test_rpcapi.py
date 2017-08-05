@@ -30,6 +30,7 @@ from nova import test
 from nova.tests.unit import fake_block_device
 from nova.tests.unit import fake_flavor
 from nova.tests.unit import fake_instance
+from nova.tests import uuidsentinel as uuids
 
 CONF = nova.conf.CONF
 
@@ -111,7 +112,8 @@ class ComputeRpcAPITestCase(test.NoDBTestCase):
 
         rpcapi = kwargs.pop('rpcapi_class', compute_rpcapi.ComputeAPI)()
         self.assertIsNotNone(rpcapi.router)
-        self.assertEqual(rpcapi.router.target.topic, CONF.compute_topic)
+        self.assertEqual(rpcapi.router.target.topic,
+                         compute_rpcapi.RPC_TOPIC)
 
         # This test wants to run the real prepare function, so must use
         # a real client object
@@ -183,7 +185,59 @@ class ComputeRpcAPITestCase(test.NoDBTestCase):
     def test_attach_interface(self):
         self._test_compute_api('attach_interface', 'call',
                 instance=self.fake_instance_obj, network_id='id',
-                port_id='id2', version='4.0', requested_ip='192.168.1.50')
+                port_id='id2', version='4.16', requested_ip='192.168.1.50',
+                tag='foo')
+
+    def test_attach_interface_raises(self):
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+        instance = self.fake_instance_obj
+        rpcapi = compute_rpcapi.ComputeAPI()
+        cctxt_mock = mock.Mock()
+        mock_client = mock.Mock()
+        rpcapi.router.client = mock.Mock()
+        rpcapi.router.client.return_value = mock_client
+        with test.nested(
+            mock.patch.object(mock_client, 'can_send_version',
+                              return_value=False),
+            mock.patch.object(mock_client, 'prepare',
+                              return_value=cctxt_mock)
+        ) as (
+            can_send_mock, prepare_mock
+        ):
+            self.assertRaises(exception.TaggedAttachmentNotSupported,
+                              rpcapi.attach_interface, ctxt, instance,
+                              'fake_network', 'fake_port', 'fake_requested_ip',
+                              tag='foo')
+        can_send_mock.assert_called_once_with('4.16')
+
+    def test_attach_interface_downgrades_version(self):
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+        instance = self.fake_instance_obj
+        rpcapi = compute_rpcapi.ComputeAPI()
+        call_mock = mock.Mock()
+        cctxt_mock = mock.Mock(call=call_mock)
+        mock_client = mock.Mock()
+        rpcapi.router.client = mock.Mock()
+        rpcapi.router.client.return_value = mock_client
+        with test.nested(
+            mock.patch.object(mock_client, 'can_send_version',
+                              return_value=False),
+            mock.patch.object(mock_client, 'prepare',
+                              return_value=cctxt_mock)
+        ) as (
+            can_send_mock, prepare_mock
+        ):
+            rpcapi.attach_interface(ctxt, instance, 'fake_network',
+                                    'fake_port', 'fake_requested_ip')
+
+        can_send_mock.assert_called_once_with('4.16')
+        prepare_mock.assert_called_once_with(server=instance['host'],
+                                             version='4.0')
+        call_mock.assert_called_once_with(ctxt, 'attach_interface',
+                                          instance=instance,
+                                          network_id='fake_network',
+                                          port_id='fake_port',
+                                          requested_ip='fake_requested_ip')
 
     def test_attach_volume(self):
         self._test_compute_api('attach_volume', 'cast',
@@ -393,7 +447,29 @@ class ComputeRpcAPITestCase(test.NoDBTestCase):
     def test_swap_volume(self):
         self._test_compute_api('swap_volume', 'cast',
                 instance=self.fake_instance_obj, old_volume_id='oldid',
-                new_volume_id='newid')
+                new_volume_id='newid', new_attachment_id=uuids.attachment_id,
+                version='4.17')
+
+    def test_swap_volume_cannot_send_version_4_17(self):
+        """Tests that if the RPC client cannot send version 4.17 we drop back
+        to version 4.0 and don't send the new_attachment_id kwarg.
+        """
+        rpcapi = compute_rpcapi.ComputeAPI()
+        fake_context = mock.Mock()
+        fake_client = mock.Mock()
+        fake_client.can_send_version.return_value = False
+        fake_client.prepare.return_value = fake_context
+        with mock.patch.object(rpcapi.router, 'client',
+                               return_value=fake_client):
+            rpcapi.swap_volume(self.context, self.fake_instance_obj,
+                               uuids.old_volume_id, uuids.new_volume_id,
+                               uuids.new_attachment_id)
+            fake_client.prepare.assert_called_once_with(
+                server=self.fake_instance_obj.host, version='4.0')
+            fake_context.cast.assert_called_once_with(
+                self.context, 'swap_volume', instance=self.fake_instance_obj,
+                old_volume_id=uuids.old_volume_id,
+                new_volume_id=uuids.new_volume_id)
 
     def test_restore_instance(self):
         self._test_compute_api('restore_instance', 'cast',
@@ -452,8 +528,58 @@ class ComputeRpcAPITestCase(test.NoDBTestCase):
         self._test_compute_api('reserve_block_device_name', 'call',
                 instance=self.fake_instance_obj, device='device',
                 volume_id='id', disk_bus='ide', device_type='cdrom',
-                version='4.0',
+                tag='foo', version='4.15',
                 _return_value=objects_block_dev.BlockDeviceMapping())
+
+    def test_reserve_block_device_name_raises(self):
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+        instance = self.fake_instance_obj
+        rpcapi = compute_rpcapi.ComputeAPI()
+        cctxt_mock = mock.Mock()
+        mock_client = mock.Mock()
+        rpcapi.router.client = mock.Mock()
+        rpcapi.router.client.return_value = mock_client
+        with test.nested(
+            mock.patch.object(mock_client, 'can_send_version',
+                              return_value=False),
+            mock.patch.object(mock_client, 'prepare',
+                              return_value=cctxt_mock)
+        ) as (
+            can_send_mock, prepare_mock
+        ):
+            self.assertRaises(exception.TaggedAttachmentNotSupported,
+                              rpcapi.reserve_block_device_name, ctxt, instance,
+                              'fake_device', 'fake_volume_id', tag='foo')
+        can_send_mock.assert_called_once_with('4.15')
+
+    def test_reserve_block_device_name_downgrades_version(self):
+        ctxt = context.RequestContext('fake_user', 'fake_project')
+        instance = self.fake_instance_obj
+        rpcapi = compute_rpcapi.ComputeAPI()
+        call_mock = mock.Mock()
+        cctxt_mock = mock.Mock(call=call_mock)
+        mock_client = mock.Mock()
+        rpcapi.router.client = mock.Mock()
+        rpcapi.router.client.return_value = mock_client
+        with test.nested(
+            mock.patch.object(mock_client, 'can_send_version',
+                              return_value=False),
+            mock.patch.object(mock_client, 'prepare',
+                              return_value=cctxt_mock)
+        ) as (
+            can_send_mock, prepare_mock
+        ):
+            rpcapi.reserve_block_device_name(ctxt, instance, 'fake_device',
+                                             'fake_volume_id')
+
+        can_send_mock.assert_called_once_with('4.15')
+        prepare_mock.assert_called_once_with(server=instance['host'],
+                                             version='4.0')
+        call_mock.assert_called_once_with(ctxt, 'reserve_block_device_name',
+                                          instance=instance,
+                                          device='fake_device',
+                                          volume_id='fake_volume_id',
+                                          disk_bus=None, device_type=None)
 
     def test_refresh_instance_security_rules(self):
         expected_args = {'instance': self.fake_instance_obj}

@@ -90,6 +90,7 @@ from nova.objects import host_mapping as host_mapping_obj
 from nova.objects import instance as instance_obj
 from nova.objects import instance_group as instance_group_obj
 from nova.objects import keypair as keypair_obj
+from nova.objects import quotas as quotas_obj
 from nova.objects import request_spec
 from nova import quota
 from nova import rpc
@@ -209,29 +210,21 @@ def _db_error(caught_exception):
 class QuotaCommands(object):
     """Class for managing quotas."""
 
+    # TODO(melwitt): Remove this during the Queens cycle
+    description = ('DEPRECATED: The quota commands are deprecated since '
+                   'Pike as quota usage is counted from resources instead '
+                   'of being tracked separately. They will be removed in an '
+                   'upcoming release.')
+
     @args('--project', dest='project_id', metavar='<Project Id>',
             help='Project Id', required=True)
     @args('--user', dest='user_id', metavar='<User Id>',
             help='User Id')
     @args('--key', metavar='<key>', help='Key')
     def refresh(self, project_id, user_id=None, key=None):
-        """Refresh the quotas for a project or user.
-
-        If no quota key is provided, all the quota usages will be refreshed.
-        If a valid quota key is provided and it does not exist, it will be
-        created. Otherwise, it will be refreshed.
+        """DEPRECATED: This command is deprecated and no longer does anything.
         """
-        ctxt = context.get_admin_context()
-
-        keys = None
-        if key:
-            keys = [key]
-
-        try:
-            QUOTAS.usage_refresh(ctxt, project_id, user_id, keys)
-        except exception.QuotaUsageRefreshNotAllowed as e:
-            print(e.format_message())
-            return 2
+        pass
 
 
 class ProjectCommands(object):
@@ -284,11 +277,11 @@ class ProjectCommands(object):
                     print(_('Quota limit must be less than %s.') % maximum)
                     return 2
                 try:
-                    db.quota_create(ctxt, project_id, key, value,
-                                    user_id=user_id)
+                    objects.Quotas.create_limit(ctxt, project_id, key, value,
+                                                user_id=user_id)
                 except exception.QuotaExists:
-                    db.quota_update(ctxt, project_id, key, value,
-                                    user_id=user_id)
+                    objects.Quotas.update_limit(ctxt, project_id, key, value,
+                                                user_id=user_id)
             else:
                 print(_('%(key)s is not a valid quota key. Valid options are: '
                         '%(options)s.') % {'key': key,
@@ -317,26 +310,10 @@ class ProjectCommands(object):
             help='User Id')
     @args('--key', metavar='<key>', help='Key')
     def quota_usage_refresh(self, project_id, user_id=None, key=None):
-        """Refresh the quotas for project/user
-
-        If no quota key is provided, all the quota usages will be refreshed.
-        If a valid quota key is provided and it does not exist, it will be
-        created. Otherwise, it will be refreshed.
-
-        DEPRECATED: This command is deprecated. Use ``nova-manage quota
-        refresh`` instead.
+        """DEPRECATED: This command is deprecated and no longer does anything.
         """
-        ctxt = context.get_admin_context()
-
-        keys = None
-        if key:
-            keys = [key]
-
-        try:
-            QUOTAS.usage_refresh(ctxt, project_id, user_id, keys)
-        except exception.QuotaUsageRefreshNotAllowed as e:
-            print(e.format_message())
-            return 2
+        # TODO(melwitt): Remove this during the Queens cycle
+        pass
 
 
 class AccountCommands(ProjectCommands):
@@ -670,6 +647,10 @@ class DbCommands(object):
         build_request_obj.delete_build_requests_with_no_instance_uuid,
         # Added in Pike
         db.service_uuids_online_data_migration,
+        # Added in Pike
+        quotas_obj.migrate_quota_limits_to_api_db,
+        # Added in Pike
+        quotas_obj.migrate_quota_classes_to_api_db,
     )
 
     def __init__(self):

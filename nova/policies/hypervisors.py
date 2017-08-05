@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,7 +22,7 @@ BASE_POLICY_NAME = 'os_compute_api:os-hypervisors'
 
 
 hypervisors_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_API,
         """Policy rule for hypervisor related APIs.
@@ -31,8 +33,8 @@ List all hypervisors, list all hypervisors with details, show
 summary statistics for all hypervisors over all compute nodes,
 show details for a hypervisor, show the uptime of a hypervisor,
 search hypervisor by hypervisor_hostname pattern and list all
-servers on hypervisors that can match the provided hypervisor_hostname
-pattern.""",
+servers on hypervisors that can match the provided
+hypervisor_hostname pattern.""",
         [
             {
                 'path': '/os-hypervisors',

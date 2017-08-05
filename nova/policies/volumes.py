@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,13 +22,14 @@ BASE_POLICY_NAME = 'os_compute_api:os-volumes'
 
 
 volumes_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_OR_OWNER,
-        """Manages volumes for use with the Compute API.
+        """Manage volumes for use with the Compute API.
 
-Lists, shows details, creates, and deletes volumes and snapshots. These APIs
-are proxy calls to the Volume service. These are all deprecated.
+Lists, shows details, creates, and deletes volumes and
+snapshots. These APIs are proxy calls to the Volume service.
+These are all deprecated.
 """,
        [
            {

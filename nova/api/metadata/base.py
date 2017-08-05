@@ -124,6 +124,16 @@ class InstanceMetadata(object):
 
         ctxt = context.get_admin_context()
 
+        # NOTE(danms): Sanitize the instance to limit the amount of stuff
+        # inside that may not pickle well (i.e. context). We also touch
+        # some of the things we'll lazy load later to make sure we keep their
+        # values in what we cache.
+        instance.ec2_ids
+        instance.keypairs
+        instance.device_metadata
+        instance = objects.Instance.obj_from_primitive(
+            instance.obj_to_primitive())
+
         # The default value of mimeType is set to MIME_TYPE_TEXT_PLAIN
         self.set_mimetype(MIME_TYPE_TEXT_PLAIN)
         self.instance = instance
@@ -403,6 +413,8 @@ class InstanceMetadata(object):
                         bus = 'scsi'
                     elif isinstance(device.bus, metadata_obj.IDEDeviceBus):
                         bus = 'ide'
+                    elif isinstance(device.bus, metadata_obj.XenDeviceBus):
+                        bus = 'xen'
                     else:
                         LOG.debug('Metadata for device with unknown bus %s '
                                   'has not been included in the '

@@ -20,7 +20,10 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 from oslo_utils import versionutils
+from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
+from sqlalchemy.sql import func
+from sqlalchemy.sql import null
 
 from nova.cells import opts as cells_opts
 from nova.cells import rpcapi as cells_rpcapi
@@ -32,6 +35,7 @@ from nova.db.sqlalchemy import api as db_api
 from nova.db.sqlalchemy import models
 from nova import exception
 from nova.i18n import _, _LE, _LW
+from nova.network import model as network_model
 from nova import notifications
 from nova import objects
 from nova.objects import base
@@ -1000,6 +1004,12 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         context will be saved which can cause incorrect resource tracking, and
         should be avoided.
         """
+        # First check to see if we even have a migration context set and if not
+        # we can exit early without lazy-loading other attributes.
+        if 'migration_context' in self and self.migration_context is None:
+            yield
+            return
+
         current_values = {}
         for attr_name in _MIGRATION_CONTEXT_ATTRS:
             current_values[attr_name] = getattr(self, attr_name)
@@ -1156,6 +1166,15 @@ class Instance(base.NovaPersistentObject, base.NovaObject,
         finally:
             self._normalize_cell_name()
 
+    def get_network_info(self):
+        if self.info_cache is None:
+            return network_model.NetworkInfo.hydrate([])
+        return self.info_cache.network_info
+
+    def get_bdms(self):
+        return objects.BlockDeviceMappingList.get_by_instance_uuid(
+            self._context, self.uuid)
+
 
 def _make_instance_list(context, inst_list, db_inst_list, expected_attrs):
     get_fault = expected_attrs and 'fault' in expected_attrs
@@ -1189,7 +1208,9 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
     # Version 2.0: Initial Version
     # Version 2.1: Add get_uuids_by_host()
     # Version 2.2: Pagination for get_active_by_window_joined()
-    VERSION = '2.2'
+    # Version 2.3: Add get_count_by_vm_state()
+    # Version 2.4: Add get_counts()
+    VERSION = '2.4'
 
     fields = {
         'objects': fields.ListOfObjectsField('Instance'),
@@ -1374,6 +1395,70 @@ class InstanceList(base.ObjectListBase, base.NovaObject):
         db_instances = db.instance_get_all_by_host(context, host,
                                                    columns_to_join=[])
         return [inst['uuid'] for inst in db_instances]
+
+    @staticmethod
+    @db_api.pick_context_manager_reader
+    def _get_count_by_vm_state_in_db(context, project_id, user_id, vm_state):
+        return context.session.query(models.Instance.id).\
+            filter_by(deleted=0).\
+            filter_by(project_id=project_id).\
+            filter_by(user_id=user_id).\
+            filter_by(vm_state=vm_state).\
+            count()
+
+    @base.remotable_classmethod
+    def get_count_by_vm_state(cls, context, project_id, user_id, vm_state):
+        return cls._get_count_by_vm_state_in_db(context, project_id, user_id,
+                                                vm_state)
+
+    @staticmethod
+    @db_api.pick_context_manager_reader
+    def _get_counts_in_db(context, project_id, user_id=None):
+        # NOTE(melwitt): Copied from nova/db/sqlalchemy/api.py:
+        # It would be better to have vm_state not be nullable
+        # but until then we test it explicitly as a workaround.
+        not_soft_deleted = or_(
+            models.Instance.vm_state != vm_states.SOFT_DELETED,
+            models.Instance.vm_state == null()
+            )
+        project_query = context.session.query(
+            func.count(models.Instance.id),
+            func.sum(models.Instance.vcpus),
+            func.sum(models.Instance.memory_mb)).\
+            filter_by(deleted=0).\
+            filter(not_soft_deleted).\
+            filter_by(project_id=project_id)
+
+        project_result = project_query.first()
+        fields = ('instances', 'cores', 'ram')
+        project_counts = {field: int(project_result[idx] or 0)
+                          for idx, field in enumerate(fields)}
+        counts = {'project': project_counts}
+        if user_id:
+            user_result = project_query.filter_by(user_id=user_id).first()
+            user_counts = {field: int(user_result[idx] or 0)
+                           for idx, field in enumerate(fields)}
+            counts['user'] = user_counts
+        return counts
+
+    @base.remotable_classmethod
+    def get_counts(cls, context, project_id, user_id=None):
+        """Get the counts of Instance objects in the database.
+
+        :param context: The request context for database access
+        :param project_id: The project_id to count across
+        :param user_id: The user_id to count across
+        :returns: A dict containing the project-scoped counts and user-scoped
+                  counts if user_id is specified. For example:
+
+                    {'project': {'instances': <count across project>,
+                                 'cores': <count across project>,
+                                 'ram': <count across project},
+                     'user': {'instances': <count across user>,
+                              'cores': <count across user>,
+                              'ram': <count across user>}}
+        """
+        return cls._get_counts_in_db(context, project_id, user_id=user_id)
 
 
 @db_api.pick_context_manager_writer

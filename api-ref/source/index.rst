@@ -12,6 +12,7 @@ the `API guide <http://developer.openstack.org/api-guide/compute/index.html>`_.
 
 .. include:: versions.inc
 .. include:: urls.inc
+.. include:: request-ids.inc
 .. include:: servers.inc
 .. include:: servers-actions.inc
 .. include:: servers-action-fixed-ip.inc
@@ -47,6 +48,7 @@ the `API guide <http://developer.openstack.org/api-guide/compute/index.html>`_.
 .. include:: os-migrations.inc
 .. include:: server-migrations.inc
 .. include:: os-quota-sets.inc
+.. include:: os-quota-class-sets.inc
 .. include:: os-server-groups.inc
 .. include:: os-server-tags.inc
 .. include:: os-services.inc

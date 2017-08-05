@@ -235,8 +235,8 @@ def send_instance_update_notification(context, instance, old_vm_state=None,
 
     # add audit fields:
     (audit_start, audit_end) = audit_period_bounds(current_period=True)
-    payload["audit_period_beginning"] = audit_start
-    payload["audit_period_ending"] = audit_end
+    payload["audit_period_beginning"] = null_safe_isotime(audit_start)
+    payload["audit_period_ending"] = null_safe_isotime(audit_end)
 
     # add bw usage info:
     bw = bandwidth_usage(instance, audit_start)
@@ -252,18 +252,14 @@ def send_instance_update_notification(context, instance, old_vm_state=None,
     _send_versioned_instance_update(context, instance, payload, host, service)
 
 
-def _map_service_to_binary(service):
-    if service == 'api':
-        binary = 'nova-api'
-    elif service == 'compute':
-        binary = 'nova-compute'
-    else:
-        binary = service
-    return binary
-
-
 @rpc.if_notifications_enabled
 def _send_versioned_instance_update(context, instance, payload, host, service):
+
+    def _map_legacy_service_to_binary(legacy_service):
+        if not legacy_service.startswith('nova-'):
+            return 'nova-' + service
+        else:
+            return service
 
     state_update = instance_notification.InstanceStateUpdatePayload(
         old_state=payload.get('old_state'),
@@ -295,7 +291,7 @@ def _send_versioned_instance_update(context, instance, payload, host, service):
             action=fields.NotificationAction.UPDATE),
         publisher=notification_base.NotificationPublisher(
                 host=host or CONF.host,
-                binary=_map_service_to_binary(service)),
+                binary=_map_legacy_service_to_binary(service)),
         payload=versioned_payload)
     notification.emit(context)
 
@@ -391,10 +387,6 @@ def null_safe_str(s):
     return str(s) if s else ''
 
 
-def null_safe_int(s):
-    return int(s) if s else ''
-
-
 def null_safe_isotime(s):
     if isinstance(s, datetime.datetime):
         return utils.strtime(s)
@@ -475,7 +467,11 @@ def info_from_instance(context, instance, network_info,
         # Status properties
         state=instance.vm_state,
         state_description=null_safe_str(instance.task_state),
-        progress=null_safe_int(instance.progress),
+        # NOTE(gibi): It might seems wrong to default the progress to an empty
+        # string but this is how legacy work and this code only used by the
+        # legacy notification so try to keep the compatibility here but also
+        # keep it contained.
+        progress=int(instance.progress) if instance.progress else '',
 
         # accessIPs
         access_ip_v4=instance.access_ip_v4,

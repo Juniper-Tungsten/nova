@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,15 +22,16 @@ BASE_POLICY_NAME = 'os_compute_api:os-extended-status'
 
 
 extended_status_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_OR_OWNER,
         """Return extended status in the response of server.
 
 This policy will control the visibility for a set of attributes:
-    OS-EXT-STS:task_state
-    OS-EXT-STS:vm_state
-    OS-EXT-STS:power_state
+
+- OS-EXT-STS:task_state
+- OS-EXT-STS:vm_state
+- OS-EXT-STS:power_state
 """,
         [
             {

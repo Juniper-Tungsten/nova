@@ -458,8 +458,10 @@ class ComputeCellsAPI(compute_api.API):
 
     @check_instance_cell
     def _attach_volume(self, context, instance, volume_id, device,
-                       disk_bus, device_type):
+                       disk_bus, device_type, tag=None):
         """Attach an existing volume to an existing instance."""
+        if tag:
+            raise exception.VolumeTaggedAttachNotSupported()
         volume = self.volume_api.get(context, volume_id)
         self.volume_api.check_availability_zone(context, volume,
                                                 instance=instance)
@@ -470,7 +472,6 @@ class ComputeCellsAPI(compute_api.API):
     @check_instance_cell
     def _detach_volume(self, context, instance, volume):
         """Detach a volume from an instance."""
-        self.volume_api.check_detach(context, volume, instance=instance)
         self._cast_to_cells(context, instance, 'detach_volume',
                 volume)
 
@@ -648,7 +649,7 @@ class HostAPI(compute_api.HostAPI):
                                                   state=state)
 
     def compute_node_get(self, context, compute_id):
-        """Get a compute node from a particular cell by its integer ID.
+        """Get a compute node from a particular cell by its integer ID or UUID.
         compute_id should be in the format of 'path!to!cell@ID'.
         """
         try:

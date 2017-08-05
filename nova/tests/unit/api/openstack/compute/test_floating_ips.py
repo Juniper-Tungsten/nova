@@ -19,9 +19,7 @@ import six
 import webob
 
 from nova.api.openstack.compute import floating_ips as fips_v21
-from nova.api.openstack import extensions
 from nova import compute
-from nova.compute import utils as compute_utils
 from nova import context
 from nova import db
 from nova import exception
@@ -236,7 +234,7 @@ class FloatingIpTestV21(test.TestCase):
                        network_api_disassociate)
         self.stubs.Set(network.api.API, "get_instance_id_by_floating_address",
                        get_instance_by_floating_ip_addr)
-        self.stubs.Set(compute_utils, "get_nw_info_for_instance",
+        self.stubs.Set(objects.Instance, "get_network_info",
                        stub_nw_info(self))
 
         fake_network.stub_out_nw_api_get_instance_nw_info(self)
@@ -246,11 +244,9 @@ class FloatingIpTestV21(test.TestCase):
         self.context = context.get_admin_context()
         self._create_floating_ips()
 
-        self.ext_mgr = extensions.ExtensionManager()
-        self.ext_mgr.extensions = {}
         self.controller = self.floating_ips.FloatingIPController()
         self.manager = self.floating_ips.\
-                            FloatingIPActionController(self.ext_mgr)
+                            FloatingIPActionController()
         self.fake_req = fakes.HTTPRequest.blank('')
 
     def tearDown(self):
@@ -557,6 +553,45 @@ class FloatingIpTestV21(test.TestCase):
                                self.controller.create, self.fake_req)
 
         self.assertIn('IP allocation over quota', ex.explanation)
+
+    @mock.patch('nova.objects.FloatingIP.deallocate')
+    @mock.patch('nova.objects.FloatingIP.allocate_address')
+    @mock.patch('nova.objects.quotas.Quotas.check_deltas')
+    def test_floating_ip_allocate_over_quota_during_recheck(self, check_mock,
+                                                            alloc_mock,
+                                                            dealloc_mock):
+        ctxt = self.fake_req.environ['nova.context']
+
+        # Simulate a race where the first check passes and the recheck fails.
+        check_mock.side_effect = [None,
+                                  exception.OverQuota(overs='floating_ips')]
+
+        self.assertRaises(webob.exc.HTTPForbidden,
+                          self.controller.create, self.fake_req)
+
+        self.assertEqual(2, check_mock.call_count)
+        call1 = mock.call(ctxt, {'floating_ips': 1}, ctxt.project_id)
+        call2 = mock.call(ctxt, {'floating_ips': 0}, ctxt.project_id)
+        check_mock.assert_has_calls([call1, call2])
+
+        # Verify we removed the floating IP that was added after the first
+        # quota check passed.
+        dealloc_mock.assert_called_once_with(ctxt,
+                                             alloc_mock.return_value.address)
+
+    @mock.patch('nova.objects.FloatingIP.allocate_address')
+    @mock.patch('nova.objects.quotas.Quotas.check_deltas')
+    def test_floating_ip_allocate_no_quota_recheck(self, check_mock,
+                                                   alloc_mock):
+        # Disable recheck_quota.
+        self.flags(recheck_quota=False, group='quota')
+
+        ctxt = self.fake_req.environ['nova.context']
+        self.controller.create(self.fake_req)
+
+        # check_deltas should have been called only once.
+        check_mock.assert_called_once_with(ctxt, {'floating_ips': 1},
+                                           ctxt.project_id)
 
     @mock.patch('nova.network.api.API.allocate_floating_ip',
                 side_effect=exception.FloatingIpLimitExceeded())
@@ -903,7 +938,7 @@ class ExtendedFloatingIpTestV21(test.TestCase):
                        network_api_disassociate)
         self.stubs.Set(network.api.API, "get_instance_id_by_floating_address",
                        get_instance_by_floating_ip_addr)
-        self.stubs.Set(compute_utils, "get_nw_info_for_instance",
+        self.stubs.Set(objects.Instance, "get_network_info",
                        stub_nw_info(self))
 
         fake_network.stub_out_nw_api_get_instance_nw_info(self)
@@ -913,13 +948,9 @@ class ExtendedFloatingIpTestV21(test.TestCase):
         self.context = context.get_admin_context()
         self._create_floating_ips()
 
-        self.ext_mgr = extensions.ExtensionManager()
-        self.ext_mgr.extensions = {}
-        self.ext_mgr.extensions['os-floating-ips'] = True
-        self.ext_mgr.extensions['os-extended-floating-ips'] = True
         self.controller = self.floating_ips.FloatingIPController()
         self.manager = self.floating_ips.\
-                       FloatingIPActionController(self.ext_mgr)
+                       FloatingIPActionController()
         self.fake_req = fakes.HTTPRequest.blank('')
 
     def tearDown(self):

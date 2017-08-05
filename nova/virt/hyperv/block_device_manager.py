@@ -85,6 +85,7 @@ class BlockDeviceInfoManager(object):
             if bdm_obj and 'tag' in bdm_obj and bdm_obj.tag:
                 bus = self._get_device_bus(bdm)
                 device = objects.DiskMetadata(bus=bus,
+                                              serial=bdm_obj.volume_id,
                                               tags=[bdm_obj.tag])
                 bdm_metadata.append(device)
 
@@ -259,7 +260,7 @@ class BlockDeviceInfoManager(object):
         boot_order = []
         for dev in devices:
             if dev.get('connection_info'):
-                dev_path = self._volops.get_mounted_disk_path_from_volume(
+                dev_path = self._volops.get_disk_resource_path(
                     dev['connection_info'])
                 boot_order.append(dev_path)
             else:

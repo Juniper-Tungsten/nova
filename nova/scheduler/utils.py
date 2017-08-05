@@ -29,7 +29,9 @@ from nova import exception
 from nova.i18n import _, _LE, _LW
 from nova import objects
 from nova.objects import base as obj_base
+from nova.objects import fields
 from nova.objects import instance as obj_instance
+from nova.objects.resource_provider import ResourceClass
 from nova import rpc
 
 
@@ -80,6 +82,99 @@ def build_request_spec(ctxt, image, instances, instance_type=None):
             'instance_type': instance_type,
             'num_instances': len(instances)}
     return jsonutils.to_primitive(request_spec)
+
+
+def _process_extra_specs(extra_specs, resources):
+    """Check the flavor's extra_specs for custom resource information.
+    These will be a dict that is generated from the flavor; and in the
+    flavor, the extra_specs entries will be in the format of either:
+
+        resources:$CUSTOM_RESOURCE_CLASS=$N
+    ...to add a custom resource class to the request, with a positive
+    integer amount of $N
+
+        resources:$STANDARD_RESOURCE_CLASS=0
+    ...to remove that resource class from the request.
+
+        resources:$STANDARD_RESOURCE_CLASS=$N
+    ...to override the flavor's value for that resource class with $N
+    """
+    resource_specs = {key.split("resources:", 1)[-1]: val
+            for key, val in extra_specs.items()
+            if key.startswith("resources:")}
+    resource_keys = set(resource_specs)
+    custom_keys = set([key for key in resource_keys
+            if key.startswith(ResourceClass.CUSTOM_NAMESPACE)])
+    std_keys = resource_keys - custom_keys
+
+    def validate_int(key):
+        val = resource_specs.get(key)
+        try:
+            # Amounts must be integers
+            return int(val)
+        except ValueError:
+            # Not a valid integer
+            LOG.warning("Resource amounts must be integers. Received "
+                    "'%(val)s' for key %(key)s.", {"key": key, "val": val})
+            return None
+
+    for custom_key in custom_keys:
+        custom_val = validate_int(custom_key)
+        if custom_val is not None:
+            if custom_val == 0:
+                # Custom resource values must be positive integers
+                LOG.warning("Resource amounts must be positive integers. "
+                        "Received '%(val)s' for key %(key)s.",
+                        {"key": custom_key, "val": custom_val})
+                continue
+            resources[custom_key] = custom_val
+    for std_key in std_keys:
+        if std_key not in resources:
+            LOG.warning("Received an invalid ResourceClass '%(key)s' in "
+                    "extra_specs.", {"key": std_key})
+            continue
+        val = validate_int(std_key)
+        if val is None:
+            # Received an invalid amount. It's already logged, so move on.
+            continue
+        elif val == 0:
+            resources.pop(std_key, None)
+        else:
+            resources[std_key] = val
+
+
+def resources_from_request_spec(spec_obj):
+    """Given a RequestSpec object, returns a dict, keyed by resource class
+    name, of requested amounts of those resources.
+    """
+    resources = {}
+
+    resources[fields.ResourceClass.VCPU] = spec_obj.vcpus
+    resources[fields.ResourceClass.MEMORY_MB] = spec_obj.memory_mb
+
+    requested_disk_mb = (1024 * (spec_obj.root_gb +
+                                 spec_obj.ephemeral_gb) +
+                         spec_obj.swap)
+    # NOTE(sbauza): Disk request is expressed in MB but we count
+    # resources in GB. Since there could be a remainder of the division
+    # by 1024, we need to ceil the result to the next bigger Gb so we
+    # can be sure there would be enough disk space in the destination
+    # to sustain the request.
+    # FIXME(sbauza): All of that could be using math.ceil() but since
+    # we support both py2 and py3, let's fake it until we only support
+    # py3.
+    requested_disk_gb = requested_disk_mb // 1024
+    if requested_disk_mb % 1024 != 0:
+        # Let's ask for a bit more space since we count in GB
+        requested_disk_gb += 1
+    # NOTE(sbauza): Some flavors provide zero size for disk values, we need
+    # to avoid asking for disk usage.
+    if requested_disk_gb != 0:
+        resources[fields.ResourceClass.DISK_GB] = requested_disk_gb
+    if "extra_specs" in spec_obj.flavor:
+        _process_extra_specs(spec_obj.flavor.extra_specs, resources)
+
+    return resources
 
 
 def set_vm_state_and_notify(context, instance_uuid, service, method, updates,
@@ -333,25 +428,23 @@ def _get_group_details(context, instance_uuid, user_group_hosts=None):
                             policies=group.policies, members=group.members)
 
 
-def setup_instance_group(context, request_spec, filter_properties):
+def setup_instance_group(context, request_spec):
     """Add group_hosts and group_policies fields to filter_properties dict
     based on instance uuids provided in request_spec, if those instances are
     belonging to a group.
 
     :param request_spec: Request spec
-    :param filter_properties: Filter properties
     """
-    group_hosts = filter_properties.get('group_hosts')
-    # NOTE(sbauza) If there are multiple instance UUIDs, it's a boot
-    # request and they will all be in the same group, so it's safe to
-    # only check the first one.
-    instance_uuid = request_spec.get('instance_properties', {}).get('uuid')
+    if request_spec.instance_group and request_spec.instance_group.hosts:
+        group_hosts = request_spec.instance_group.hosts
+    else:
+        group_hosts = None
+    instance_uuid = request_spec.instance_uuid
     group_info = _get_group_details(context, instance_uuid, group_hosts)
     if group_info is not None:
-        filter_properties['group_updated'] = True
-        filter_properties['group_hosts'] = group_info.hosts
-        filter_properties['group_policies'] = group_info.policies
-        filter_properties['group_members'] = group_info.members
+        request_spec.instance_group.hosts = list(group_info.hosts)
+        request_spec.instance_group.policies = group_info.policies
+        request_spec.instance_group.members = group_info.members
 
 
 def retry_on_timeout(retries=1):

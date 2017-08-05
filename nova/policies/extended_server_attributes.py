@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,21 +22,22 @@ BASE_POLICY_NAME = 'os_compute_api:os-extended-server-attributes'
 
 
 extended_server_attributes_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_API,
         """Return extended attributes for server.
 
 This rule will control the visibility for a set of servers attributes:
-    OS-EXT-SRV-ATTR:host
-    OS-EXT-SRV-ATTR:instance_name
-    OS-EXT-SRV-ATTR:reservation_id (since microversion 2.3)
-    OS-EXT-SRV-ATTR:launch_index (since microversion 2.3)
-    OS-EXT-SRV-ATTR:hostname (since microversion 2.3)
-    OS-EXT-SRV-ATTR:kernel_id (since microversion 2.3)
-    OS-EXT-SRV-ATTR:ramdisk_id (since microversion 2.3)
-    OS-EXT-SRV-ATTR:root_device_name (since microversion 2.3)
-    OS-EXT-SRV-ATTR:user_data (since microversion 2.3)""",
+
+- OS-EXT-SRV-ATTR:host
+- OS-EXT-SRV-ATTR:instance_name
+- OS-EXT-SRV-ATTR:reservation_id (since microversion 2.3)
+- OS-EXT-SRV-ATTR:launch_index (since microversion 2.3)
+- OS-EXT-SRV-ATTR:hostname (since microversion 2.3)
+- OS-EXT-SRV-ATTR:kernel_id (since microversion 2.3)
+- OS-EXT-SRV-ATTR:ramdisk_id (since microversion 2.3)
+- OS-EXT-SRV-ATTR:root_device_name (since microversion 2.3)
+- OS-EXT-SRV-ATTR:user_data (since microversion 2.3)""",
         [
             {
                 'method': 'GET',

@@ -733,11 +733,11 @@ class _TestInstanceObject(object):
                 mock.call(self.context, inst.uuid,
                     {'vm_state': 'foo', 'task_state': 'bar',
                      'cell_name': 'foo!bar@baz'},
-                    columns_to_join=['system_metadata', 'extra',
-                        'extra.flavor']),
+                    columns_to_join=['tags', 'system_metadata',
+                                     'extra', 'extra.flavor']),
                 mock.call(self.context, inst.uuid,
                     {'vm_state': 'bar', 'task_state': 'foo'},
-                    columns_to_join=['system_metadata'])]
+                    columns_to_join=['system_metadata', 'tags'])]
         mock_db_update.assert_has_calls(expected_calls)
 
     def test_skip_cells_api(self):
@@ -825,6 +825,21 @@ class _TestInstanceObject(object):
         mock_get.assert_called_once_with(self.context, fake_uuid,
             columns_to_join=['info_cache'])
 
+    def test_get_network_info_with_cache(self):
+        info_cache = instance_info_cache.InstanceInfoCache()
+        nwinfo = network_model.NetworkInfo.hydrate([{'address': 'foo'}])
+        info_cache.network_info = nwinfo
+        inst = objects.Instance(context=self.context,
+                                info_cache=info_cache)
+
+        self.assertEqual(nwinfo, inst.get_network_info())
+
+    def test_get_network_info_without_cache(self):
+        inst = objects.Instance(context=self.context, info_cache=None)
+
+        self.assertEqual(network_model.NetworkInfo.hydrate([]),
+                         inst.get_network_info())
+
     @mock.patch.object(db, 'security_group_update')
     @mock.patch.object(db, 'instance_update_and_get_original')
     @mock.patch.object(db, 'instance_get_by_uuid')
@@ -898,6 +913,7 @@ class _TestInstanceObject(object):
              'deleted_at': None,
              'deleted': None,
              'id': 2,
+             'uuid': uuids.pci_device2,
              'compute_node_id': 1,
              'address': 'a1',
              'vendor_id': 'v1',
@@ -917,6 +933,7 @@ class _TestInstanceObject(object):
              'deleted_at': None,
              'deleted': None,
              'id': 1,
+             'uuid': uuids.pci_device1,
              'compute_node_id': 1,
              'address': 'a',
              'vendor_id': 'v',
@@ -1442,6 +1459,20 @@ class _TestInstanceObject(object):
         for attr_name in instance._MIGRATION_CONTEXT_ATTRS:
             inst_value = getattr(inst, attr_name)
             self.assertIs(expected_objs[attr_name], inst_value)
+
+    @mock.patch('nova.objects.Instance.obj_load_attr',
+                new_callable=mock.NonCallableMock)  # asserts not called
+    def test_mutated_migration_context_early_exit(self, obj_load_attr):
+        """Tests that we exit early from mutated_migration_context if the
+        migration_context attribute is set to None meaning this instance is
+        not being migrated.
+        """
+        inst = instance.Instance(context=self.context, migration_context=None)
+        for attr in instance._MIGRATION_CONTEXT_ATTRS:
+            self.assertNotIn(attr, inst)
+        with inst.mutated_migration_context():
+            for attr in instance._MIGRATION_CONTEXT_ATTRS:
+                self.assertNotIn(attr, inst)
 
     def test_clear_numa_topology(self):
         numa_topology = (test_instance_numa_topology.

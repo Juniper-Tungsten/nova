@@ -27,13 +27,9 @@ from oslo_log import log as logging
 import webob.exc
 from webob import util as woutil
 
-import nova.conf
 from nova.i18n import _, _LE
 
 LOG = logging.getLogger(__name__)
-
-
-CONF = nova.conf.CONF
 
 
 class ConvertedException(webob.exc.WSGIHTTPException):
@@ -254,19 +250,38 @@ class VolumeAttachFailed(Invalid):
                 "Reason: %(reason)s")
 
 
-class VolumeUnattached(Invalid):
-    msg_fmt = _("Volume %(volume_id)s is not attached to anything")
-
-
 class VolumeNotCreated(NovaException):
     msg_fmt = _("Volume %(volume_id)s did not finish being created"
                 " even after we waited %(seconds)s seconds or %(attempts)s"
                 " attempts. And its status is %(volume_status)s.")
 
 
+class ExtendVolumeNotSupported(Invalid):
+    msg_fmt = _("Volume size extension is not supported by the hypervisor.")
+
+
 class VolumeEncryptionNotSupported(Invalid):
     msg_fmt = _("Volume encryption is not supported for %(volume_type)s "
                 "volume %(volume_id)s")
+
+
+class TaggedAttachmentNotSupported(Invalid):
+    msg_fmt = _("Tagged device attachment is not yet available.")
+
+
+class VolumeTaggedAttachNotSupported(TaggedAttachmentNotSupported):
+    msg_fmt = _("Tagged volume attachment is not supported for this server "
+                "instance.")
+
+
+class VolumeTaggedAttachToShelvedNotSupported(TaggedAttachmentNotSupported):
+    msg_fmt = _("Tagged volume attachment is not supported for "
+                "shelved-offloaded instances.")
+
+
+class NetworkInterfaceTaggedAttachNotSupported(TaggedAttachmentNotSupported):
+    msg_fmt = _("Tagged network interface attachment is not supported for "
+                "this server instance.")
 
 
 class InvalidKeypair(Invalid):
@@ -1010,6 +1025,10 @@ class ProjectQuotaNotFound(QuotaNotFound):
 
 class QuotaClassNotFound(QuotaNotFound):
     msg_fmt = _("Quota class %(class_name)s could not be found.")
+
+
+class QuotaClassExists(NovaException):
+    msg_fmt = _("Quota class %(class_name)s exists for resource %(resource)s")
 
 
 class QuotaUsageNotFound(QuotaNotFound):
@@ -1793,8 +1812,9 @@ class ImageNUMATopologyForbidden(Forbidden):
 
 
 class ImageNUMATopologyAsymmetric(Invalid):
-    msg_fmt = _("Asymmetric NUMA topologies require explicit assignment "
-                "of CPUs and memory to nodes in image or flavor")
+    msg_fmt = _("Instance CPUs and/or memory cannot be evenly distributed "
+                "across instance NUMA nodes. Explicit assignment of CPUs "
+                "and memory to nodes is required")
 
 
 class ImageNUMATopologyCPUOutOfRange(Invalid):
@@ -2069,6 +2089,10 @@ class ResourceClassCannotDeleteStandard(Invalid):
 
 class ResourceClassCannotUpdateStandard(Invalid):
     msg_fmt = _("Cannot update standard resource class %(resource_class)s.")
+
+
+class InvalidResourceAmount(Invalid):
+    msg_fmt = _("Resource amounts must be integers. Received '%(amount)s'.")
 
 
 class InvalidInventory(Invalid):

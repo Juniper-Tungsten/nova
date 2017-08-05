@@ -265,6 +265,7 @@ class TestCase(testtools.TestCase):
         from nova.compute import api
         api.CELLS = []
         context.CELL_CACHE = {}
+        context.CELLS = []
 
         self.cell_mappings = {}
         self.host_mappings = {}
@@ -293,6 +294,9 @@ class TestCase(testtools.TestCase):
         # nova.utils._IS_NEUTRON.  We set it to None to avoid any
         # caching of that value.
         utils._IS_NEUTRON = None
+
+        # Reset the traits sync flag
+        objects.resource_provider._TRAITS_SYNCED = False
 
         mox_fixture = self.useFixture(moxstubout.MoxStubout())
         self.mox = mox_fixture.mox

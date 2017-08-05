@@ -213,6 +213,20 @@ def _untranslate_snapshot_summary_view(context, snapshot):
     return d
 
 
+def _translate_attachment_ref(attachment_ref):
+    """Building old style connection_info by adding the 'data' key back."""
+    connection_info = attachment_ref.pop('connection_info', {})
+    attachment_ref['connection_info'] = {}
+    if connection_info.get('driver_volume_type'):
+        attachment_ref['connection_info']['driver_volume_type'] = \
+            connection_info['driver_volume_type']
+    attachment_ref['connection_info']['data'] = {}
+    for k, v in connection_info.items():
+        if k != "driver_volume_type":
+            attachment_ref['connection_info']['data'][k] = v
+    return attachment_ref
+
+
 def translate_cinder_exception(method):
     """Transforms a cinder exception but keeps its traceback intact."""
     @functools.wraps(method)
@@ -336,24 +350,6 @@ class API(object):
                             'ins_zone': instance_az,
                             'vol_zone': volume['availability_zone']}
                 raise exception.InvalidVolume(reason=msg)
-
-    def check_detach(self, context, volume, instance=None):
-        # TODO(vish): abstract status checking?
-        if volume['status'] == "available":
-            msg = _("volume %s already detached") % volume['id']
-            raise exception.InvalidVolume(reason=msg)
-
-        if volume['attach_status'] == 'detached':
-            msg = _("Volume must be attached in order to detach.")
-            raise exception.InvalidVolume(reason=msg)
-
-        # NOTE(ildikov):Preparation for multiattach support, when a volume
-        # can be attached to multiple hosts and/or instances,
-        # so just check the attachment specific to this instance
-        if instance is not None and instance.uuid not in volume['attachments']:
-            # TODO(ildikov): change it to a better exception, when enable
-            # multi-attach.
-            raise exception.VolumeUnattached(volume_id=volume['id'])
 
     @translate_volume_exception
     def reserve_volume(self, context, volume_id):
@@ -549,22 +545,14 @@ class API(object):
             attached.
         :param connector: host connector dict; if None, the attachment will
             be 'reserved' but not yet attached.
-        :returns: cinderclient.v3.attachments.VolumeAttachment object
-            representing the new volume attachment with attributes::
-
-                'id': attachment.id,    # this is a uuid
-                'status': attachment.attach_status,
-                'instance': attachment.instance_uuid,
-                'volume_id': attachment.volume_id,
-                'attached_at': cls._normalize(attachment.attach_time),
-                'detached_at': cls._normalize(attachment.detach_time),
-                'attach_mode': attachment.attach_mode,
-                'connection_info': \
-                    getattr(attachment, 'connection_info', None)
+        :returns: a dict created from the
+            cinderclient.v3.attachments.VolumeAttachment object with a backward
+            compatible connection_info dict
         """
         try:
-            return cinderclient(context, '3.27').attachments.create(
+            attachment_ref = cinderclient(context, '3.27').attachments.create(
                 volume_id, connector, instance_id)
+            return _translate_attachment_ref(attachment_ref)
         except cinder_exception.ClientException as ex:
             with excutils.save_and_reraise_exception():
                 LOG.error(('Create attachment failed for volume '
@@ -584,13 +572,15 @@ class API(object):
         :param connector: host connector dict. This is required when updating
             a volume attachment. To terminate a connection, the volume
             attachment for that connection must be deleted.
-        :returns: cinderclient.v3.attachments.VolumeAttachment object
-            representing the updated volume attachment.
+        :returns: a dict created from the
+            cinderclient.v3.attachments.VolumeAttachment object with a backward
+            compatible connection_info dict
         """
         try:
-            return cinderclient(
+            attachment_ref = cinderclient(
                 context, '3.27', skip_version_check=True).attachments.update(
                     attachment_id, connector)
+            return _translate_attachment_ref(attachment_ref.to_dict())
         except cinder_exception.ClientException as ex:
             with excutils.save_and_reraise_exception():
                 LOG.error(('Update attachment failed for attachment '

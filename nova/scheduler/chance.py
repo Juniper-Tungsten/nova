@@ -21,6 +21,7 @@ Chance (Random) Scheduler implementation
 
 import random
 
+from nova.compute import rpcapi as compute_rpcapi
 import nova.conf
 from nova import exception
 from nova.i18n import _
@@ -31,6 +32,8 @@ CONF = nova.conf.CONF
 
 class ChanceScheduler(driver.Scheduler):
     """Implements Scheduler as a random node selector."""
+
+    USES_ALLOCATION_CANDIDATES = False
 
     def _filter_hosts(self, hosts, spec_obj):
         """Filter a list of hosts based on RequestSpec."""
@@ -55,7 +58,8 @@ class ChanceScheduler(driver.Scheduler):
 
         return random.choice(hosts)
 
-    def select_destinations(self, context, spec_obj, instance_uuids):
+    def select_destinations(self, context, spec_obj, instance_uuids,
+            alloc_reqs_by_rp_uuid, provider_summaries):
         """Selects random destinations."""
         num_instances = spec_obj.num_instances
         # NOTE(timello): Returns a list of dicts with 'host', 'nodename' and
@@ -64,8 +68,9 @@ class ChanceScheduler(driver.Scheduler):
         # and limiting the destination scope to a single requested cell
         dests = []
         for i in range(num_instances):
-            host = self._schedule(context, CONF.compute_topic, spec_obj)
-            host_state = dict(host=host, nodename=None, limits=None)
+            host = self._schedule(context, compute_rpcapi.RPC_TOPIC,
+                                  spec_obj)
+            host_state = self.host_manager.host_state_cls(host, None, None)
             dests.append(host_state)
 
         if len(dests) < num_instances:

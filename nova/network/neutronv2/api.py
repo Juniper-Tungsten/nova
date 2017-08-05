@@ -38,7 +38,7 @@ from nova.pci import manager as pci_manager
 from nova.pci import request as pci_request
 from nova.pci import utils as pci_utils
 from nova.pci import whitelist as pci_whitelist
-from nova.policies import base as base_policies
+from nova.policies import servers as servers_policies
 from nova import profiler
 from nova import service_auth
 
@@ -463,7 +463,7 @@ class API(base_api.NetworkAPI):
 
     def _check_external_network_attach(self, context, nets):
         """Check if attaching to external network is permitted."""
-        if not context.can(base_policies.NETWORK_ATTACH_EXTERNAL,
+        if not context.can(servers_policies.NETWORK_ATTACH_EXTERNAL,
                            fatal=False):
             for net in nets:
                 # Perform this check here rather than in validate_networks to
@@ -662,7 +662,7 @@ class API(base_api.NetworkAPI):
         Check the user has access to the network they requested, and that
         it is a suitable network to connect to. This includes getting the
         network details for any ports that have been passed in, because the
-        request will have been updated with the request_id in
+        request will have been updated with the network_id in
         _validate_requested_port_ids.
 
         If the user has not requested any ports or any networks, we get back
@@ -884,11 +884,13 @@ class API(base_api.NetworkAPI):
             admin_client=admin_client,
             preexisting_port_ids=preexisting_port_ids,
             update_cells=True)
-        # NOTE(danms): Only return info about ports we created in this run.
-        # In the initial allocation case, this will be everything we created,
-        # and in later runs will only be what was created that time. Thus,
-        # this only affects the attach case, not the original use for this
-        # method.
+        # Only return info about ports we processed in this run, which might
+        # have been pre-existing neutron ports or ones that nova created. In
+        # the initial allocation case (server create), this will be everything
+        # we processed, and in later runs will only be what was processed that
+        # time. For example, if the instance was created with port A and
+        # then port B was attached in this call, only port B would be returned.
+        # Thus, this filtering only affects the attach case.
         return network_model.NetworkInfo([vif for vif in nw_info
                                           if vif['id'] in created_port_ids +
                                           preexisting_port_ids])
@@ -896,7 +898,12 @@ class API(base_api.NetworkAPI):
     def _update_ports_for_instance(self, context, instance, neutron,
             admin_client, requests_and_created_ports, nets,
             bind_host_id, dhcp_opts, available_macs):
-        """Create port for network_requests that don't have a port_id
+        """Update ports from network_requests.
+
+        Updates the pre-existing ports and the ones created in
+        ``_create_ports_for_instance`` with ``device_id``, ``device_owner``,
+        optionally ``mac_address`` and ``dhcp_opts``, and, depending on the
+        loaded extensions, ``rxtx_factor``, ``binding:host_id``, ``dns_name``.
 
         :param context: The request context.
         :param instance: nova.objects.instance.Instance object.
@@ -1196,13 +1203,14 @@ class API(base_api.NetworkAPI):
 
     def allocate_port_for_instance(self, context, instance, port_id,
                                    network_id=None, requested_ip=None,
-                                   bind_host_id=None):
+                                   bind_host_id=None, tag=None):
         """Allocate a port for the instance."""
         requested_networks = objects.NetworkRequestList(
             objects=[objects.NetworkRequest(network_id=network_id,
                                             address=requested_ip,
                                             port_id=port_id,
-                                            pci_request_id=None)])
+                                            pci_request_id=None,
+                                            tag=tag)])
         return self.allocate_for_instance(context, instance, vpn=False,
                 requested_networks=requested_networks,
                 bind_host_id=bind_host_id)
@@ -1223,12 +1231,22 @@ class API(base_api.NetworkAPI):
         # Delete the VirtualInterface for the given port_id.
         vif = objects.VirtualInterface.get_by_uuid(context, port_id)
         if vif:
+            if 'tag' in vif and vif.tag:
+                self._delete_nic_metadata(instance, vif)
             vif.destroy()
         else:
             LOG.debug('VirtualInterface not found for port: %s',
                       port_id, instance=instance)
 
         return self.get_instance_nw_info(context, instance)
+
+    def _delete_nic_metadata(self, instance, vif):
+        for device in instance.device_metadata.devices:
+            if (isinstance(device, objects.NetworkInterfaceMetadata)
+                    and device.mac == vif.address):
+                instance.device_metadata.devices.remove(device)
+                instance.save()
+                break
 
     def list_ports(self, context, **search_opts):
         """List ports for the client based on search options."""
@@ -1302,7 +1320,7 @@ class API(base_api.NetworkAPI):
                         "networks as not none.")
             raise exception.NovaException(message=message)
 
-        ifaces = compute_utils.get_nw_info_for_instance(instance)
+        ifaces = instance.get_network_info()
         # This code path is only done when refreshing the network_cache
         if port_ids is None:
             port_ids = [iface['id'] for iface in ifaces]
@@ -2141,7 +2159,8 @@ class API(base_api.NetworkAPI):
         should_create_bridge = None
         vif_type = port.get('binding:vif_type')
         port_details = port.get('binding:vif_details', {})
-        if vif_type == network_model.VIF_TYPE_OVS:
+        if vif_type in [network_model.VIF_TYPE_OVS,
+                        network_model.VIF_TYPE_AGILIO_OVS]:
             bridge = port_details.get(network_model.VIF_DETAILS_BRIDGE_NAME,
                                       CONF.neutron.ovs_bridge)
             ovs_interfaceid = port['id']
@@ -2194,7 +2213,7 @@ class API(base_api.NetworkAPI):
         These ports were not created by nova and hence should not be
         deallocated upon instance deletion.
         """
-        net_info = compute_utils.get_nw_info_for_instance(instance)
+        net_info = instance.get_network_info()
         if not net_info:
             LOG.debug('Instance cache missing network info.',
                       instance=instance)

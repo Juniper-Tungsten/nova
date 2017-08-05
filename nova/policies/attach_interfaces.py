@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -21,11 +23,11 @@ POLICY_ROOT = 'os_compute_api:os-attach-interfaces:%s'
 
 
 attach_interfaces_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_OR_OWNER,
-        "List port interfaces or show details of a port \
-interface attached to a server",
+        "List port interfaces or show details of a port interface attached "
+        "to a server",
         [
             {
                 'method': 'GET',
@@ -36,20 +38,20 @@ interface attached to a server",
                 'path': '/servers/{server_id}/os-interface/{port_id}'
             }
         ]),
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'create',
         base.RULE_ADMIN_OR_OWNER,
-        'Attach an interface to a server',
+        "Attach an interface to a server",
         [
             {
                 'method': 'POST',
                 'path': '/servers/{server_id}/os-interface'
             }
         ]),
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'delete',
         base.RULE_ADMIN_OR_OWNER,
-        'Detach an interface from a server',
+        "Detach an interface from a server",
         [
             {
                 'method': 'DELETE',

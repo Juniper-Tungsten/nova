@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,13 +22,13 @@ BASE_POLICY_NAME = 'os_compute_api:os-security-group-default-rules'
 
 
 security_group_default_rules_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         BASE_POLICY_NAME,
         base.RULE_ADMIN_API,
-        """Lists, shows information for, creates and deletes default security
+        """List, show information for, create, or delete default security
 group rules.
 
-These API's are only available with nova-network which is now deprecated.""",
+These APIs are only available with nova-network which is now deprecated.""",
         [
             {
                 'method': 'GET',

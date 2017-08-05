@@ -54,7 +54,7 @@ forward. You can also see a history of our microversions here:
 .. toctree::
    :maxdepth: 1
 
-   api_microversion_history
+   reference/api-microversion-history
 
 .. note::
     Only Version 2.1 APIs should be used from this point forward, Version 2.0
@@ -85,9 +85,9 @@ integration testing efforts.
 .. toctree::
    :maxdepth: 1
 
-   test_strategy
-   feature_classification
-   support-matrix
+   contributor/testing
+   user/feature-classification
+   user/support-matrix
 
 Developer Guide
 ===============
@@ -98,11 +98,11 @@ actually does, and why.
 .. toctree::
    :maxdepth: 1
 
-   how_to_get_involved
-   process
-   architecture
-   project_scope
-   development.environment
+   contributor/how-to-get-involved
+   contributor/process
+   user/architecture
+   contributor/project-scope
+   contributor/development-environment
 
 Development Policies
 --------------------
@@ -124,11 +124,11 @@ community, while keeping users happy and keeping developers productive.
 .. toctree::
    :maxdepth: 1
 
-   process
-   blueprints
-   policies
-   code-review
-   releasenotes
+   contributor/process
+   contributor/blueprints
+   contributor/policies
+   contributor/code-review
+   contributor/releasenotes
 
 Architecture Concepts
 ----------------------
@@ -146,20 +146,20 @@ Open Development.
 .. toctree::
    :maxdepth: 1
 
-   addmethod.openstackapi
-   rpc
-   block_device_mapping
-   conductor
-   filter_scheduler
-   aggregates
-   i18n
-   notifications
-   placement
-   placement_dev
-   quotas
-   threading
-   vmstates
-   wsgi
+   contributor/api-2
+   reference/rpc
+   user/block-device-mapping
+   user/conductor
+   user/filter-scheduler
+   user/aggregates
+   reference/i18n
+   reference/notifications
+   user/placement
+   contributor/placement
+   user/quotas
+   reference/threading
+   reference/vm-states
+   user/wsgi
 
 Architecture Evolution Plans
 -----------------------------
@@ -174,13 +174,13 @@ these are a great place to start reading up on the current plans.
 .. toctree::
    :maxdepth: 1
 
-   cells
-   upgrade
-   api_plugins
-   api_microversion_dev
-   policy_enforcement
-   stable_api
-   scheduler_evolution
+   user/cells
+   user/upgrade
+   contributor/api
+   contributor/microversions
+   reference/policy-enforcement
+   reference/stable-api
+   reference/scheduler-evolution
 
 Advanced testing and guides
 ----------------------------
@@ -188,10 +188,10 @@ Advanced testing and guides
 .. toctree::
     :maxdepth: 1
 
-    gmr
-    testing/libvirt-numa
-    testing/serial-console
-    testing/zero-downtime-upgrade
+    reference/gmr
+    contributor/testing/libvirt-numa
+    contributor/testing/serial-console
+    contributor/testing/zero-downtime-upgrade
 
 Sample Configuration File
 -------------------------
@@ -199,7 +199,7 @@ Sample Configuration File
 .. toctree::
     :maxdepth: 1
 
-    sample_config
+    configuration/sample-config
 
 Sample Policy file
 ------------------
@@ -207,7 +207,7 @@ Sample Policy file
 .. toctree::
     :maxdepth: 1
 
-    sample_policy
+    configuration/sample-policy
 
 Man Pages
 ----------
@@ -215,14 +215,14 @@ Man Pages
 .. toctree::
    :maxdepth: 1
 
-   man/index
+   cli/index
 
 Module Reference
 ----------------
 .. toctree::
    :maxdepth: 1
 
-   services
+   reference/services
 
 
 .. # NOTE(mriedem): This is the section where we hide things that we don't
@@ -238,7 +238,7 @@ Metadata
 .. toctree::
     :maxdepth: 1
 
-    vendordata
+    user/vendordata
 
 Indices and tables
 ==================

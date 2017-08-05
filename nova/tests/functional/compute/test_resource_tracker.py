@@ -49,7 +49,8 @@ class IronicResourceTrackerTest(test.TestCase):
             root_gb=1024,
             swap=0,
             ephemeral_gb=0,
-        ),
+            extra_specs={},
+    ),
         'CUSTOM_BIG_IRON': objects.Flavor(
             name='CUSTOM_BIG_IRON',
             flavorid=43,
@@ -58,6 +59,7 @@ class IronicResourceTrackerTest(test.TestCase):
             root_gb=1024,
             swap=0,
             ephemeral_gb=0,
+            extra_specs={},
         ),
     }
 
@@ -123,6 +125,7 @@ class IronicResourceTrackerTest(test.TestCase):
             task_state=task_states.SPAWNING,
             power_state=power_state.RUNNING,
             project_id='project',
+            user_id=uuids.user,
         ),
     }
 

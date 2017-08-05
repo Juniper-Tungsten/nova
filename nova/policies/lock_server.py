@@ -13,6 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_policy import policy
+
 from nova.policies import base
 
 
@@ -20,7 +22,7 @@ POLICY_ROOT = 'os_compute_api:os-lock-server:%s'
 
 
 lock_server_policies = [
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'lock',
         base.RULE_ADMIN_OR_OWNER,
         "Lock a server",
@@ -31,7 +33,7 @@ lock_server_policies = [
             }
         ]
     ),
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'unlock',
         base.RULE_ADMIN_OR_OWNER,
         "Unlock a server",
@@ -42,13 +44,13 @@ lock_server_policies = [
             }
         ]
     ),
-    base.create_rule_default(
+    policy.DocumentedRuleDefault(
         POLICY_ROOT % 'unlock:unlock_override',
         base.RULE_ADMIN_API,
         """Unlock a server, regardless who locked the server.
 
-        This check is performed only after the check
-        os_compute_api:os-lock-server:unlock passes""",
+This check is performed only after the check
+os_compute_api:os-lock-server:unlock passes""",
         [
             {
                 'path': '/servers/{server_id}/action (unlock)',
