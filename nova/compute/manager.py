@@ -5246,7 +5246,7 @@ class ComputeManager(manager.Manager):
                                                               dest_check_data)
         finally:
             self.driver.cleanup_live_migration_destination_check(ctxt,
-                    dest_check_data, instance))
+                    dest_check_data, instance)
         return migrate_data
 
     @wrap_exception()
