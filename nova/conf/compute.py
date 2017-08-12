@@ -614,7 +614,7 @@ for performance reasons, for example, with Ironic.
 Possible values:
 
 * Any positive integer representing greenthreads count.
-""")
+"""),
     cfg.StrOpt('storage_scope',
                default='local',
                help='whether instances are stored on shared or local storage'),
