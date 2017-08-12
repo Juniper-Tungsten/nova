@@ -9,4 +9,4 @@
 host=review.opencontrail.org
 port=29418
 project=Juniper/nova.git
-defaultbranch=stable/ocata
+defaultbranch=contrail/ocata-15.0.5
