@@ -67,7 +67,7 @@ def _get_network_obj(session, network_objects, network_name):
                     # For a VLAN the network name will be the UUID. For a VXLAN
                     # network this will have a VXLAN prefix and then the
                     # network name.
-                    if network_name in props.name:
+                    if network_name == str(props.name):
                         network_obj['type'] = 'DistributedVirtualPortgroup'
                         network_obj['dvpg'] = props.key
                         dvs_props = session._call_method(vutil,

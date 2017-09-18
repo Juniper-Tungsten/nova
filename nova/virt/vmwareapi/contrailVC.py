@@ -148,6 +148,10 @@ class ContrailVCDriver(VMwareVCDriver):
         if network_info:
             for vif in network_info:
                 network_uuid = vif['network']['id']
+                #For Mitaka multicluster support appending cluster id to port group
+                separator = u'_'
+                network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
+                                                network_uuid))
                 network_ref=None
                 try:
                     network_ref = network_util.get_network_with_the_name(session,
@@ -156,16 +160,12 @@ class ContrailVCDriver(VMwareVCDriver):
                     LOG.debug("Network %s not found on cluster!", network_uuid)
 
                 if not network_ref:
-                    vif['network']['bridge'] = vif['network']['id']
+                    vif['network']['bridge'] = network_uuid
                     pvlan_id = self.Vlan.alloc_pvlan()
                     if pvlan_id == INVALID_VLAN_ID:
                         raise exception.NovaException("Vlan id space is full")
 
                     try:
-                        #For Mitake multicluster support appending cluster id to port group
-                        separator = u'_'
-                        network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
-                                                        network_uuid))
                         network_util.create_dvport_group(session,
                                                     network_uuid,
                                                     CONF.vmware.vcenter_dvswitch,
@@ -173,7 +173,7 @@ class ContrailVCDriver(VMwareVCDriver):
                     except vexc.DuplicateName:
                         self.Vlan.free_pvlan(pvlan_id)
                 else:
-                    vif['network']['bridge'] = vif['network']['id']
+                    vif['network']['bridge'] = network_uuid
                     #LOG.debug(_("Network %s found on host!") % network_uuid)
 
                 args = {'should_create_vlan':False, 'vlan':'0'}
@@ -196,6 +196,10 @@ class ContrailVCDriver(VMwareVCDriver):
 
         for vif in network_info:
             network_uuid = vif['network']['id']
+            #For Mitaka multicluster support appending cluster id to port group
+            separator = u'_'
+            network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
+                                            network_uuid))
             network_ref=None
             try:
                 network_ref = network_util.get_network_with_the_name(session,
@@ -243,6 +247,10 @@ class ContrailVCDriver(VMwareVCDriver):
         """Attach an interface to the instance."""
         session = self._session
         network_uuid = vif['network']['id']
+        #For Mitaka multicluster support appending cluster id to port group
+        separator = u'_'
+        network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
+                                        network_uuid))
         network_mor=None
         try:
             network_mor = network_util.get_network_with_the_name(session,
@@ -251,7 +259,7 @@ class ContrailVCDriver(VMwareVCDriver):
             LOG.debug("Network %s not found on cluster!", network_uuid)
 
         if not network_mor:
-            vif['network']['bridge'] = vif['network']['id']
+            vif['network']['bridge'] = network_uuid
             pvlan_id = self.Vlan.alloc_pvlan()
             #LOG.debug(_("Allocated pvlan for network %s") % network_uuid)
             if pvlan_id == INVALID_VLAN_ID:
@@ -263,7 +271,7 @@ class ContrailVCDriver(VMwareVCDriver):
                                             CONF.vmware.vcenter_dvswitch,
                                             pvlan_id, _vmops._cluster)
         else:
-            vif['network']['bridge'] = vif['network']['id']
+            vif['network']['bridge'] = network_uuid
             #LOG.debug(_("Network %s found on host!") % network_uuid)
 
         args = {'should_create_vlan':False, 'vlan':'0'}
@@ -277,6 +285,10 @@ class ContrailVCDriver(VMwareVCDriver):
 
         session = self._session
         network_uuid = vif['network']['id']
+        #For Mitaka multicluster support appending cluster id to port group
+        separator = u'_'
+        network_uuid =  separator.join((self._vmops._cluster.value.encode('utf8'),
+                                        network_uuid))
         dvpg_mor=None
         try:
             dvpg_mor = network_util.get_network_with_the_name(session, 
