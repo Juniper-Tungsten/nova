@@ -6842,7 +6842,8 @@ class LibvirtDriver(driver.ComputeDriver):
                                          host=fallback_from_host,
                                          receive=True)
             image.cache(fetch_func=copy_from_host,
-                        filename=filename)
+                        filename=filename,
+                        interpath=interpath)
 
     def _create_images_and_backing(self, context, instance, instance_dir,
                                    disk_info, fallback_from_host=None):
@@ -6896,6 +6897,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                 fs_label=cache_name,
                                 os_type=instance.os_type,
                                 filename=cache_name,
+                                interpath=interpath,
                                 size=info['virt_disk_size'],
                                 ephemeral_size=instance.ephemeral_gb)
                 elif cache_name.startswith('swap'):
@@ -6903,6 +6905,7 @@ class LibvirtDriver(driver.ComputeDriver):
                     swap_mb = inst_type.swap
                     image.cache(fetch_func=self._create_swap,
                                 filename="swap_%s" % swap_mb,
+                                interpath=interpath,
                                 size=swap_mb * units.Mi,
                                 swap_mb=swap_mb)
                 else:
