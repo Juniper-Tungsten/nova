@@ -454,7 +454,17 @@ class LibvirtGenericVIFDriver(object):
                                     inst_type, virt_type, vif['vnic_type'])
         dev = self.get_vif_devname(vif)
 
-        if CONF.contrail.use_userspace_vhost:
+        vnic_type = vif.get('vnic_type', network_model.VNIC_TYPE_NORMAL)
+        if vnic_type == network_model.VNIC_TYPE_DIRECT:
+            conf.vlan = None
+            conf.source_mode = 'passthrough'
+            conf.source_dev = vif['profile']['pci_slot']
+            conf.net_type = 'hostdev'
+            conf.driver_name = 'vfio'
+        elif vnic_type == network_model.VNIC_TYPE_VIRTIO_FORWARDER:
+            return self.get_config_vhostuser(instance, vif, image_meta,
+                                             inst_type, virt_type, host)
+        elif CONF.contrail.use_userspace_vhost:
             dev = path.join(CONF.contrail.userspace_vhost_socket_dir,
                             'uvh_vif_' + dev)
             designer.set_vif_host_backend_vhostuser_config(conf, 'client', dev)
@@ -771,8 +781,20 @@ class LibvirtGenericVIFDriver(object):
                     instance.project_id, ip_addr, ip6_addr,
                     instance.display_name, vif['address'],
                     vif['devname'], ptype, -1, -1))
+        vnic_type = vif.get('vnic_type', network_model.VNIC_TYPE_NORMAL)
+        if vnic_type == network_model.VNIC_TYPE_DIRECT:
+            pci_dev = vif['profile']['pci_slot']
+            cmd_args += (" --pci_dev=%s --vnic_type=%s" %
+                         (pci_dev, vnic_type))
+        if vnic_type == network_model.VNIC_TYPE_VIRTIO_FORWARDER:
+            pci_dev = vif['profile']['pci_slot']
+            mode, socket = self._get_vhostuser_settings(vif)
+            cmd_args += (" --pci_dev=%s --vnic_type=%s"
+                         " --vhostuser_mode=%s --vhostuser_socket=%s" %
+                         (pci_dev, vnic_type, mode, socket))
         try:
-            if not CONF.contrail.use_userspace_vhost:
+            if (vnic_type == network_model.VNIC_TYPE_NORMAL and
+               not CONF.contrail.use_userspace_vhost):
                 multiqueue = self._is_multiqueue_enabled(instance.image_meta,
                                                      instance.flavor)
                 linux_net.create_tap_dev(dev, multiqueue=multiqueue)
@@ -968,9 +990,21 @@ class LibvirtGenericVIFDriver(object):
         # made in nova_contrail_vif/vif_plug_vrouter/vrouter.py
         dev = self.get_vif_devname(vif)
         cmd_args = ("--oper=delete --uuid=%s" % (vif['id']))
+        vnic_type = vif.get('vnic_type', network_model.VNIC_TYPE_NORMAL)
+        if vnic_type == network_model.VNIC_TYPE_DIRECT:
+            pci_dev = vif['profile']['pci_slot']
+            cmd_args += (" --pci_dev=%s --vnic_type=%s" %
+                         (pci_dev, vnic_type))
+        if vnic_type == network_model.VNIC_TYPE_VIRTIO_FORWARDER:
+            pci_dev = vif['profile']['pci_slot']
+            mode, socket = self._get_vhostuser_settings(vif)
+            cmd_args += (" --pci_dev=%s --vnic_type=%s"
+                         " --vhostuser_mode=%s --vhostuser_socket=%s" %
+                         (pci_dev, vnic_type, mode, socket))
         try:
             utils.execute('vrouter-port-control', cmd_args, run_as_root=True)
-            if not CONF.contrail.use_userspace_vhost:
+            if (vnic_type == network_model.VNIC_TYPE_NORMAL and
+               not CONF.contrail.use_userspace_vhost):
                 linux_net.delete_net_dev(dev)
         except processutils.ProcessExecutionError:
             LOG.exception(
